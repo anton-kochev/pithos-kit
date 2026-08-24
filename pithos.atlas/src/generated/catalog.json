@@ -537,6 +537,54 @@
           }
         ]
       }
+    },
+    {
+      "name": "@pithos-kit/web",
+      "version": "0.1.0",
+      "description": "Trusted public-web search and static page fetching tools for Pi.",
+      "pi": {
+        "extensions": [
+          "./extensions"
+        ]
+      },
+      "pithosKit": {
+        "displayName": "Web",
+        "summary": "Search the public web with Brave and fetch bounded static HTML or text pages.",
+        "minimumPi": ">=0.83.0",
+        "commands": [
+          {
+            "name": "web-setup",
+            "summary": "Check local Brave Search credential status and show secure setup guidance.",
+            "usage": "/web-setup [--help]"
+          }
+        ],
+        "tools": [
+          {
+            "name": "web_search",
+            "summary": "Search the public web through the Brave Search API."
+          },
+          {
+            "name": "web_fetch",
+            "summary": "Fetch bounded static HTML or text from public HTTP(S) URLs."
+          }
+        ],
+        "prompts": [],
+        "skills": [],
+        "themes": [],
+        "agents": [],
+        "configuration": [
+          {
+            "kind": "environment",
+            "key": "BRAVE_SEARCH_API_KEY",
+            "summary": "Authenticate web_search requests to the Brave Search API."
+          },
+          {
+            "kind": "environment",
+            "key": "PI_OFFLINE",
+            "summary": "Disable web_search and web_fetch when true, yes, or 1."
+          }
+        ]
+      }
     }
   ]
 }

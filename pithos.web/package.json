@@ -1,0 +1,97 @@
+{
+  "name": "@pithos-kit/web",
+  "version": "0.1.0",
+  "description": "Trusted public-web search and static page fetching tools for Pi.",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pithos",
+    "web-search",
+    "web-fetch",
+    "brave-search",
+    "research"
+  ],
+  "license": "MIT",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anton-kochev/pithos-kit.git",
+    "directory": "pithos.web"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "dependencies": {
+    "html-to-text": "^10.0.1",
+    "ipaddr.js": "^2.5.0",
+    "undici": "^8.10.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "0.83.0",
+    "@types/html-to-text": "^9.0.4",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.0"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": ">=0.83.0",
+    "typebox": "*"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "audit": "npm audit --omit=dev --audit-level=moderate"
+  },
+  "pithosKit": {
+    "displayName": "Web",
+    "summary": "Search the public web with Brave and fetch bounded static HTML or text pages.",
+    "minimumPi": ">=0.83.0",
+    "commands": [
+      {
+        "name": "web-setup",
+        "usage": "/web-setup [--help]",
+        "summary": "Check local Brave Search credential status and show secure setup guidance."
+      }
+    ],
+    "tools": [
+      {
+        "name": "web_search",
+        "summary": "Search the public web through the Brave Search API."
+      },
+      {
+        "name": "web_fetch",
+        "summary": "Fetch bounded static HTML or text from public HTTP(S) URLs."
+      }
+    ],
+    "prompts": [],
+    "skills": [],
+    "themes": [],
+    "agents": [],
+    "configuration": [
+      {
+        "kind": "environment",
+        "key": "BRAVE_SEARCH_API_KEY",
+        "summary": "Authenticate web_search requests to the Brave Search API."
+      },
+      {
+        "kind": "environment",
+        "key": "PI_OFFLINE",
+        "summary": "Disable web_search and web_fetch when true, yes, or 1."
+      }
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./extensions"
+    ]
+  },
+  "files": [
+    "extensions",
+    "src",
+    "LICENSE",
+    "README.md"
+  ]
+}

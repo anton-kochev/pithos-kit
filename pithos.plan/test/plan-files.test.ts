@@ -153,6 +153,8 @@ describe("buildPlanSystemPrompt", () => {
 
 		assert.match(prompt ?? "", /read-only Plan mode is enforced/i);
 		assert.match(prompt ?? "", /read, grep, find, and ls/i);
+		assert.match(prompt ?? "", /web_search and web_fetch.*when available/i);
+		assert.match(prompt ?? "", /other custom tools.*blocked/i);
 		assert.match(prompt ?? "", /optionally preview the exact Markdown draft/i);
 		assert.match(prompt ?? "", /create.*without preview/i);
 		assert.match(prompt ?? "", /Continue planning.*safe default/i);

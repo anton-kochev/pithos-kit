@@ -8,6 +8,8 @@ import { fileURLToPath } from "node:url";
 import planTheme from "../extensions/plan-theme.ts";
 
 const PLAN_THEME_PATH = fileURLToPath(new URL("../extensions/plan-theme.ts", import.meta.url));
+const WEB_EXTENSION_PATH = fileURLToPath(new URL("../../pithos.web/extensions/index.ts", import.meta.url));
+const WEB_PACKAGE_ROOT = dirname(dirname(WEB_EXTENSION_PATH));
 
 function builtin(name: string) {
 	return {
@@ -29,11 +31,29 @@ function createHarness(
 		mode?: "tui" | "rpc" | "json" | "print";
 		cwd?: string;
 		sessionName?: string;
+		webTools?: boolean;
 	} = {},
 ) {
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
 	const branchEntries = options.branchEntries ?? [];
 	const allTools = ["read", "grep", "find", "ls", "write", "edit", "bash"].map(builtin);
+	if (options.webTools) {
+		for (const name of ["web_search", "web_fetch"]) {
+			allTools.push({
+				name,
+				description: name,
+				parameters: {},
+				promptGuidelines: [],
+				sourceInfo: {
+					source: "../pithos.web",
+					path: WEB_EXTENSION_PATH,
+					scope: "project",
+					origin: "package",
+					baseDir: WEB_PACKAGE_ROOT,
+				},
+			});
+		}
+	}
 	let activeTools = allTools.map((tool) => tool.name);
 	let sessionName = options.sessionName;
 	const sessionNames: string[] = [];
@@ -465,6 +485,22 @@ describe("plan mode enforcement", () => {
 		await activatePlan(harness);
 
 		assert.deepEqual(harness.getActiveTools(), ["read", "grep", "find", "ls", "create_plan"]);
+	});
+
+	it("retains and permits provenance-verified Web tools while planning", async () => {
+		const harness = createHarness({ webTools: true });
+		await activatePlan(harness);
+
+		assert.deepEqual(harness.getActiveTools(), [
+			"read", "grep", "find", "ls", "web_search", "web_fetch", "create_plan",
+		]);
+		for (const toolName of ["web_search", "web_fetch"]) {
+			const result = await harness.handlers.get("tool_call")?.(
+				{ type: "tool_call", toolCallId: toolName, toolName, input: {} },
+				harness.ctx,
+			);
+			assert.equal(result?.block, undefined, toolName);
+		}
 	});
 
 	it("blocks source-file writes while planning", async () => {

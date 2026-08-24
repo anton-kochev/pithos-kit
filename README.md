@@ -14,6 +14,7 @@ A monorepo of independently published Pi extensions, skills, prompts, themes, an
 - [`pithos.plan/`](./pithos.plan) — enforced read-only planning, approved plan creation, a Plan theme, and contextual session naming. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
 - [`pithos.themes/`](./pithos.themes) — accessible Auric light and dark themes with automatic appearance switching. [![npm version](https://img.shields.io/npm/v/@pithos-kit/themes.svg)](https://www.npmjs.com/package/@pithos-kit/themes)
 - [`pithos.translate/`](./pithos.translate) — faithful manual and display-only automatic assistant translation. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
+- [`pithos.web/`](./pithos.web) — Brave-backed public-web search and bounded static HTML/text fetching, including trusted Plan-mode research. [![npm version](https://img.shields.io/npm/v/@pithos-kit/web.svg)](https://www.npmjs.com/package/@pithos-kit/web)
 - [`pithos.atlas/`](./pithos.atlas) — name sessions, diagnose and configure Pithos, and manage guarded Pi runtime patches. [![npm version](https://img.shields.io/npm/v/@pithos-kit/atlas.svg)](https://www.npmjs.com/package/@pithos-kit/atlas)
 
 ## Install
@@ -32,6 +33,7 @@ pi install npm:@pithos-kit/context-bar
 pi install npm:@pithos-kit/plan
 pi install npm:@pithos-kit/themes
 pi install npm:@pithos-kit/translate
+pi install npm:@pithos-kit/web
 ```
 
 Pin an exact version when reproducibility matters:
@@ -51,6 +53,7 @@ pi:
     "@pithos-kit/plan": "npm:0.3.0"
     "@pithos-kit/squiggle": "npm:0.4.1"
     "@pithos-kit/translate": "npm:1.0.0"
+    "@pithos-kit/web": "npm:0.1.0"
 ```
 
 Atlas can validate and interactively manage toolchain versions, `pi.version`, and `@pithos-kit/*` entries while preserving third-party configuration. Its changes describe a future rebuilt Pithos environment; they do not replace the active Pi process. Run `/pithos help` after installing it.
@@ -87,6 +90,7 @@ pi install -l ./pithos.context-bar
 pi install -l ./pithos.plan
 pi install -l ./pithos.themes
 pi install -l ./pithos.translate
+pi install -l ./pithos.web
 pi install -l ./pithos.atlas
 ```
 
@@ -122,6 +126,7 @@ git push --follow-tags
 | `pithos.plan` | `@pithos-kit/plan` | `pithos-kit.plan-v` | `publish-pithos.plan.yml` |
 | `pithos.themes` | `@pithos-kit/themes` | `pithos-kit.themes-v` | `publish-pithos.themes.yml` |
 | `pithos.translate` | `@pithos-kit/translate` | `pithos-kit.translate-v` | `publish-pithos.translate.yml` |
+| `pithos.web` | `@pithos-kit/web` | `pithos-kit.web-v` | `publish-pithos.web.yml` |
 | `pithos.atlas` | `@pithos-kit/atlas` | `pithos-kit.atlas-v` | `publish-pithos.atlas.yml` |
 
 The workflows publish through npm trusted publishing and OIDC. The completed Skills retirement baseline is Guild 0.3.0 with Atlas 0.6.0 or later; see [`CUTOVER.md`](./CUTOVER.md) for the administrative history.

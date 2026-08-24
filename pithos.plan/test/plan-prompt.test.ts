@@ -16,6 +16,13 @@ describe("Plan prompt approval workflow", () => {
 		assert.match(planPrompt, /avoid generic\s+titles/i);
 	});
 
+	it("permits only provenance-trusted Web research as a custom-tool exception", () => {
+		assert.match(planPrompt, /web_search.*web_fetch/i);
+		assert.match(planPrompt, /public web.*research/i);
+		assert.match(planPrompt, /other custom tools.*blocked/i);
+		assert.match(planPrompt, /untrusted external data/i);
+	});
+
 	it("uses one interactive gate with optional preview and a safe default", () => {
 		assert.match(planPrompt, /interactive confirmation is the sole\s+final approval gate/i);
 		assert.match(planPrompt, /call\s+`create_plan` immediately/i);

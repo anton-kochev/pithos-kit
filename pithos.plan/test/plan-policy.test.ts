@@ -1,4 +1,7 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, it } from "node:test";
 import { selectPlanModeTools } from "../extensions/plan-policy.ts";
 
@@ -21,5 +24,67 @@ describe("selectPlanModeTools", () => {
 		], "/extensions/plan-theme.ts");
 
 		assert.deepEqual(selected, ["read", "grep", "find", "ls", "create_plan"]);
+	});
+
+	it("admits only Web tools rooted in the canonical @pithos-kit/web package", () => {
+		const parent = mkdtempSync(join(tmpdir(), "plan-web-policy-"));
+		const packageRoot = join(parent, "pithos.web");
+		const extensions = join(packageRoot, "extensions");
+		mkdirSync(extensions, { recursive: true });
+		writeFileSync(join(packageRoot, "package.json"), JSON.stringify({
+			name: "@pithos-kit/web",
+			pi: { extensions: ["./extensions"] },
+		}));
+		const extensionPath = join(extensions, "index.ts");
+		writeFileSync(extensionPath, "export default () => {};\n");
+		try {
+			const localWebSearch = {
+				name: "web_search",
+				sourceInfo: {
+					source: "../pithos.web",
+					path: extensionPath,
+					scope: "project",
+					origin: "package",
+					baseDir: packageRoot,
+				},
+			};
+			const npmWebFetch = {
+				name: "web_fetch",
+				sourceInfo: {
+					source: "npm:@pithos-kit/web@0.1.0",
+					path: extensionPath,
+					scope: "user",
+					origin: "package",
+					baseDir: packageRoot,
+				},
+			};
+			assert.deepEqual(
+				selectPlanModeTools([builtin("read"), localWebSearch, npmWebFetch], "/extensions/plan-theme.ts"),
+				["read", "web_search", "web_fetch"],
+			);
+
+			assert.deepEqual(selectPlanModeTools([
+				{
+					...localWebSearch,
+					sourceInfo: { ...localWebSearch.sourceInfo, source: "npm:@evil/spoof" },
+				},
+				{ name: "web_fetch", sourceInfo: { source: "sdk", path: "<sdk:web_fetch>" } },
+			], "/extensions/plan-theme.ts"), []);
+
+			const outsidePath = join(parent, "outside.ts");
+			writeFileSync(outsidePath, "export default () => {};\n");
+			assert.deepEqual(selectPlanModeTools([{
+				...localWebSearch,
+				sourceInfo: { ...localWebSearch.sourceInfo, path: outsidePath },
+			}], "/extensions/plan-theme.ts"), []);
+
+			writeFileSync(join(packageRoot, "package.json"), JSON.stringify({
+				name: "@evil/spoof",
+				pi: { extensions: ["./extensions"] },
+			}));
+			assert.deepEqual(selectPlanModeTools([localWebSearch], "/extensions/plan-theme.ts"), []);
+		} finally {
+			rmSync(parent, { recursive: true, force: true });
+		}
 	});
 });
