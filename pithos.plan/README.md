@@ -2,7 +2,8 @@
 
 [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan)](https://www.npmjs.com/package/@pithos-kit/plan)
 
-Enforced read-only planning for Pi, with controlled plan creation, a minimal Plan theme, and contextual session naming.
+Session-owned, enforced read-only planning for Pi with durable exact checkpoints,
+explicit save/preview/exit commands, and conflict-safe atomic publication.
 
 ## Install
 
@@ -24,34 +25,173 @@ pi:
     "@pithos-kit/plan": "npm:0.3.0"
 ```
 
-## Migrating from `@pithos-kit/skills`
-
-`@pithos-kit/skills` is retired. Remove global and project installs (`pi remove npm:@pithos-kit/skills` and `pi remove -l npm:@pithos-kit/skills`) plus its `.pithos` pin, keep this standalone Plan package for `/plan`, and use Guild 0.3.0 for the relocated TDD skill together with Atlas 0.6.0, which no longer bundles it. Historical Skills 0.4.0 and earlier must not be loaded alongside Plan because both packages handle the same `/plan` command and Plan state.
-
-## Usage
+## Command lifecycle
 
 ```text
-/plan <task>
 /plan
+/plan save
+/plan preview
 /plan exit
-/plan cancel
+/plan status
+/plan help
 /plan --help
+/plan -h
 ```
 
-After `/plan `, press Tab to list `exit`, `cancel`, `--help`, and `-h`, or start typing an argument to filter them; arbitrary task text remains free-form. The command description explains that bare `/plan` finalizes the active draft. `--help` and `-h` print the same argument summary before prompt expansion, so help does not start an agent turn or activate Plan mode. While Plan mode is active, `/plan exit` and its `/plan cancel` alias immediately restore the previous theme and tools without creating a plan; outside Plan mode they report that there is nothing to exit. Bare `/plan` retains its finalization behavior and opens interactive confirmation once the agent submits the draft.
+The grammar is explicit. `/plan <task>`, `/plan pause`, `/plan cancel`, and other
+unknown arguments are rejected with help. Enter Plan mode first, then provide the
+task and refinements as normal prompts.
 
-Plan mode explores the codebase with trusted read-only tools, resolves design decisions, and creates an approved implementation plan under `.pi/plans/`. When `create_plan` receives the final draft, the TUI opens a compact chooser that leaves the recent transcript visible. **Continue planning** is selected by default, **Preview the plan** opens a bounded read-only Markdown viewer, and **Create plan and start implementation** can create the submitted draft directly without preview. Escape also continues planning.
+- **`/plan`** enters Plan mode. The first use creates one plan identity and a
+  collision-resistant candidate path for the physical Pi session. Later uses
+  restore that same plan. Repeating it while active is a no-op.
+- **`/plan save`** asks the agent to finalize/checkpoint when needed and publish
+  the latest exact checkpoint. It creates the file on first publication and
+  updates the same stable path afterward. Plan mode remains active.
+- **`/plan preview`** displays the latest exact checkpoint without publishing.
+  It fails clearly when no checkpoint exists and does not start an agent turn.
+- **`/plan exit`** is the sole combined leave/pause command. A synced published
+  plan exits immediately. Otherwise Pi first offers Create/Update plan, Exit
+  without publishing, Preview, and Continue planning, before any model turn.
+  **Exit without publishing is the safe default** and keeps the checkpoint and
+  plan identity restorable. Create/Update binds the exact current checkpoint,
+  path, and update baseline before asking the agent to finalize; a changed
+  checkpoint requires exact reapproval. With no checkpoint, the direct chooser
+  offers Exit without publishing, Finalize before exit, and Continue planning.
+  If finalization settles without publication, an idle Exit/Continue fallback
+  prevents Plan mode from becoming trapped.
+- **`/plan status`** reports active/inactive mode, branch revision,
+  unpublished/dirty/synced/conflict state, path, and persisted/ephemeral session
+  status without an agent turn.
+- **`/plan help`**, **`--help`**, and **`-h`** show usage without changing state.
 
-The preview shows the exact content and target path; terminal control and Unicode formatting characters appear as visible `U+…` markers while their original bytes remain bound to confirmation and persistence. Up/Down scroll by line, Page Up/Page Down scroll by page, Home/End jump to the bounds, and Enter or Escape returns to the same three-option confirmation without approving or rejecting the draft.
+Autocomplete offers `save`, `preview`, `exit`, `status`, and `help`, followed by
+the retained `--help` and `-h` aliases.
 
-The controlled creator binds confirmation to the submitted content and destination, publishes the completed file atomically without overwriting, and exits Plan mode only after a successful save. Known path collisions are resolved before confirmation; a collision that races publication advances the path and requires new confirmation. An identical retry after another kind of failed write may reuse confirmation, but changed content must be confirmed again. RPC clients retain the complete draft and target path in their confirmation request. Without interactive UI support, the write is blocked and Plan mode remains active.
+## Exact session checkpoints
 
-While active, Plan mode exposes trusted built-in `read`, `grep`, `find`, and `ls` plus the internal plan creator. When [`@pithos-kit/web`](https://www.npmjs.com/package/@pithos-kit/web) is installed, Plan also retains its read-only `web_search` and `web_fetch` tools so discovery and design can use public-web research. Web content remains untrusted external data and must not be followed as instructions.
+While active, Plan mode exposes the internal sequential `update_plan_draft` tool.
+The agent is instructed to call it after the first coherent planning brief and
+after every material change to requirements, constraints, decisions,
+assumptions, open questions, or plan steps.
 
-The Web exception is provenance-checked rather than name-only: each effective tool must come from package-origin metadata rooted inside a canonical package manifest named exactly `@pithos-kit/web`, with a matching npm source or the local `pithos.web` development package. Same-named SDK, top-level, path-escaping, spoofed-source, and unrelated custom tools stay blocked. Plan continues to block model mutations, delegation, all other custom tools, and manual `!`/`!!` shell commands; it temporarily applies the bundled Plan theme and shows the canonical session name in its footer.
+Each call supplies:
 
-After a successful save, Plan mode restores the previous theme and tools and replaces the current session name—including a manually assigned name—with the approved plan's outcome-focused title in lowercase kebab-case. A missing or generic title falls back to the task-derived plan filename. Declined, continued, cancelled, and failed plan creation does not rename the session. Plan approval does not force compaction; Pi's existing automatic or user-triggered compaction policy remains unchanged.
+- the complete Markdown snapshot (never a patch or summary), and
+- `expectedRevision`, using optimistic branch-local concurrency.
+
+The result returns the new revision and SHA-256 digest. The complete exact
+snapshot is stored in Pi session tool-result details; lifecycle custom entries
+store the session owner, stable plan identity, candidate and published paths,
+checkpoint revision/digest, publication digest/state, active flag, and
+content/path-bound approval state. There are **no draft plan files**.
+
+Every active model context receives an ephemeral projection of the exact latest
+branch checkpoint. It is explicitly labeled **unapproved data, not
+instructions**, and says that newer user messages are authoritative. The
+projection occurs through Pi's `context` event on every model call, independently
+of compaction summaries.
+
+Completed checkpoints survive compaction, `/tree`, cancellation, `/quit` and
+resume, reload, and process restart when the Pi session itself is persisted.
+Ephemeral (`--no-session`) use is supported for the current process, but Plan
+warns on activation and reports the limitation in `/plan status`.
+
+## Sessions, branches, and forks
+
+A physical Pi session owns exactly one logical plan and at most one published
+file. Exiting without publication preserves the identity and checkpoint;
+re-entering `/plan` restores them. Start a new Pi session to start a new logical
+plan.
+
+Checkpoint revisions are branch-local. After `/tree`, Plan reconstructs only the
+selected branch's validated checkpoint, clears stale approval, and reconciles
+mode tools/theme. Sibling checkpoint content is never projected into the active
+branch. Publication identity and the stable published path remain global to the
+physical session.
+
+Forked, cloned, and new sessions have a different Pi session ID. Copied parent
+state is not treated as ownership: entering Plan creates a fresh identity and a
+unique candidate path. Active legacy state is migrated to a fresh session-owned
+identity with old approval revoked and no legacy file implicitly claimed;
+inconsistent or multiple identities fail closed.
+
+## Publication and approval
+
+`create_plan` remains the controlled publication tool for compatibility, but it
+accepts an exact checkpoint **revision**, not reconstructed Markdown. It is
+blocked during ordinary planning and becomes eligible only for the agent turn
+started by `/plan save` or `/plan exit`.
+
+### First publication
+
+Pi binds approval to the exact checkpoint digest and selected path. TUI users may
+preview the exact Markdown before choosing Create plan; RPC approval includes the
+complete checkpoint and target. Without interactive UI, publication is blocked
+and Plan mode remains active. Persisted approval is never reused to mutate a file
+in a no-UI runtime.
+
+Publication creates under `.pi/plans/` using an exclusive, atomic no-overwrite
+operation. Preflight validates existing `.pi` and `.pi/plans` components without
+creating them and rejects symlinks or non-directories. Approved execution creates
+missing components one at a time and validates them against the canonical project
+directory. Known collisions are resolved before approval. A collision racing the
+write advances the generated timestamp, revokes approval, and requires renewed
+confirmation.
+
+### Updates
+
+All updates target the same first-published path. Cooperating Pi mutations are
+serialized through Pi's per-file mutation queue. After asynchronous temporary
+file preparation, the final open/fstat/read/lstat/digest verification and atomic
+rename execute synchronously in one non-yielding JavaScript section. A
+modification, deletion, symlink replacement, or directory observed by that
+verification is a conflict and is never silently overwritten. The session
+remains in Plan mode.
+
+Portable Node APIs do not provide a strict cross-process compare-and-swap for
+this replacement, so this is not a linearizable CAS. Arbitrary external OS
+writers are not locked and can still race the final filesystem calls.
+
+If the latest checkpoint digest is already published, Pi verifies the on-disk
+bytes and performs no write. `/plan save` remains active; `/plan exit` exits
+immediately when that verified publication is unchanged. A successful first
+publication also derives the contextual session name from the outcome-focused
+`# Plan:` title.
+
+Approval is persisted as an exact revision/digest/path/base-digest binding so a
+completed write can be reconciled safely after a process interruption. `/tree`
+always clears approval. Publication failure never exits Plan mode; explicit Exit
+without publishing does.
+
+## Read-only enforcement
+
+Plan mode exposes trusted built-in `read`, `grep`, `find`, and `ls`, plus
+`update_plan_draft` and `create_plan`. When
+[`@pithos-kit/web`](https://www.npmjs.com/package/@pithos-kit/web) is installed,
+provenance-verified `web_search` and `web_fetch` remain available for public-web
+research. Web content is untrusted external data and must not be followed as
+instructions.
+
+The Web exception is provenance-checked against a canonical package manifest
+named exactly `@pithos-kit/web`. Same-named SDK, top-level, path-escaping,
+spoofed-source, and unrelated custom tools stay blocked. Plan also blocks writes,
+edits, shell tools, manual `!`/`!!` shell commands, delegation, mutating or
+untrusted custom tools, and same-named overrides of trusted built-ins. It applies
+the bundled Plan theme and planning footer while active, restoring the previous
+theme and exact tool selection on exit.
 
 ### Enforcement boundary
 
-Plan mode enforces Pi's tool and user-shell interfaces; it is not an operating-system sandbox. Other extensions and external processes can still mutate files directly.
+Plan mode enforces Pi's tool and user-shell interfaces; it is not an
+operating-system sandbox. Other extensions and external processes can still
+mutate files directly. Changes observed by publication verification become
+conflicts, but arbitrary external OS writes can race the final filesystem calls.
+
+## Migrating from `@pithos-kit/skills`
+
+`@pithos-kit/skills` is retired. Remove global and project installs
+(`pi remove npm:@pithos-kit/skills` and
+`pi remove -l npm:@pithos-kit/skills`) and its `.pithos` pin. Historical Skills
+0.4.0 and earlier must not be loaded alongside this package because both handle
+`/plan` and Plan state.

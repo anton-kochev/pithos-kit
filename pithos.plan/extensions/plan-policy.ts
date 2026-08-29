@@ -1,5 +1,8 @@
 import { readFileSync, realpathSync, statSync } from "node:fs";
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { PLAN_CHECKPOINT_TOOL_NAME } from "./plan-state.ts";
+
+export { PLAN_CHECKPOINT_TOOL_NAME } from "./plan-state.ts";
 
 export type PlanToolInfo = {
 	name: string;
@@ -18,11 +21,14 @@ const PLAN_READ_TOOL_NAMES: readonly string[] = ["read", "grep", "find", "ls"];
 const PLAN_WEB_TOOL_NAMES: readonly string[] = ["web_search", "web_fetch"];
 const PITHOS_WEB_PACKAGE_NAME = "@pithos-kit/web";
 
+function soleNamedTool(tools: PlanToolInfo[], name: string): PlanToolInfo | undefined {
+	const matches = tools.filter((tool) => tool.name === name);
+	return matches.length === 1 ? matches[0] : undefined;
+}
+
 export function isTrustedBuiltinTool(tools: PlanToolInfo[], name: string): boolean {
-	return tools.some(
-		(tool) =>
-			tool.name === name && tool.sourceInfo.source === "builtin" && tool.sourceInfo.path === `<builtin:${name}>`,
-	);
+	const tool = soleNamedTool(tools, name);
+	return tool?.sourceInfo.source === "builtin" && tool.sourceInfo.path === `<builtin:${name}>`;
 }
 
 function pathIsInside(parent: string, candidate: string): boolean {
@@ -57,18 +63,17 @@ function manifestIdentifiesWebPackage(packageRoot: string): boolean {
 
 export function isTrustedPlanWebTool(tools: PlanToolInfo[], name: string): boolean {
 	if (!PLAN_WEB_TOOL_NAMES.includes(name)) return false;
-	return tools.some((tool) => {
-		if (tool.name !== name || tool.sourceInfo.origin !== "package" || !tool.sourceInfo.baseDir) return false;
-		try {
-			const packageRoot = realpathSync(tool.sourceInfo.baseDir);
-			const extensionPath = realpathSync(tool.sourceInfo.path);
-			return pathIsInside(packageRoot, extensionPath)
-				&& sourceMatchesWebPackage(tool.sourceInfo.source, packageRoot)
-				&& manifestIdentifiesWebPackage(packageRoot);
-		} catch {
-			return false;
-		}
-	});
+	const tool = soleNamedTool(tools, name);
+	if (!tool || tool.sourceInfo.origin !== "package" || !tool.sourceInfo.baseDir) return false;
+	try {
+		const packageRoot = realpathSync(tool.sourceInfo.baseDir);
+		const extensionPath = realpathSync(tool.sourceInfo.path);
+		return pathIsInside(packageRoot, extensionPath)
+			&& sourceMatchesWebPackage(tool.sourceInfo.source, packageRoot)
+			&& manifestIdentifiesWebPackage(packageRoot);
+	} catch {
+		return false;
+	}
 }
 
 export function isTrustedPlanReadTool(tools: PlanToolInfo[], name: string): boolean {
@@ -76,22 +81,37 @@ export function isTrustedPlanReadTool(tools: PlanToolInfo[], name: string): bool
 		|| isTrustedPlanWebTool(tools, name);
 }
 
+function isTrustedPlanInternalTool(
+	tools: PlanToolInfo[],
+	name: string,
+	planExtensionPath: string,
+): boolean {
+	const tool = soleNamedTool(tools, name);
+	return tool !== undefined && resolve(tool.sourceInfo.path) === resolve(planExtensionPath);
+}
+
 export function isTrustedPlanCreationTool(
 	tools: PlanToolInfo[],
 	name: string,
 	planExtensionPath: string,
 ): boolean {
-	return (
-		name === PLAN_CREATE_TOOL_NAME &&
-		tools.some(
-			(tool) => tool.name === name && resolve(tool.sourceInfo.path) === resolve(planExtensionPath),
-		)
-	);
+	return name === PLAN_CREATE_TOOL_NAME && isTrustedPlanInternalTool(tools, name, planExtensionPath);
+}
+
+export function isTrustedPlanCheckpointTool(
+	tools: PlanToolInfo[],
+	name: string,
+	planExtensionPath: string,
+): boolean {
+	return name === PLAN_CHECKPOINT_TOOL_NAME && isTrustedPlanInternalTool(tools, name, planExtensionPath);
 }
 
 export function selectPlanModeTools(tools: PlanToolInfo[], planExtensionPath: string): string[] {
 	const selected = PLAN_READ_TOOL_NAMES.filter((name) => isTrustedBuiltinTool(tools, name));
 	selected.push(...PLAN_WEB_TOOL_NAMES.filter((name) => isTrustedPlanWebTool(tools, name)));
+	if (isTrustedPlanCheckpointTool(tools, PLAN_CHECKPOINT_TOOL_NAME, planExtensionPath)) {
+		selected.push(PLAN_CHECKPOINT_TOOL_NAME);
+	}
 	if (isTrustedPlanCreationTool(tools, PLAN_CREATE_TOOL_NAME, planExtensionPath)) {
 		selected.push(PLAN_CREATE_TOOL_NAME);
 	}

@@ -1,26 +1,13 @@
 import type { AutocompleteItem, AutocompleteProvider } from "@earendil-works/pi-tui";
 
 const PLAN_ARGUMENTS: AutocompleteItem[] = [
-	{
-		value: "exit",
-		label: "exit",
-		description: "Exit active Plan mode without creating a plan",
-	},
-	{
-		value: "cancel",
-		label: "cancel",
-		description: "Alias for exit",
-	},
-	{
-		value: "--help",
-		label: "--help",
-		description: "Show Plan command usage",
-	},
-	{
-		value: "-h",
-		label: "-h",
-		description: "Alias for --help",
-	},
+	{ value: "save", label: "save", description: "Create or update the latest checkpoint; remain in Plan mode" },
+	{ value: "preview", label: "preview", description: "Preview the latest checkpoint without publishing" },
+	{ value: "exit", label: "exit", description: "Leave Plan mode with publishing and preservation choices" },
+	{ value: "status", label: "status", description: "Show revision and publication status without an agent turn" },
+	{ value: "help", label: "help", description: "Show Plan command usage" },
+	{ value: "--help", label: "--help", description: "Alias for help" },
+	{ value: "-h", label: "-h", description: "Alias for help" },
 ];
 
 function planArgumentPrefix(textBeforeCursor: string): string | undefined {

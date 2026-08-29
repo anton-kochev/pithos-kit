@@ -32,7 +32,7 @@ describe("Plan argument autocomplete", () => {
 		assert.equal(suggestions?.prefix, "");
 		assert.deepEqual(
 			suggestions?.items.map((item) => item.value),
-			["exit", "cancel", "--help", "-h"],
+			["save", "preview", "exit", "status", "help", "--help", "-h"],
 		);
 		assert.equal(provider.shouldTriggerFileCompletion?.(["/plan "], 0, 6), true);
 		assert.equal(fallback.getCalls(), 0);
@@ -57,7 +57,7 @@ describe("Plan argument autocomplete", () => {
 		);
 		assert.deepEqual(
 			argumentSuggestions?.items.map((item) => item.value),
-			["exit", "cancel", "--help", "-h"],
+			["save", "preview", "exit", "status", "help", "--help", "-h"],
 		);
 	});
 
@@ -76,10 +76,10 @@ describe("Plan argument autocomplete", () => {
 		const provider = createPlanArgumentAutocompleteProvider(fallback.provider);
 
 		const unrelated = await provider.getSuggestions(["/other e"], 0, 8, options);
-		const task = await provider.getSuggestions(["/plan implement feature"], 0, 23, options);
+		const unknown = await provider.getSuggestions(["/plan implement"], 0, 15, options);
 
 		assert.equal(unrelated?.prefix, "fallback");
-		assert.equal(task?.prefix, "fallback");
+		assert.equal(unknown?.prefix, "fallback");
 		assert.equal(provider.shouldTriggerFileCompletion?.(["/other "], 0, 7), false);
 		assert.equal(fallback.getCalls(), 2);
 	});

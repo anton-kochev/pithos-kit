@@ -19,11 +19,25 @@ describe("selectPlanModeTools", () => {
 			builtin("write"),
 			builtin("edit"),
 			builtin("bash"),
+			{ name: "update_plan_draft", sourceInfo: { source: "package", path: "/extensions/plan-theme.ts" } },
 			{ name: "create_plan", sourceInfo: { source: "package", path: "/extensions/plan-theme.ts" } },
 			{ name: "guild_handover", sourceInfo: { source: "package", path: "/extensions/guild.ts" } },
 		], "/extensions/plan-theme.ts");
 
-		assert.deepEqual(selected, ["read", "grep", "find", "ls", "create_plan"]);
+		assert.deepEqual(selected, ["read", "grep", "find", "ls", "update_plan_draft", "create_plan"]);
+	});
+
+	it("fails closed when a trusted built-in or internal tool name has a duplicate override", () => {
+		const selected = selectPlanModeTools([
+			builtin("read"),
+			{ name: "read", sourceInfo: { source: "package", path: "/untrusted/read.ts" } },
+			{ name: "update_plan_draft", sourceInfo: { source: "package", path: "/extensions/plan-theme.ts" } },
+			{ name: "update_plan_draft", sourceInfo: { source: "package", path: "/untrusted/checkpoint.ts" } },
+			{ name: "create_plan", sourceInfo: { source: "package", path: "/extensions/plan-theme.ts" } },
+			{ name: "create_plan", sourceInfo: { source: "package", path: "/untrusted/create.ts" } },
+		], "/extensions/plan-theme.ts");
+
+		assert.deepEqual(selected, []);
 	});
 
 	it("admits only Web tools rooted in the canonical @pithos-kit/web package", () => {

@@ -1,7 +1,7 @@
 {
   "name": "@pithos-kit/plan",
   "version": "0.3.0",
-  "description": "Enforced read-only planning with optional draft preview, approved plan creation, and contextual session naming for Pi.",
+  "description": "Session-owned read-only planning with durable checkpoints, explicit lifecycle commands, previews, and conflict-safe atomic publication for Pi.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -33,16 +33,17 @@
   },
   "pithosKit": {
     "displayName": "Plan",
-    "summary": "Provide enforced read-only planning, optional draft preview, approved plan creation, a Plan theme, and contextual session naming.",
+    "summary": "Provide session-owned read-only planning, durable exact checkpoints, explicit save/preview/exit lifecycle commands, safe atomic publication, and a Plan theme.",
     "minimumPi": ">=0.83.0",
     "commands": [
-      { "name": "plan", "usage": "/plan [task | exit | cancel | --help]", "summary": "Enter, finalize, or explicitly exit an enforced read-only planning workflow." }
+      { "name": "plan", "usage": "/plan [save | preview | exit | status | help]", "summary": "Enter or restore Plan mode, publish checkpoints, preview, report status, or safely exit." }
     ],
     "tools": [
-      { "name": "create_plan", "summary": "Review and atomically create an approved plan during Plan mode.", "internal": true }
+      { "name": "update_plan_draft", "summary": "Persist an exact branch-local Markdown checkpoint with optimistic revision concurrency.", "internal": true },
+      { "name": "create_plan", "summary": "Review and atomically create or update an approved checkpoint revision.", "internal": true }
     ],
     "prompts": [
-      { "name": "plan", "summary": "Enforced read-only planning workflow." }
+      { "name": "plan", "summary": "Session-owned read-only planning and exact checkpoint workflow." }
     ],
     "skills": [],
     "themes": [
@@ -50,7 +51,7 @@
     ],
     "agents": [],
     "configuration": [
-      { "kind": "directory", "key": ".pi/plans", "summary": "Approved generated implementation plans." }
+      { "kind": "directory", "key": ".pi/plans", "summary": "Approved published plan checkpoints." }
     ]
   },
   "pi": {

@@ -23,13 +23,20 @@ const keybindings = {
 function createConfirmation(
 	decisions: string[] = [],
 	renderRequests: string[] = [],
-	options: { terminalRows?: number; bindings?: typeof keybindings } = {},
+	options: {
+		terminalRows?: number;
+		bindings?: typeof keybindings;
+		workflow?: "save" | "exit";
+		publicationAction?: "Create plan" | "Update plan";
+	} = {},
 ) {
 	return new PlanConfirmation({
 		planPath: ".pi/plans/example.md",
 		terminalRows: () => options.terminalRows ?? 20,
 		theme,
 		keybindings: options.bindings ?? keybindings,
+		workflow: options.workflow,
+		publicationAction: options.publicationAction,
 		onDecision: (decision) => decisions.push(decision),
 		onRender: () => renderRequests.push("render"),
 	});
@@ -98,7 +105,8 @@ describe("PlanConfirmation", () => {
 		assert.match(output, /Target: \.pi\/plans\/example\.md/);
 		assert.match(output, /Continue planning/);
 		assert.match(output, /Preview the plan/);
-		assert.match(output, /Create plan and start implementation/);
+		assert.match(output, /Create plan/);
+		assert.doesNotMatch(output, /start implementation/i);
 	});
 
 	it("reserves a footer row and fails safely when the target and choices cannot fit", () => {
@@ -123,7 +131,7 @@ describe("PlanConfirmation", () => {
 		assert.match(output, /Target: \.pi\/plans\/example\.md/);
 		assert.match(output, /Continue planning/);
 		assert.match(output, /Preview the plan/);
-		assert.match(output, /Create plan and start implementation/);
+		assert.match(output, /Create plan/);
 	});
 
 	it("never renders past extremely narrow terminal widths", () => {
@@ -138,6 +146,29 @@ describe("PlanConfirmation", () => {
 				`confirmation exceeded width ${width}`,
 			);
 		}
+	});
+
+	it("uses Exit without publishing as the exit chooser's safe default", () => {
+		for (const key of ["enter", "escape"]) {
+			const decisions: string[] = [];
+			const confirmation = createConfirmation(decisions, [], {
+				workflow: "exit",
+				publicationAction: "Update plan",
+			});
+			confirmation.render(80);
+
+			confirmation.handleInput(key);
+
+			assert.deepEqual(decisions, ["exit"]);
+		}
+		const output = createConfirmation([], [], {
+			workflow: "exit",
+			publicationAction: "Update plan",
+		}).render(80).join("\n");
+		assert.match(output, /Exit without publishing/);
+		assert.match(output, /Update plan/);
+		assert.match(output, /Preview/);
+		assert.match(output, /Continue planning/);
 	});
 
 	it("describes configured selection keys instead of hard-coded defaults", () => {

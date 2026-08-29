@@ -9,7 +9,7 @@ import {
 	type SelectItem,
 } from "@earendil-works/pi-tui";
 
-export type PlanConfirmationDecision = "continue" | "preview" | "create";
+export type PlanConfirmationDecision = "continue" | "preview" | "create" | "exit";
 
 type PlanConfirmationTheme = Pick<Theme, "bold" | "fg">;
 type PlanConfirmationKeybindings = Pick<KeybindingsManager, "getKeys" | "matches">;
@@ -21,13 +21,26 @@ export type PlanConfirmationOptions = {
 	keybindings: PlanConfirmationKeybindings;
 	onDecision: (decision: PlanConfirmationDecision) => void;
 	onRender: () => void;
+	workflow?: "save" | "exit";
+	publicationAction?: "Create plan" | "Update plan";
 };
 
-const ACTIONS: SelectItem[] = [
-	{ value: "continue", label: "Continue planning" },
-	{ value: "preview", label: "Preview the plan" },
-	{ value: "create", label: "Create plan and start implementation" },
-];
+function confirmationActions(options: PlanConfirmationOptions): SelectItem[] {
+	const publication = { value: "create", label: options.publicationAction ?? "Create plan" };
+	if (options.workflow === "exit") {
+		return [
+			{ value: "exit", label: "Exit without publishing" },
+			publication,
+			{ value: "preview", label: "Preview the plan" },
+			{ value: "continue", label: "Continue planning" },
+		];
+	}
+	return [
+		{ value: "continue", label: "Continue planning" },
+		{ value: "preview", label: "Preview the plan" },
+		publication,
+	];
+}
 
 const MIN_CONFIRMATION_WIDTH = 20;
 
@@ -41,6 +54,7 @@ const KEY_LABELS: Record<string, string> = {
 
 export class PlanConfirmation implements Component {
 	private readonly actions: SelectList;
+	private readonly actionItems: SelectItem[];
 	private readonly topBorder: DynamicBorder;
 	private readonly bottomBorder: DynamicBorder;
 	private readonly status: Text;
@@ -62,7 +76,8 @@ export class PlanConfirmation implements Component {
 		this.path = new TruncatedText("", 1, 0);
 		this.help = new TruncatedText("", 1, 0);
 		this.refreshThemedText();
-		this.actions = new SelectList(ACTIONS, ACTIONS.length, {
+		this.actionItems = confirmationActions(options);
+		this.actions = new SelectList(this.actionItems, this.actionItems.length, {
 			selectedPrefix: (text) => theme.fg("accent", text),
 			selectedText: (text) => theme.fg("accent", text),
 			description: (text) => theme.fg("muted", text),
@@ -83,10 +98,12 @@ export class PlanConfirmation implements Component {
 		const down = this.keyLabel("tui.select.down");
 		const confirm = this.keyLabel("tui.select.confirm");
 		const cancel = this.keyLabel("tui.select.cancel");
-		this.title = new TruncatedText(theme.fg("accent", theme.bold("Plan ready — what next?")), 1, 0);
+		const title = this.options.workflow === "exit" ? "Exit Plan mode — what next?" : "Save plan checkpoint?";
+		const safeAction = this.options.workflow === "exit" ? "exit without publishing" : "continue";
+		this.title = new TruncatedText(theme.fg("accent", theme.bold(title)), 1, 0);
 		this.path = new TruncatedText(theme.fg("muted", `Target: ${this.options.planPath}`), 1, 0);
 		this.help = new TruncatedText(
-			theme.fg("dim", `${up}/${down} choose • ${confirm} select • ${cancel} continue`),
+			theme.fg("dim", `${up}/${down} choose • ${confirm} select • ${cancel} ${safeAction}`),
 			1,
 			0,
 		);
@@ -97,12 +114,12 @@ export class PlanConfirmation implements Component {
 	}
 
 	private canConfirm(): boolean {
-		return this.availableRows() >= 4;
+		return this.availableRows() >= this.actionItems.length + 1;
 	}
 
 	private fit(lines: string[], width: number, availableRows: number): string[] {
 		return lines
-			.slice(0, Math.min(8, availableRows))
+			.slice(0, Math.min(this.actionItems.length + 5, availableRows))
 			.map((line) => truncateToWidth(line, Math.max(0, width), ""));
 	}
 
@@ -112,10 +129,11 @@ export class PlanConfirmation implements Component {
 		if (!this.canConfirm() || width < MIN_CONFIRMATION_WIDTH) {
 			const confirm = this.keyLabel("tui.select.confirm");
 			const cancel = this.keyLabel("tui.select.cancel");
+			const safeAction = this.options.workflow === "exit" ? "exit without publishing" : "continue planning";
 			this.status.setText(
 				this.options.theme.fg(
 					"warning",
-					`${confirm}/${cancel}: continue planning; terminal too short for confirmation`,
+					`${confirm}/${cancel}: ${safeAction}; terminal too short for confirmation`,
 				),
 			);
 			return this.fit(
@@ -126,14 +144,15 @@ export class PlanConfirmation implements Component {
 		}
 		this.actionableRendered = true;
 		const core = [...this.path.render(width), ...this.actions.render(width)];
-		if (availableRows === 4) return this.fit(core, width, availableRows);
-		if (availableRows === 5) {
+		const coreRows = this.actionItems.length + 1;
+		if (availableRows === coreRows) return this.fit(core, width, availableRows);
+		if (availableRows === coreRows + 1) {
 			return this.fit([...this.title.render(width), ...core], width, availableRows);
 		}
-		if (availableRows === 6) {
+		if (availableRows === coreRows + 2) {
 			return this.fit([...this.title.render(width), ...core, ...this.help.render(width)], width, availableRows);
 		}
-		if (availableRows === 7) {
+		if (availableRows === coreRows + 3) {
 			return this.fit(
 				[...this.topBorder.render(width), ...this.title.render(width), ...core, ...this.help.render(width)],
 				width,
@@ -156,14 +175,14 @@ export class PlanConfirmation implements Component {
 	handleInput(data: string): void {
 		const { keybindings, onDecision, onRender } = this.options;
 		if (keybindings.matches(data, "tui.select.cancel")) {
-			onDecision("continue");
+			onDecision(this.options.workflow === "exit" ? "exit" : "continue");
 			return;
 		}
 		if (keybindings.matches(data, "tui.select.confirm")) {
 			onDecision(
 				this.actionableRendered && this.canConfirm()
-					? (ACTIONS[this.selectedIndex]?.value as PlanConfirmationDecision)
-					: "continue",
+					? (this.actionItems[this.selectedIndex]?.value as PlanConfirmationDecision)
+					: (this.options.workflow === "exit" ? "exit" : "continue"),
 			);
 			return;
 		}
@@ -175,7 +194,7 @@ export class PlanConfirmation implements Component {
 			return;
 		}
 		if (keybindings.matches(data, "tui.select.down")) {
-			this.selectedIndex = Math.min(ACTIONS.length - 1, this.selectedIndex + 1);
+			this.selectedIndex = Math.min(this.actionItems.length - 1, this.selectedIndex + 1);
 			this.actions.setSelectedIndex(this.selectedIndex);
 			onRender();
 		}
