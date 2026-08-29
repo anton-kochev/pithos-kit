@@ -326,7 +326,7 @@
     },
     {
       "name": "@pithos-kit/plan",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "description": "Session-owned read-only planning with durable checkpoints, explicit lifecycle commands, previews, and conflict-safe atomic publication for Pi.",
       "pi": {
         "extensions": [

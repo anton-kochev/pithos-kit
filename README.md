@@ -11,7 +11,7 @@ A monorepo of independently published Pi extensions, skills, prompts, themes, an
 - [`pithos.aegis/`](./pithos.aegis) — protect Pi agent shell commands and file mutations with configurable rules. [![npm version](https://img.shields.io/npm/v/@pithos-kit/aegis.svg)](https://www.npmjs.com/package/@pithos-kit/aegis)
 - [`pithos.guild/`](./pithos.guild) — isolated .NET, Angular, TypeScript, and Rust architecture and implementation members, language-agnostic code review, confirmed Conventional Commits, and TDD guidance. [![npm version](https://img.shields.io/npm/v/@pithos-kit/guild.svg)](https://www.npmjs.com/package/@pithos-kit/guild)
 - [`pithos.context-bar/`](./pithos.context-bar) — context-window composition above the editor and ChatGPT Codex subscription usage in the footer. [![npm version](https://img.shields.io/npm/v/@pithos-kit/context-bar.svg)](https://www.npmjs.com/package/@pithos-kit/context-bar)
-- [`pithos.plan/`](./pithos.plan) — enforced read-only planning, approved plan creation, a Plan theme, and contextual session naming. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
+- [`pithos.plan/`](./pithos.plan) — session-owned read-only planning with durable checkpoints, explicit lifecycle commands, and conflict-safe publication. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
 - [`pithos.themes/`](./pithos.themes) — accessible Auric light and dark themes with automatic appearance switching. [![npm version](https://img.shields.io/npm/v/@pithos-kit/themes.svg)](https://www.npmjs.com/package/@pithos-kit/themes)
 - [`pithos.translate/`](./pithos.translate) — faithful manual and display-only automatic assistant translation. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
 - [`pithos.web/`](./pithos.web) — Brave-backed public-web search and bounded static HTML/text fetching, including trusted Plan-mode research. [![npm version](https://img.shields.io/npm/v/@pithos-kit/web.svg)](https://www.npmjs.com/package/@pithos-kit/web)
@@ -50,7 +50,7 @@ pi:
   extensions:
     "@pithos-kit/atlas": "npm:0.7.0"
     "@pithos-kit/guild": "npm:0.3.0"
-    "@pithos-kit/plan": "npm:0.3.0"
+    "@pithos-kit/plan": "npm:0.4.0"
     "@pithos-kit/squiggle": "npm:0.4.1"
     "@pithos-kit/translate": "npm:1.0.0"
     "@pithos-kit/web": "npm:0.1.1"
