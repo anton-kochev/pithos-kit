@@ -1,3 +1,4 @@
+import "./runtime-compat.ts";
 import { createHash, randomUUID } from "node:crypto";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import {

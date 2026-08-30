@@ -1,3 +1,4 @@
+import "./runtime-compat.ts";
 import { DynamicBorder, type Theme } from "@earendil-works/pi-coding-agent";
 import {
 	SelectList,
