@@ -21,6 +21,17 @@ function successfulResult(source: "builtin" | "user" | "project" = "builtin"): G
   };
 }
 
+function builtInCoder() {
+  return {
+    name: "csharp-coder" as const,
+    description: "C# coder",
+    tools: ["read", "grep", "find", "ls", "edit", "write", "bash"],
+    systemPrompt: "Implement C#.",
+    source: "builtin" as const,
+    filePath: "/package/agents/csharp-coder.md",
+  };
+}
+
 function fakePi() {
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
@@ -243,6 +254,32 @@ describe("guild extension", () => {
     }
   });
 
+  it("shows discovery warnings through /guild without launching a run", async () => {
+    const pi = fakePi();
+    let ran = false;
+    registerGuild(pi.api as never, {
+      discover: () => ({
+        members: [builtInCoder()],
+        warnings: ["Ignoring user override for csharp-coder: description and prompt body are required."],
+      }),
+      run: async () => {
+        ran = true;
+        return successfulResult();
+      },
+    });
+    const notifications: Array<{ message: string; level: string }> = [];
+    const ctx: any = context();
+    ctx.ui.notify = (message: string, level: string) => notifications.push({ message, level });
+
+    await pi.commands.get("guild").handler("", ctx);
+
+    assert.equal(ran, false);
+    assert.equal(notifications.length, 1);
+    assert.equal(notifications[0]?.level, "info");
+    assert.match(notifications[0]?.message ?? "", /Available Guild members:[\s\S]*csharp-coder \[builtin\]/);
+    assert.match(notifications[0]?.message ?? "", /Warnings:[\s\S]*Ignoring user override for csharp-coder/);
+  });
+
   it("directly runs an inline member and task after waiting for the main agent to become idle", async () => {
     const pi = fakePi();
     let waited = 0;
@@ -273,6 +310,29 @@ describe("guild extension", () => {
     assert.equal(received?.model, "openai-codex/gpt-5.6-sol");
     assert.equal(received?.thinkingLevel, "xhigh");
     assert.equal(received?.projectTrusted, true);
+  });
+
+  it("TEMPORARY LEGACY: direct /guild-handover still runs while Plan state is active or indeterminate", async () => {
+    for (const data of [{ active: true }, {}]) {
+      const pi = fakePi();
+      let runs = 0;
+      registerGuild(pi.api as never, {
+        discover: () => ({ members: [builtInCoder()], warnings: [] }),
+        run: async () => {
+          runs += 1;
+          return successfulResult();
+        },
+      });
+
+      await pi.commands.get("guild-handover").handler("csharp-coder Characterize the Plan boundary", context({
+        sessionManager: {
+          getBranch: () => [{ type: "custom", customType: "plan-theme-state", data }],
+        },
+      }));
+
+      assert.equal(runs, 1);
+      assert.deepEqual(pi.messages.map(({ message }) => message.details.status), ["started", "completed"]);
+    }
   });
 
   it("rejects an unknown inline member before opening the task editor", async () => {
@@ -338,6 +398,36 @@ describe("guild extension", () => {
     assert.match(choices[0], /csharp-coder.*builtin.*C# coder/);
     assert.match(editorTitle, /csharp-coder/);
     assert.equal(receivedTask, "Implement validation");
+  });
+
+  it("creates no run or lifecycle event when the picker or editor is cancelled before launch", async () => {
+    for (const cancellationPoint of ["picker", "editor"] as const) {
+      const pi = fakePi();
+      let runs = 0;
+      let editorCalls = 0;
+      registerGuild(pi.api as never, {
+        discover: () => ({ members: [builtInCoder()], warnings: [] }),
+        run: async () => {
+          runs += 1;
+          return successfulResult();
+        },
+      });
+      const ctx: any = context();
+      ctx.ui.select = async () => undefined;
+      ctx.ui.editor = async () => {
+        editorCalls += 1;
+        return undefined;
+      };
+
+      await pi.commands.get("guild-handover").handler(
+        cancellationPoint === "picker" ? "" : "csharp-coder",
+        ctx,
+      );
+
+      assert.equal(runs, 0, cancellationPoint);
+      assert.equal(editorCalls, cancellationPoint === "editor" ? 1 : 0, cancellationPoint);
+      assert.equal(pi.messages.length, 0, cancellationPoint);
+    }
   });
 
   it("shares correlated started and completed lifecycle events with the main agent without triggering a turn", async () => {
@@ -620,6 +710,50 @@ describe("guild extension", () => {
     assert.equal(result.details.thinkingLevel, "xhigh");
   });
 
+  it("clears the aggregate dashboard after failed and aborted agent-invoked runs", async () => {
+    for (const outcome of ["failed", "aborted"] as const) {
+      const pi = fakePi();
+      const widgetUpdates: unknown[] = [];
+      const statusUpdates: Array<string | undefined> = [];
+      const controller = new AbortController();
+      if (outcome === "aborted") controller.abort();
+      registerGuild(pi.api as never, {
+        discover: () => ({ members: [builtInCoder()], warnings: [] }),
+        run: async (options) => {
+          if (outcome === "aborted") {
+            assert.equal(options.signal?.aborted, true);
+            throw new Error("Guild member run was aborted.");
+          }
+          return {
+            ...successfulResult(),
+            exitCode: 1,
+            stopReason: "error",
+            errorMessage: "Provider failed",
+          };
+        },
+      });
+      const ctx: any = context();
+      ctx.ui.setWidget = (_key: string, value: unknown) => widgetUpdates.push(value);
+      ctx.ui.setStatus = (_key: string, value: string | undefined) => statusUpdates.push(value);
+
+      await assert.rejects(
+        () => pi.tool.execute(
+          `dashboard-${outcome}`,
+          { member: "csharp-coder", task: "Characterize cleanup" },
+          controller.signal,
+          undefined,
+          ctx,
+        ),
+        outcome === "failed" ? /Provider failed/ : /aborted/i,
+      );
+
+      assert.ok(widgetUpdates.some((value) => value !== undefined), outcome);
+      assert.ok(statusUpdates.some((value) => value === "guild: 1 active"), outcome);
+      assert.equal(widgetUpdates.at(-1), undefined, outcome);
+      assert.equal(statusUpdates.at(-1), undefined, outcome);
+    }
+  });
+
   it("does not observe Pi's native specialist tool", () => {
     const pi = fakePi();
     registerGuild(pi.api as never, {
@@ -630,6 +764,48 @@ describe("guild extension", () => {
     assert.equal(pi.handlers.has("tool_execution_start"), false);
     assert.equal(pi.handlers.has("tool_execution_end"), false);
     assert.equal(pi.handlers.has("message_start"), false);
+  });
+
+  it("rejects a project override without UI before launching a run", async () => {
+    const pi = fakePi();
+    let ran = false;
+    let confirmations = 0;
+    registerGuild(pi.api as never, {
+      discover: () => ({
+        members: [{
+          ...builtInCoder(),
+          description: "Project coder",
+          systemPrompt: "Project-controlled prompt.",
+          source: "project",
+          filePath: "/project/.pi/agents/csharp-coder.md",
+        }],
+        warnings: [],
+      }),
+      run: async () => {
+        ran = true;
+        return successfulResult("project");
+      },
+    });
+    const ctx: any = context({ hasUI: false, mode: "rpc" });
+    ctx.ui.confirm = async () => {
+      confirmations += 1;
+      return true;
+    };
+
+    await assert.rejects(
+      () => pi.tool.execute(
+        "project-no-ui",
+        { member: "csharp-coder", task: "Implement validation" },
+        undefined,
+        undefined,
+        ctx,
+      ),
+      /requires interactive approval/i,
+    );
+
+    assert.equal(ran, false);
+    assert.equal(confirmations, 0);
+    assert.equal(pi.messages.length, 0);
   });
 
   it("requires explicit UI confirmation before executing a project override", async () => {

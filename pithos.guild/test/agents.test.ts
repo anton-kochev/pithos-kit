@@ -32,6 +32,11 @@ function writeAgent(
   );
 }
 
+function writeRawAgent(directory: string, fileName: string, content: string): void {
+  mkdirSync(directory, { recursive: true });
+  writeFileSync(join(directory, fileName), content);
+}
+
 function markdownSection(content: string, heading: RegExp): string {
   const section = content
     .split(/(?=^## )/m)
@@ -71,6 +76,11 @@ describe("Guild member policies", () => {
     assert.equal(GUILD_MEMBER_POLICIES["rust-architect"].role, "architect");
     assert.deepEqual(GUILD_MEMBER_POLICIES["code-reviewer"].tools, ["read", "grep", "find", "ls", "bash"]);
     assert.equal(GUILD_MEMBER_POLICIES["code-reviewer"].role, "reviewer");
+  });
+
+  it("pins reviewer bash access as a known temporary legacy limitation", () => {
+    assert.deepEqual(GUILD_MEMBER_POLICIES["code-reviewer"].tools, ["read", "grep", "find", "ls", "bash"]);
+    assert.ok(GUILD_MEMBER_POLICIES["code-reviewer"].tools.includes("bash"));
   });
 
   it("ships one valid built-in definition for every approved Guild member", () => {
@@ -417,6 +427,21 @@ describe("Guild member policies", () => {
 });
 
 describe("agent discovery", () => {
+  it("selects a user definition over the built-in when no project definition is present", () => {
+    const root = temporaryDirectory();
+    const builtInDir = join(root, "builtin");
+    const userDir = join(root, "user");
+    writeAgent(builtInDir, "csharp-coder", "Built-in C# coder", undefined, "Built-in prompt");
+    writeAgent(userDir, "csharp-coder", "User C# coder", undefined, "User prompt");
+
+    const result = discoverGuildMembers({ builtInDir, userDir });
+
+    assert.equal(result.members[0]?.source, "user");
+    assert.equal(result.members[0]?.description, "User C# coder");
+    assert.equal(result.members[0]?.systemPrompt, "User prompt");
+    assert.deepEqual(result.warnings, []);
+  });
+
   it("applies project then user then built-in precedence", () => {
     const root = temporaryDirectory();
     const builtInDir = join(root, "builtin");
@@ -435,33 +460,99 @@ describe("agent discovery", () => {
     assert.equal(selected?.systemPrompt, "Project prompt");
   });
 
-  it("ignores project definitions when project loading is not trusted", () => {
-    const root = temporaryDirectory();
-    const builtInDir = join(root, "builtin");
-    const projectDir = join(root, "project");
-    writeAgent(builtInDir, "dotnet-architect", "Built in");
-    writeAgent(projectDir, "dotnet-architect", "Project override");
-
-    const result = discoverGuildMembers({ builtInDir, projectDir, includeProject: false });
-
-    assert.equal(result.members[0].source, "builtin");
-    assert.equal(result.members[0].description, "Built in");
-  });
-
-  it("rejects an override that changes its hard tool boundary and falls back", () => {
+  it("does not let an untrusted project displace a user definition", () => {
     const root = temporaryDirectory();
     const builtInDir = join(root, "builtin");
     const userDir = join(root, "user");
-    writeAgent(builtInDir, "frontend-architect", "Built in");
+    const projectDir = join(root, "project");
+    writeAgent(builtInDir, "dotnet-architect", "Built in");
+    writeAgent(userDir, "dotnet-architect", "User override");
+    writeAgent(projectDir, "dotnet-architect", "Project override");
+
+    const result = discoverGuildMembers({ builtInDir, userDir, projectDir, includeProject: false });
+
+    assert.equal(result.members[0]?.source, "user");
+    assert.equal(result.members[0]?.description, "User override");
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it("falls back from malformed, empty, and tool-changing user definitions with deterministic warnings", () => {
+    const root = temporaryDirectory();
+    const builtInDir = join(root, "builtin");
+    const userDir = join(root, "user");
+    writeAgent(builtInDir, "dotnet-architect", "Built-in .NET architect");
+    writeAgent(builtInDir, "frontend-architect", "Built-in front-end architect");
+    writeAgent(builtInDir, "typescript-architect", "Built-in TypeScript architect");
+    writeRawAgent(
+      userDir,
+      "00-malformed.md",
+      "---\nname: typescript-architect\ndescription: [\ntools: read, grep, find, ls\n---\nMalformed prompt\n",
+    );
+    writeAgent(userDir, "dotnet-architect", "", undefined, "User prompt");
     writeAgent(userDir, "frontend-architect", "Unsafe override", ["read", "bash"]);
 
     const result = discoverGuildMembers({ builtInDir, userDir });
 
-    assert.equal(result.members[0].source, "builtin");
-    assert.match(result.warnings.join("\n"), /frontend-architect.*tool boundary/i);
+    assert.deepEqual(
+      result.members.map(({ name, source }) => [name, source]),
+      [
+        ["dotnet-architect", "builtin"],
+        ["frontend-architect", "builtin"],
+        ["typescript-architect", "builtin"],
+      ],
+    );
+    assert.equal(result.warnings.length, 3);
+    assert.match(result.warnings[0] ?? "", /Could not parse user Guild member .*00-malformed\.md/i);
+    assert.match(result.warnings[1] ?? "", /dotnet-architect.*description and prompt body are required/i);
+    assert.match(result.warnings[2] ?? "", /frontend-architect.*tool boundary/i);
   });
 
-  it("does not add agents outside the approved roster", () => {
+  it("accepts the alphabetically first duplicate definition and warns about the rest", () => {
+    const root = temporaryDirectory();
+    const builtInDir = join(root, "builtin");
+    const userDir = join(root, "user");
+    writeAgent(builtInDir, "code-reviewer", "Built-in reviewer");
+    writeRawAgent(
+      userDir,
+      "00-reviewer.md",
+      "---\nname: code-reviewer\ndescription: First reviewer\ntools: read, grep, find, ls, bash\n---\n\nFirst prompt\n",
+    );
+    writeRawAgent(
+      userDir,
+      "01-reviewer.md",
+      "---\nname: code-reviewer\ndescription: Second reviewer\ntools: read, grep, find, ls, bash\n---\n\nSecond prompt\n",
+    );
+
+    const result = discoverGuildMembers({ builtInDir, userDir });
+
+    assert.equal(result.members[0]?.source, "user");
+    assert.equal(result.members[0]?.description, "First reviewer");
+    assert.equal(result.members[0]?.systemPrompt, "First prompt");
+    assert.equal(result.warnings.length, 1);
+    assert.match(result.warnings[0] ?? "", /duplicate user definition for code-reviewer.*01-reviewer\.md/i);
+  });
+
+  it("accepts reordered exact tools and restores their canonical order", () => {
+    const root = temporaryDirectory();
+    const builtInDir = join(root, "builtin");
+    const userDir = join(root, "user");
+    writeAgent(builtInDir, "csharp-coder", "Built-in coder");
+    writeAgent(
+      userDir,
+      "csharp-coder",
+      "User coder",
+      [...GUILD_MEMBER_POLICIES["csharp-coder"].tools].reverse(),
+      "User prompt",
+    );
+
+    const result = discoverGuildMembers({ builtInDir, userDir });
+
+    assert.equal(result.members[0]?.source, "user");
+    assert.deepEqual(result.members[0]?.tools, GUILD_MEMBER_POLICIES["csharp-coder"].tools);
+    assert.deepEqual(result.warnings, []);
+  });
+
+  it("silently ignores unknown definitions without changing the approved roster (legacy behavior)", () => {
     const root = temporaryDirectory();
     const builtInDir = join(root, "builtin");
     writeAgent(builtInDir, "csharp-coder");
@@ -470,6 +561,7 @@ describe("agent discovery", () => {
     const result = discoverGuildMembers({ builtInDir });
 
     assert.deepEqual(result.members.map((agent) => agent.name), ["csharp-coder"]);
+    assert.deepEqual(result.warnings, []);
   });
 
   it("finds the nearest project agent directory while walking ancestors", () => {

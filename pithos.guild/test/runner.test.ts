@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { GUILD_MEMBER_POLICIES, type GuildMember } from "../src/agents";
+import { GUILD_MEMBER_NAMES, GUILD_MEMBER_POLICIES, type GuildMember } from "../src/agents";
 import {
   applyJsonEvent,
   buildChildArguments,
@@ -47,6 +47,45 @@ describe("child pi invocation", () => {
       "/tmp/csharp-coder.md",
       "Task: Implement order validation",
     ]);
+  });
+
+  it("forwards every member's exact hard tool ceiling", () => {
+    for (const name of GUILD_MEMBER_NAMES) {
+      const member: GuildMember = {
+        name,
+        description: `${name} description`,
+        tools: GUILD_MEMBER_POLICIES[name].tools,
+        systemPrompt: `${name} prompt`,
+        source: "builtin",
+        filePath: `/package/agents/${name}.md`,
+      };
+      const args = buildChildArguments({
+        member,
+        task: "Characterize tool forwarding",
+        systemPromptFile: `/tmp/${name}.md`,
+        projectTrusted: true,
+      });
+      const toolsFlag = args.indexOf("--tools");
+
+      assert.notEqual(toolsFlag, -1, `${name} must receive --tools`);
+      assert.equal(args[toolsFlag + 1], GUILD_MEMBER_POLICIES[name].tools.join(","), name);
+    }
+  });
+
+  it("pins the current child resource isolation flags without claiming future isolation", () => {
+    const args = buildChildArguments({
+      member: coder,
+      task: "Inspect the project",
+      systemPromptFile: "/tmp/prompt.md",
+      projectTrusted: true,
+    });
+
+    for (const flag of ["--no-session", "--no-extensions", "--no-prompt-templates"]) {
+      assert.ok(args.includes(flag), `Expected current child flag ${flag}`);
+    }
+    for (const futureFlag of ["--no-skills", "--no-context-files"]) {
+      assert.equal(args.includes(futureFlag), false, `${futureFlag} is intentionally absent in Phase 0`);
+    }
   });
 
   it("propagates an untrusted project decision and omits unavailable model settings", () => {

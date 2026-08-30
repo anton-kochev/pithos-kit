@@ -201,6 +201,26 @@ Your project-specific Guild member instructions.
 
 Names are limited to the bundled roster. Tool boundaries are hard policy: an override whose tools differ from the corresponding built-in role is ignored. This prevents read-only roles from gaining write access and architects from gaining shell access.
 
+## Approved future Guild migration (not current behavior)
+
+This Phase 0 section is documentation only: current Guild behavior and the `member` API remain unchanged until a later approved phase implements the cutover. The approved clean-break target uses stable role/profile identities, with these package-owned legacy mappings:
+
+```text
+dotnet-architect → architect/dotnet
+frontend-architect → architect/frontend
+typescript-architect → architect/typescript
+rust-architect → architect/rust
+csharp-coder → coder/dotnet
+angular-coder → coder/angular
+typescript-coder → coder/typescript
+rust-coder → coder/rust
+code-reviewer → reviewer/general
+```
+
+There is no user/global Guild layer in the target. The future cutover stops reading both `~/.pi/agent/agents` and `.pi/agents`; it does not delete either directory or its files. Arbitrary prompt overrides are not auto-converted. Repository facts move to `AGENTS.md`, while constrained repository profile and skill support arrives in later phases.
+
+The aliases above are package-owned compatibility inputs. They do not change tools or authorization, and no alias sunset is promised.
+
 ## Isolation and resources
 
 Each Guild member runs with:
