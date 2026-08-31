@@ -370,6 +370,35 @@ describe("Atlas extension", () => {
 		}
 	});
 
+	it("shows cancellable progress while doctor gathers diagnostics", async () => {
+		const previousOffline = process.env.PI_OFFLINE;
+		process.env.PI_OFFLINE = "1";
+		try {
+			const { commands } = createHarness();
+			const notifications: string[] = [];
+			let customCalls = 0;
+
+			await commands.get("pithos").handler("doctor", {
+				mode: "tui",
+				hasUI: true,
+				cwd: "/does-not-exist",
+				ui: {
+					notify: (message: string) => notifications.push(message),
+					async custom() {
+						customCalls += 1;
+						return { cancelled: true };
+					},
+				},
+			} as never);
+
+			assert.equal(customCalls, 1);
+			assert.deepEqual(notifications, []);
+		} finally {
+			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+			else process.env.PI_OFFLINE = previousOffline;
+		}
+	});
+
 	it("lists package-owned commands, tools, prompts, skills, themes, agents, and configuration", async () => {
 		const { commands } = createHarness();
 		const notifications: string[] = [];

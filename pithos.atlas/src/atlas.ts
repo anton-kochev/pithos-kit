@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { VERSION, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
+import { BorderedLoader, VERSION, type ExtensionAPI, type ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
 import { resolveActivePiPackage, type ActivePiPackage } from "./active-pi.ts";
 import { loadBundledCatalog } from "./bundled-catalog.ts";
@@ -403,7 +403,27 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 			return;
 		}
 		if (command.action === "doctor") {
-			const state = await doctor(ctx.cwd, ctx.signal, command.refresh);
+			let state: Awaited<ReturnType<typeof doctor>>;
+			if (ctx.mode === "tui" && ctx.hasUI) {
+				type DoctorLoaderResult =
+					| { state: Awaited<ReturnType<typeof doctor>> }
+					| { error: unknown }
+					| { cancelled: true };
+				const result = await ctx.ui.custom<DoctorLoaderResult>((tui, theme, _keybindings, done) => {
+					const loader = new BorderedLoader(tui, theme, "Diagnosing Pithos environment...");
+					loader.onAbort = () => done({ cancelled: true });
+					void doctor(ctx.cwd, loader.signal, command.refresh).then(
+						(value) => done({ state: value }),
+						(error: unknown) => done({ error }),
+					);
+					return loader;
+				});
+				if ("cancelled" in result) return;
+				if ("error" in result) throw result.error;
+				state = result.state;
+			} else {
+				state = await doctor(ctx.cwd, ctx.signal, command.refresh);
+			}
 			emitText(ctx, formatDoctor(state.report, state.warnings), state.warnings.length > 0 ? "warning" : "info");
 			return;
 		}
