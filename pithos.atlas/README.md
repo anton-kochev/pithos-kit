@@ -63,7 +63,7 @@ Atlas also provides the model-facing `rename_session` tool. Its tool guidance li
 - `/pithos help` is the single Atlas help page.
 - `packages` lists package-owned commands, tools, prompts, skills, themes, agents, and configuration from the bundled catalog, then adds runtime command/tool provenance without contacting npm.
 - `versions` explicitly queries public npm registry endpoints, distinguishing bundled and latest versions.
-- `doctor` shows cancellable progress while it distinguishes the active Pi process, the Pi version configured for a future Pithos rebuild, configured package pins, runtime-detected packages, bundled versions, latest versions, and versions compatible with the configured Pi. Press Escape to cancel the registry-backed diagnostic.
+- `doctor` shows cancellable progress while it distinguishes the active Pi process, the Pi version configured for a future Pithos rebuild, configured package pins, runtime-detected packages, bundled versions, latest versions, and versions compatible with the configured Pi. Its status and bounded final diagnostic identify the `config`, `registry`, and `runtime` phases with elapsed timings; failures omit configuration contents. Press Escape to cancel the registry-backed diagnostic and print the phases that were still pending.
 - `config validate` reads and validates `.pithos` without changing it.
 - `config` opens the interactive manager described below.
 - `patch footer status` inspects the optional built-in-file fallback without changing it.

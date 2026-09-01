@@ -8,6 +8,7 @@ import type { Catalog, CatalogPackage } from "./catalog.ts";
 import { refreshCatalog, type RefreshedCatalog } from "./catalog-service.ts";
 import { commitConfig, readConfigSnapshot, type ConfigSnapshot } from "./config-transaction.ts";
 import { buildDiagnostics, type DiagnosticsReport } from "./diagnostics.ts";
+import { DoctorTimingTracker, formatDoctorProgress, formatDoctorTiming, type DoctorTimingSnapshot } from "./doctor-diagnostics.ts";
 import { registerAtlasFooter } from "./footer.ts";
 import { parsePithosConfig, type ManagedPithosState } from "./pithos-config.ts";
 import { isOfflineEnvironment, RegistryClient } from "./registry.ts";
@@ -17,6 +18,7 @@ import { planModeState } from "./safety.ts";
 import { runConfigWizard } from "./ui.ts";
 
 const MAX_OUTPUT_CHARS = 40_000;
+const DOCTOR_STATUS_KEY = "atlas-doctor";
 
 export const ATLAS_HELP = `Pithos Atlas gives eligible new sessions readable 3–5-word session names after their first user message, configures reproducible toolchain, Pi, and package pins, and diagnoses the active environment.
 
@@ -222,7 +224,16 @@ function formatFooterPatch(report: FooterPatchReport): string {
 	].join("\n");
 }
 
-function formatDoctor(report: DiagnosticsReport, warnings: string[]): string {
+function doctorErrorMessage(error: unknown): string {
+	const message = error instanceof Error ? error.message : String(error);
+	return message.split(/\r?\n/u, 1)[0]?.slice(0, 300) || "Doctor failed";
+}
+
+function formatDoctorFailure(error: unknown, timing: DoctorTimingSnapshot): string {
+	return `${doctorErrorMessage(error)}\n${formatDoctorTiming("Doctor timing", timing)}`;
+}
+
+function formatDoctor(report: DiagnosticsReport, warnings: string[], timing: DoctorTimingSnapshot): string {
 	const lines = [
 		`Pi active: ${report.activePiVersion}`,
 		`Pi configured for rebuild: ${report.configuredPiVersion ?? "not set"}`,
@@ -237,6 +248,7 @@ function formatDoctor(report: DiagnosticsReport, warnings: string[]): string {
 			pkg.compatibleWithConfiguredPi === false ? "CONFIGURED PI INCOMPATIBLE" : undefined,
 		].filter(Boolean).join("  ")),
 	];
+	lines.push(formatDoctorTiming("Doctor timing", timing));
 	if (warnings.length > 0) lines.push(`Registry warnings: ${warnings.join("; ")}`);
 	return bounded(lines.join("\n"));
 }
@@ -313,11 +325,16 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 	const runtime = () => observeRuntime(catalog.packages, pi.getCommands(), pi.getAllTools());
 	const refreshed = (signal?: AbortSignal, refresh = false, includeVersionHistory = false) =>
 		refreshCatalog(catalog, registry, { signal, refresh, includeVersionHistory });
-	const doctor = async (cwd: string, signal?: AbortSignal, refresh = false) => {
+	const doctor = async (
+		cwd: string,
+		signal?: AbortSignal,
+		refresh = false,
+		timing = new DoctorTimingTracker(),
+	) => {
 		const [config, registryState, runtimePackages] = await Promise.all([
-			readConfig(cwd),
-			refreshed(signal, refresh, true),
-			runtime(),
+			timing.measure("config", () => readConfig(cwd)),
+			timing.measure("registry", () => refreshed(signal, refresh, true)),
+			timing.measure("runtime", runtime),
 		]);
 		return {
 			report: buildDiagnostics({
@@ -329,6 +346,7 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 				runtimePackages,
 			}),
 			warnings: registryState.warnings,
+			timing: timing.snapshot(),
 		};
 	};
 
@@ -359,8 +377,19 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 					const packages = selectPackage(state.packages, request.package);
 					return { content: [{ type: "text", text: formatVersions({ ...catalog, packages }, state, activePiVersion) }], details: { packages, piLatestVersion: state.piLatestVersion, warnings: state.warnings } };
 				}
-				const state = await doctor(ctx.cwd, signal, request.refresh);
-				return { content: [{ type: "text", text: formatDoctor(state.report, state.warnings) }], details: state };
+				const timing = new DoctorTimingTracker();
+				try {
+					const state = await doctor(ctx.cwd, signal, request.refresh, timing);
+					return { content: [{ type: "text", text: formatDoctor(state.report, state.warnings, state.timing) }], details: state };
+				} catch (error) {
+					const message = doctorErrorMessage(error);
+					const snapshot = timing.snapshot();
+					return {
+						content: [{ type: "text", text: formatDoctorFailure(error, snapshot) }],
+						details: { error: message, timing: snapshot },
+						isError: true,
+					};
+				}
 			} catch (error) {
 				const message = error instanceof Error ? error.message : String(error);
 				return { content: [{ type: "text", text: bounded(message) }], details: { error: message }, isError: true };
@@ -403,28 +432,47 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 			return;
 		}
 		if (command.action === "doctor") {
+			const timing = new DoctorTimingTracker();
 			let state: Awaited<ReturnType<typeof doctor>>;
-			if (ctx.mode === "tui" && ctx.hasUI) {
-				type DoctorLoaderResult =
-					| { state: Awaited<ReturnType<typeof doctor>> }
-					| { error: unknown }
-					| { cancelled: true };
-				const result = await ctx.ui.custom<DoctorLoaderResult>((tui, theme, _keybindings, done) => {
-					const loader = new BorderedLoader(tui, theme, "Diagnosing Pithos environment...");
-					loader.onAbort = () => done({ cancelled: true });
-					void doctor(ctx.cwd, loader.signal, command.refresh).then(
-						(value) => done({ state: value }),
-						(error: unknown) => done({ error }),
-					);
-					return loader;
-				});
-				if ("cancelled" in result) return;
-				if ("error" in result) throw result.error;
-				state = result.state;
-			} else {
-				state = await doctor(ctx.cwd, ctx.signal, command.refresh);
+			try {
+				if (ctx.mode === "tui" && ctx.hasUI) {
+					type DoctorLoaderResult =
+						| { state: Awaited<ReturnType<typeof doctor>> }
+						| { error: unknown }
+						| { cancelled: true };
+					const result = await ctx.ui.custom<DoctorLoaderResult>((tui, theme, _keybindings, done) => {
+						const loader = new BorderedLoader(tui, theme, "Diagnosing Pithos environment...");
+						let settled = false;
+						const finish = (value: DoctorLoaderResult) => {
+							if (settled) return;
+							settled = true;
+							timing.onUpdate = undefined;
+							ctx.ui.setStatus(DOCTOR_STATUS_KEY, undefined);
+							done(value);
+						};
+						timing.onUpdate = (snapshot) => ctx.ui.setStatus(DOCTOR_STATUS_KEY, formatDoctorProgress(snapshot));
+						ctx.ui.setStatus(DOCTOR_STATUS_KEY, formatDoctorProgress(timing.snapshot()));
+						loader.onAbort = () => finish({ cancelled: true });
+						void doctor(ctx.cwd, loader.signal, command.refresh, timing).then(
+							(value) => finish({ state: value }),
+							(error: unknown) => finish({ error }),
+						);
+						return loader;
+					});
+					if ("cancelled" in result) {
+						emitText(ctx, formatDoctorTiming("Doctor cancelled", timing.snapshot()), "warning");
+						return;
+					}
+					if ("error" in result) throw result.error;
+					state = result.state;
+				} else {
+					state = await doctor(ctx.cwd, ctx.signal, command.refresh, timing);
+				}
+			} catch (error) {
+				emitText(ctx, formatDoctorFailure(error, timing.snapshot()), "error");
+				return;
 			}
-			emitText(ctx, formatDoctor(state.report, state.warnings), state.warnings.length > 0 ? "warning" : "info");
+			emitText(ctx, formatDoctor(state.report, state.warnings, state.timing), state.warnings.length > 0 ? "warning" : "info");
 			return;
 		}
 		if (command.action === "patch-menu") {

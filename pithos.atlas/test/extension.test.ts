@@ -157,6 +157,44 @@ describe("Atlas extension", () => {
 		}
 	});
 
+	it("includes bounded phase timings in doctor tool output", async () => {
+		const previousOffline = process.env.PI_OFFLINE;
+		process.env.PI_OFFLINE = "1";
+		try {
+			const { tools } = createHarness();
+			const result = await tools.get("pithos_info").execute("call", { action: "doctor" }, undefined, undefined, {
+				cwd: "/does-not-exist",
+			} as never);
+
+			assert.match(result.content[0].text, /Doctor timing: total=\d+ms; config=\d+ms; registry=\d+ms; runtime=\d+ms/);
+			assert.equal(result.content[0].text.length < 40_000, true);
+		} finally {
+			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+			else process.env.PI_OFFLINE = previousOffline;
+		}
+	});
+
+	it("reports the failed doctor phase without exposing configuration contents", async () => {
+		const directory = await mkdtemp(join(tmpdir(), "atlas-doctor-error-"));
+		await writeFile(join(directory, ".pithos"), "secret-value: [");
+		const previousOffline = process.env.PI_OFFLINE;
+		process.env.PI_OFFLINE = "1";
+		try {
+			const { tools } = createHarness();
+			const result = await tools.get("pithos_info").execute("call", { action: "doctor" }, undefined, undefined, {
+				cwd: directory,
+			} as never);
+
+			assert.equal(result.isError, true);
+			assert.match(result.content[0].text, /Doctor timing: total=\d+ms; config=failed \d+ms;/);
+			assert.doesNotMatch(result.content[0].text, /secret-value/);
+		} finally {
+			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+			else process.env.PI_OFFLINE = previousOffline;
+			await rm(directory, { recursive: true, force: true });
+		}
+	});
+
 	it("reports and explicitly applies the distributable footer patch", async () => {
 		const patchCalls: string[] = [];
 		const patchExpectations: unknown[] = [];
@@ -392,7 +430,8 @@ describe("Atlas extension", () => {
 			} as never);
 
 			assert.equal(customCalls, 1);
-			assert.deepEqual(notifications, []);
+			assert.equal(notifications.length, 1);
+			assert.match(notifications[0] ?? "", /Doctor cancelled: total=\d+ms; config=pending; registry=pending; runtime=pending/);
 		} finally {
 			if (previousOffline === undefined) delete process.env.PI_OFFLINE;
 			else process.env.PI_OFFLINE = previousOffline;
