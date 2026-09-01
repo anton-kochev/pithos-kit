@@ -13,7 +13,7 @@ pi install npm:@pithos-kit/atlas
 Pin an exact version:
 
 ```bash
-pi install npm:@pithos-kit/atlas@0.7.0
+pi install npm:@pithos-kit/atlas@0.7.1
 ```
 
 For local development:
@@ -27,7 +27,7 @@ pi install -l ./pithos.atlas
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/atlas": "npm:0.7.0"
+    "@pithos-kit/atlas": "npm:0.7.1"
 ```
 
 The separate Pithos base image can preinstall Atlas so it remains available to diagnose a project configuration that would otherwise prevent project packages from loading.
@@ -99,7 +99,7 @@ Codex · 5h 68% · week 74%
 
 It retains the current directory, Git branch, session name, provider, model, reasoning level, and extension status lines. It hides cumulative input/output/cache counts, cache-hit rate, estimated cost, context-window percentage, and the auto-compaction marker. The underlying accounting remains available through Pi's `/session`, RPC, and session data.
 
-Atlas 0.7.0 recognizes only complete reviewed stock or Atlas-patched footer digests for Pi 0.83.0, 0.84.1, and 0.84.2. Unknown versions plus locally or partially modified Pi sources are reported as unsupported and are never changed. Apply/remove preserve file permissions, bind mutation to the reviewed version and source digest, recheck source before an atomic same-directory replacement, and require an explicit confirmation naming the Pi version and target file. Atlas refuses mutation while Plan mode is active or indeterminate. Restart Pi after either operation.
+Atlas 0.7.1 recognizes only complete reviewed stock or Atlas-patched footer digests for Pi 0.83.0, 0.84.1, and 0.84.2. Unknown versions plus locally or partially modified Pi sources are reported as unsupported and are never changed. Apply/remove preserve file permissions, bind mutation to the reviewed version and source digest, recheck source before an atomic same-directory replacement, and require an explicit confirmation naming the Pi version and target file. Atlas refuses mutation while Plan mode is active or indeterminate. Restart Pi after either operation.
 
 For Pithos image builds and other explicit non-interactive automation, the published package exposes the same engine as a CLI:
 
@@ -120,7 +120,7 @@ On Windows, the launcher recognizes npm's global-prefix `node_modules` and proje
 For example, an image or container entrypoint can expose the persistent launcher transparently as `pi` while leaving the recreated Pi installation later on `PATH`:
 
 ```bash
-npm install --global --prefix /persistent/atlas --legacy-peer-deps @pithos-kit/atlas@0.7.0
+npm install --global --prefix /persistent/atlas --legacy-peer-deps @pithos-kit/atlas@0.7.1
 mkdir -p /persistent/pi-wrapper
 ln -sfn /persistent/atlas/bin/pithos-atlas-pi /persistent/pi-wrapper/pi
 export PATH="/persistent/pi-wrapper:/opt/pi-npm/bin:$PATH"

@@ -48,7 +48,7 @@ In `.pithos`, Pi packages live under `pi.extensions`:
 pi:
   version: "0.84.2"
   extensions:
-    "@pithos-kit/atlas": "npm:0.7.0"
+    "@pithos-kit/atlas": "npm:0.7.1"
     "@pithos-kit/guild": "npm:0.3.0"
     "@pithos-kit/plan": "npm:0.4.1"
     "@pithos-kit/squiggle": "npm:0.4.1"
