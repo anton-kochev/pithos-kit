@@ -120,12 +120,12 @@ export class RegistryClient {
 	async discover(options: RegistryRequestOptions = {}): Promise<string[]> {
 		if (this.#offline) throw new RegistryError("npm registry access is disabled by PI_OFFLINE");
 		if (this.#discoveryCache && !options.refresh) return [...this.#discoveryCache];
-		const raw = await this.#json("/-/v1/search?text=scope%3Apithos-kit&size=250", "@pithos-kit search", options.signal);
+		const raw = await this.#json("/-/v1/search?text=%40pithos-kit&size=50", "@pithos-kit search", options.signal);
 		if (!raw || typeof raw !== "object" || !Array.isArray((raw as { objects?: unknown }).objects)) {
 			throw new RegistryError("npm registry search returned invalid data");
 		}
 		const names = new Set<string>();
-		for (const entry of (raw as { objects: unknown[] }).objects.slice(0, 250)) {
+		for (const entry of (raw as { objects: unknown[] }).objects.slice(0, 50)) {
 			if (!entry || typeof entry !== "object") continue;
 			const pkg = (entry as { package?: unknown }).package;
 			if (!pkg || typeof pkg !== "object") continue;

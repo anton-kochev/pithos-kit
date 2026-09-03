@@ -92,17 +92,43 @@ describe("npm registry client", () => {
 		assert.equal(cancelled, true);
 	});
 
-	it("discovers only validated package names from the public scope search", async () => {
-		const fetcher: typeof fetch = async () => new Response(JSON.stringify({
-			objects: [
-				{ package: { name: "@pithos-kit/zebra" } },
-				{ package: { name: "third-party" } },
-				{ package: { name: "@pithos-kit/alpha" } },
-			],
-		}), { status: 200 });
+	it("discovers sorted, deduplicated package names from the narrow public package search", async () => {
+		const urls: string[] = [];
+		const fetcher: typeof fetch = async (input) => {
+			urls.push(String(input));
+			return new Response(JSON.stringify({
+				objects: [
+					{ package: { name: "@pithos-kit/zebra" } },
+					{ package: { name: "third-party" } },
+					{ package: { name: "@pithos-kit/alpha" } },
+					{ package: { name: "@pithos-kit/Alpha" } },
+					{ package: { name: "@pithos-kit/bad_underscore" } },
+					{ package: { name: "@pithos-kit/zebra" } },
+					{ package: { name: "@pithos-kit/-bad" } },
+					{ package: { name: "@pithos-kit/bad-" } },
+				],
+			}), { status: 200 });
+		};
 		const client = new RegistryClient({ fetch: fetcher });
 
 		assert.deepEqual(await client.discover(), ["@pithos-kit/alpha", "@pithos-kit/zebra"]);
+		assert.deepEqual(urls, ["https://registry.npmjs.org/-/v1/search?text=%40pithos-kit&size=50"]);
+	});
+
+	it("caches discovered package names unless refresh is requested", async () => {
+		let calls = 0;
+		const fetcher: typeof fetch = async () => {
+			calls += 1;
+			const name = calls === 1 ? "@pithos-kit/alpha" : "@pithos-kit/beta";
+			return new Response(JSON.stringify({ objects: [{ package: { name } }] }), { status: 200 });
+		};
+		const client = new RegistryClient({ fetch: fetcher });
+
+		assert.deepEqual(await client.discover(), ["@pithos-kit/alpha"]);
+		assert.deepEqual(await client.discover(), ["@pithos-kit/alpha"]);
+		assert.deepEqual(await client.discover({ refresh: true }), ["@pithos-kit/beta"]);
+		assert.deepEqual(await client.discover(), ["@pithos-kit/beta"]);
+		assert.equal(calls, 2);
 	});
 
 	it("retrieves the latest published Pi version without treating Pi as a catalog package", async () => {
