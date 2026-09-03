@@ -17,7 +17,7 @@ const packages = [
   { directory: "pithos.themes", shortName: "themes", version: "0.1.0", minimumPi: ">=0.84.1" },
   { directory: "pithos.translate", shortName: "translate", version: "1.1.0", minimumPi: ">=0.84.0" },
   { directory: "pithos.web", shortName: "web", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.1", minimumPi: ">=0.83.0" },
 ];
 
 const capabilityKinds = ["commands", "tools", "prompts", "skills", "themes", "agents"];
