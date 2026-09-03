@@ -23,6 +23,7 @@ import {
 import { containsMermaidFence } from "./markdown-protection.ts";
 import { getEligibleTextBlocks, latestEligibleAssistant, translateMarkdown, type TranslationResult } from "./translation.ts";
 import { runConfigWizard, runTranslationWithUi } from "./ui.ts";
+import { createPithosLogger, errorMetadata, usageMetadata } from "./logging.ts";
 
 export const MANUAL_ENTRY_TYPE = "pithos.translate.manual";
 const AUTOMATIC_STATUS_KEY = "pithos.translate";
@@ -58,6 +59,8 @@ export interface TranslateDependencies {
 }
 
 export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDependencies = {}): void {
+  const log = createPithosLogger();
+  log.info("extension.register");
   const configure = dependencies.configure ?? runConfigWizard;
   const translate = dependencies.translate ?? translateMarkdown;
   const runWithUi = dependencies.runWithUi ?? runTranslationWithUi;
@@ -184,6 +187,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     },
     handler: async (args, ctx) => {
       const command = parseTranslateCommand(args);
+      log.info("command.translate", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), type: command.type });
       if (command.type === "help") {
         emitHelp(ctx, TRANSLATE_HELP);
         return;
@@ -256,12 +260,14 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
         return;
       }
       const source = blocks.join("\n\n");
+      const started = Date.now();
       const result = await runWithUi(
         ctx,
         activeConfig.language,
         activeConfig.model,
         (signal) => translate(source, activeConfig, ctx.modelRegistry, signal),
       );
+      log.info(result.ok ? "translation.manual.complete" : "translation.manual.failed", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, language: activeConfig.language, model: activeConfig.model, blockCount: blocks.length, sourceChars: source.length, usage: usageMetadata(result.usage), ...(!result.ok ? { kind: result.kind, error: result.error } : {}) });
       if (!result.ok) {
         notify(ctx, result.error, result.kind === "cancelled" ? "warning" : "error");
         return;
@@ -279,7 +285,8 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     },
   });
 
-  pi.on("session_start", async (_event, ctx) => {
+  pi.on("session_start", async (event, ctx) => {
+    log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     clearAutomaticIndicator();
     clearPendingAutomaticRecords();
     await initialize(ctx);
@@ -291,7 +298,8 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     displayCache.restore(ctx.sessionManager.getBranch());
   });
 
-  pi.on("session_shutdown", () => {
+  pi.on("session_shutdown", (event) => {
+    log.info("session.shutdown", { reason: event.reason });
     clearAutomaticIndicator();
   });
 
@@ -304,6 +312,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     }
 
     let finishIndicator: (() => void) | undefined;
+    const started = Date.now();
     try {
       // Remove stale substitutions immediately. The version 2 record repeats the
       // same decisions durably after Pi has persisted this source message.
@@ -322,6 +331,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
           const record = automaticRecord(activeConfig, blocks, blocks.map(suppressionFor), totalUsage);
           displayCache.add(record);
           queueAutomaticRecord(event.message, record);
+          log.info("translation.automatic.failed", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, language: activeConfig.language, model: activeConfig.model, blockCount: blocks.length, usage: usageMetadata(totalUsage), kind: result.kind, error: result.error });
           notify(ctx, `Automatic translation failed; showing the original response. ${result.error}`, result.kind === "cancelled" ? "warning" : "error");
           return;
         }
@@ -336,8 +346,12 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
       }
 
       const record = automaticRecord(activeConfig, blocks, outcomes, totalUsage);
+      log.info("translation.automatic.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, language: activeConfig.language, model: activeConfig.model, blockCount: blocks.length, translatedCount: outcomes.filter((outcome) => outcome.kind === "translated").length, usage: usageMetadata(totalUsage) });
       displayCache.add(record);
       queueAutomaticRecord(event.message, record);
+    } catch (error) {
+      log.error("translation.automatic.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, language: activeConfig.language, model: activeConfig.model, error: errorMetadata(error) });
+      throw error;
     } finally {
       finishIndicator?.();
     }

@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { complete, type UserMessage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata, type PithosLogger } from "./logging.ts";
 
 const SQUIGGLE_HELP = `Usage: /squiggle toggle
 
@@ -19,17 +20,21 @@ Options:
 
 export function registerSquiggle(
 	pi: ExtensionAPI,
-	correctPrompt: (input: string, ctx: ExtensionContext, config: SquiggleConfig) => Promise<string | null> = correctWithModel,
+	correctPrompt: (input: string, ctx: ExtensionContext, config: SquiggleConfig, log?: PithosLogger) => Promise<string | null> = correctWithModel,
 ) {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	let runtimeMode: SquiggleConfig["mode"] | undefined;
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		runtimeMode = restoreRuntimeMode(ctx);
+		log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), runtimeMode });
 	});
 
 	pi.registerCommand("squiggle", {
 		description: "Toggle squiggle on/off",
 		handler: async (args, ctx) => {
+			log.info("command.squiggle", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), args: args.trim() });
 			if (isHelpRequest(args)) return emitHelp(ctx, SQUIGGLE_HELP);
 
 			const command = args.trim().toLowerCase();
@@ -48,6 +53,7 @@ export function registerSquiggle(
 	pi.registerCommand("squiggle-status", {
 		description: "Show whether squiggle is loaded",
 		handler: async (args, ctx) => {
+			log.info("command.squiggle-status", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 			if (isHelpRequest(args)) return emitHelp(ctx, SQUIGGLE_STATUS_HELP);
 			ctx.ui.notify(formatStatus(ctx, loadEffectiveConfig(ctx.cwd, runtimeMode)), "info");
 		},
@@ -61,7 +67,7 @@ export function registerSquiggle(
 		if (!event.text.trim()) return { action: "continue" };
 
 		const stopIndicator = startSquiggleIndicator(ctx);
-		const corrected = await correctPrompt(event.text, ctx, config).finally(stopIndicator);
+		const corrected = await correctPrompt(event.text, ctx, config, log).finally(stopIndicator);
 		if (!corrected || corrected === event.text) return { action: "continue" };
 
 		if (ctx.hasUI) ctx.ui.notify(formatColoredDiff(event.text, corrected), "info");
@@ -102,12 +108,14 @@ type SquiggleConfig = {
 	maxInputChars: number;
 };
 
-async function correctWithModel(input: string, ctx: ExtensionContext, config: SquiggleConfig): Promise<string | null> {
+async function correctWithModel(input: string, ctx: ExtensionContext, config: SquiggleConfig, log = createPithosLogger()): Promise<string | null> {
 	const model = selectCorrectionModel(ctx, config);
 	if (!model) return null;
 	if (input.length > config.maxInputChars) return null;
 
 	try {
+		const started = Date.now();
+		log.info("model.correct.start", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), inputChars: input.length, ...modelMetadata(model) });
 		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 		if (!auth.ok || !auth.apiKey) return null;
 
@@ -123,14 +131,20 @@ async function correctWithModel(input: string, ctx: ExtensionContext, config: Sq
 			{ apiKey: auth.apiKey, headers: auth.headers },
 		);
 
-		if (response.stopReason === "aborted") return null;
+		if (response.stopReason === "aborted") {
+			log.warn("model.correct.aborted", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, ...modelMetadata(model), usage: usageMetadata(response.usage) });
+			return null;
+		}
 
-		return response.content
+		const corrected = response.content
 			.filter((c): c is { type: "text"; text: string } => c.type === "text")
 			.map((c) => c.text)
 			.join("\n")
 			.trim();
-	} catch {
+		log.info("model.correct.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, inputChars: input.length, changed: corrected !== input, ...modelMetadata(model), usage: usageMetadata(response.usage) });
+		return corrected;
+	} catch (error) {
+		log.warn("model.correct.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), inputChars: input.length, ...modelMetadata(model), error: errorMetadata(error) });
 		return null;
 	}
 }

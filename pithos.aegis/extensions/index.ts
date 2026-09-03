@@ -1,6 +1,7 @@
 import { existsSync, readFileSync } from "node:fs";
 import { join, relative, resolve, sep } from "node:path";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createPithosLogger, type PithosLogger } from "./logging.ts";
 
 type RuleAction = "confirm" | "block";
 type RuleKind = "command" | "path";
@@ -44,12 +45,15 @@ const DEFAULT_PATH_RULES: RawRule[] = [
 ];
 
 export default function aegis(pi: ExtensionAPI) {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	let state: AegisState | undefined;
 	let enabled = true;
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
 		state = loadState(ctx.cwd);
 		enabled = restoreEnabled(ctx);
+		log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), enabled, rules: state.rules.length, warnings: state.warnings.length });
 		if (ctx.hasUI && state.warnings.length > 0) {
 			ctx.ui.notify(formatWarnings(state), "warning");
 		}
@@ -57,6 +61,7 @@ export default function aegis(pi: ExtensionAPI) {
 
 	pi.on("tool_call", async (event, ctx) => {
 		if (!enabled) return undefined;
+		log.debug("tool_call.inspect", { toolName: event.toolName });
 
 		const current = state ?? loadState(ctx.cwd);
 		state = current;
@@ -64,13 +69,13 @@ export default function aegis(pi: ExtensionAPI) {
 		if (event.toolName === "bash") {
 			const command = commandFromInput(event.input);
 			if (!command) return undefined;
-			return guardValue(ctx, current, "command", command, "command");
+			return guardValue(ctx, current, "command", command, "command", log);
 		}
 
 		if (event.toolName === "write" || event.toolName === "edit") {
 			const path = pathFromInput(event.input, ctx.cwd);
 			if (!path) return undefined;
-			return guardValue(ctx, current, "path", path, `${event.toolName} path`);
+			return guardValue(ctx, current, "path", path, `${event.toolName} path`, log);
 		}
 
 		return undefined;
@@ -80,6 +85,7 @@ export default function aegis(pi: ExtensionAPI) {
 		description: "View, reload, and toggle Aegis command/path rules",
 		handler: async (args, ctx) => {
 			const command = (args ?? "").trim().toLowerCase();
+			log.info("command.aegis", { action: command || "status", sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 			if (!command || command === "status") {
 				state = loadState(ctx.cwd);
 				return emitText(ctx, formatStatus(state, enabled));
@@ -164,12 +170,14 @@ async function guardValue(
 	kind: RuleKind,
 	value: string,
 	label: string,
+	log: PithosLogger,
 ): Promise<{ block: true; reason?: string } | undefined> {
 	const matches = matchingRules(state.rules, kind, value);
 	if (matches.length === 0) return undefined;
 
 	const blockingRule = matches.find((rule) => rule.action === "block");
 	if (blockingRule) {
+		log.warn("guard.block", { kind, label, rule: blockingRule.name });
 		return {
 			block: true,
 			reason: `Blocked by Aegis ${kind} rule "${blockingRule.name}"`,
@@ -178,6 +186,7 @@ async function guardValue(
 
 	const ruleNames = matches.map((rule) => rule.name).join(", ");
 	if (!ctx.hasUI) {
+		log.warn("guard.confirmation_unavailable", { kind, label, rules: ruleNames });
 		return {
 			block: true,
 			reason: `${capitalize(kind)} requires confirmation by Aegis rule "${ruleNames}", but no UI is available`,
@@ -190,12 +199,14 @@ async function guardValue(
 	);
 
 	if (choice !== "Yes") {
+		log.warn("guard.declined", { kind, label, rules: ruleNames });
 		return {
 			block: true,
 			reason: "Blocked by Aegis: user declined confirmation",
 		};
 	}
 
+	log.info("guard.allowed", { kind, label, rules: ruleNames });
 	return undefined;
 }
 

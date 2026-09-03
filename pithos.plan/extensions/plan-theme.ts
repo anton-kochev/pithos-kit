@@ -40,6 +40,7 @@ import {
 } from "./plan-state.ts";
 import { derivePlanSessionName } from "./plan-session-name.ts";
 import { updatePlanStatus } from "./plan-status.ts";
+import { createPithosLogger, errorMetadata } from "./plan-logging.ts";
 
 const CONFIG_DIR_NAME = ".pi";
 const PLAN_EXTENSION_PATH = fileURLToPath(import.meta.url);
@@ -217,6 +218,8 @@ function planPublicationVerificationIsCurrent(
 }
 
 export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDependencies = {}): void {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	const verifyPublishedPlanFileDigest = dependencies.verifyPlanFileDigest ?? verifyPlanFileDigest;
 	const generatePlanCandidatePath = dependencies.generatePlanPath ?? generatePlanPath;
 	let state: PersistedPlanLifecycleState | undefined;
@@ -636,7 +639,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				state = {
 					version: PLAN_STATE_VERSION,
 					active: true,
-					ownerSessionId: ctx.sessionManager.getSessionId(),
+					ownerSessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
 					planId,
 					candidatePath,
 					publicationState: "unpublished",
@@ -849,7 +852,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		const restored = reconstructPlanSession(
 			ctx.sessionManager.getEntries(),
 			ctx.sessionManager.getBranch(),
-			ctx.sessionManager.getSessionId(),
+			(ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
 		);
 		state = restored.state;
 		checkpoint = restored.checkpoint;
@@ -912,7 +915,8 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		],
 		parameters: UPDATE_PLAN_PARAMETERS as never,
 		executionMode: "sequential",
-		async execute(_toolCallId, params) {
+		async execute(toolCallId, params) {
+			const started = Date.now();
 			if (!state?.active) throw new Error("Plan checkpointing is available only while Plan mode is active.");
 			const input = params as unknown as { content: string; expectedRevision: number };
 			const next = Object.freeze(
@@ -922,6 +926,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			state.approval = undefined;
 			refreshCheckpointState();
 			persistState();
+			log.info("tool.update_plan_draft.complete", { toolCallId, durationMs: Date.now() - started, revision: next.revision, contentChars: next.content.length });
 			return {
 				content: [{
 					type: "text",
@@ -939,7 +944,9 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		parameters: CREATE_PLAN_PARAMETERS as never,
 		executionMode: "sequential",
 		async execute(toolCallId, params, signal, _onUpdate, ctx) {
+			const started = Date.now();
 			const revision = (params as unknown as { revision: number }).revision;
+			log.info("tool.create_plan.start", { toolCallId, revision, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 			if (
 				!state?.active ||
 				!checkpoint ||
@@ -1014,6 +1021,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				if (firstPublicationSessionName) {
 					trySetSessionName(ctx, firstPublicationSessionName);
 				}
+				log.info("tool.create_plan.complete", { toolCallId, durationMs: Date.now() - started, revision: checkpoint.revision, path, firstPublication, unchanged: writeWasUnchanged, action: completedAction });
 				return {
 					content: [{
 						type: "text",
@@ -1031,6 +1039,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					...(completedAction === "exit" ? { terminate: true } : {}),
 				};
 			} catch (error) {
+				log.error("tool.create_plan.error", { toolCallId, durationMs: Date.now() - started, revision, error: errorMetadata(error) });
 				if (firstPublication && typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST") {
 					state.candidatePath = await resolveAvailablePlanPath(ctx.cwd, state.candidatePath);
 					state.approval = undefined;
@@ -1047,7 +1056,8 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		},
 	});
 
-	pi.on("session_start", async (_event, ctx) => {
+	pi.on("session_start", async (event, ctx) => {
+		log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 		activityGeneration += 1;
 		sessionGeneration += 1;
 		exitFallbackOperation = undefined;
@@ -1068,6 +1078,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), active: state?.active });
 		activityGeneration += 1;
 		sessionGeneration += 1;
 		revokePublicationAuthorizationInMemory();
@@ -1090,6 +1101,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		if (!supersededDeferredExit) supersedePublicationAuthorization();
 		if (event.source === "extension") return { action: "continue" as const };
 		const command = parsePlanCommand(event.text);
+		if (command) log.info("command.plan", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), kind: command.kind, active: state?.active, checkpointRevision: checkpoint?.revision });
 		if (!command) return { action: "continue" as const };
 		if (command.kind === "help") {
 			notifyOrLog(ctx, PLAN_COMMAND_HELP, "info");

@@ -11,6 +11,7 @@ import {
 } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { getAnswerCommandHelp } from "./command-help.ts";
+import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata } from "./logging.ts";
 
 type SelectionMode = "none" | "single" | "multiple";
 
@@ -79,9 +80,12 @@ Rules:
 - If there are no questions for the user to answer, call extract_questions with {"questions":[]}.`;
 
 export default function answer(pi: ExtensionAPI) {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	pi.registerCommand("answer", {
 		description: "Extract questions from the last assistant response, answer them in a TUI, then submit the answers",
 		handler: async (args, ctx) => {
+			log.info("command.answer", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), hasArgs: args.trim().length > 0 });
 			const commandHelp = getAnswerCommandHelp(args);
 			if (commandHelp) {
 				if (ctx.hasUI) ctx.ui.notify(commandHelp, "info");
@@ -107,7 +111,7 @@ export default function answer(pi: ExtensionAPI) {
 				return;
 			}
 
-			const questions = await extractQuestions(ctx, lastAssistantText);
+			const questions = await extractQuestions(ctx, lastAssistantText, log);
 			if (questions === null) {
 				ctx.ui.notify("Question extraction cancelled", "info");
 				return;
@@ -149,12 +153,14 @@ function getLastAssistantText(ctx: ExtensionCommandContext): string | null {
 	return null;
 }
 
-async function extractQuestions(ctx: ExtensionCommandContext, assistantText: string): Promise<ExtractedQuestion[] | null> {
+async function extractQuestions(ctx: ExtensionCommandContext, assistantText: string, log = createPithosLogger()): Promise<ExtractedQuestion[] | null> {
 	return ctx.ui.custom<ExtractedQuestion[] | null>((tui, theme, _kb, done) => {
 		const loader = new BorderedLoader(tui, theme, `Extracting questions using ${ctx.model!.id}...`);
 		loader.onAbort = () => done(null);
 
 		const run = async () => {
+			const started = Date.now();
+			log.info("model.extract_questions.start", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), ...modelMetadata(ctx.model) });
 			const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
 			if (!auth.ok || !auth.apiKey) {
 				throw new Error(auth.ok ? `No API key for ${ctx.model!.provider}` : auth.error);
@@ -177,19 +183,25 @@ async function extractQuestions(ctx: ExtensionCommandContext, assistantText: str
 				},
 			);
 
-			if (response.stopReason === "aborted") return null;
+			if (response.stopReason === "aborted") {
+				log.warn("model.extract_questions.aborted", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, ...modelMetadata(ctx.model), usage: usageMetadata(response.usage) });
+				return null;
+			}
 
 			const toolCall = response.content.find(
 				(part): part is ToolCall => part.type === "toolCall" && part.name === TOOL_NAME,
 			);
 			if (!toolCall) throw new Error("model did not call extract_questions");
 
-			return normalizeQuestions(toolCall.arguments);
+			const questions = normalizeQuestions(toolCall.arguments);
+			log.info("model.extract_questions.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, ...modelMetadata(ctx.model), questionCount: questions.length, usage: usageMetadata(response.usage) });
+			return questions;
 		};
 
 		run()
 			.then(done)
 			.catch((error) => {
+				log.error("model.extract_questions.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), ...modelMetadata(ctx.model), error: errorMetadata(error) });
 				ctx.ui.notify(`Question extraction failed: ${error instanceof Error ? error.message : String(error)}`, "error");
 				done(null);
 			});

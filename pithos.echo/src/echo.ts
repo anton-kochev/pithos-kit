@@ -6,6 +6,7 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { BorderedLoader, DynamicBorder, getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Container, Markdown, matchesKey, SelectList, Spacer, Text, type SelectItem } from "@earendil-works/pi-tui";
 import { ASK_HELP, getEchoCommandHelp } from "./command-help";
+import { createPithosLogger, errorMetadata, usageMetadata } from "./logging";
 
 type QaUsage = {
 	input: number;
@@ -577,9 +578,12 @@ async function askWithOptionalLoader(options: AskOptions, ctx: ExtensionCommandC
 }
 
 export default function echo(pi: ExtensionAPI) {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	pi.registerCommand("ask", {
 		description: "Ask Echo, an isolated read-only side agent; answer is not added to the main LLM context",
 		handler: async (args, ctx) => {
+			log.info("command.ask", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), hasArgs: args.trim().length > 0 });
 			const commandHelp = getEchoCommandHelp("ask", args);
 			if (commandHelp) {
 				await showMarkdown("/ask help", commandHelp, ctx);
@@ -607,6 +611,7 @@ export default function echo(pi: ExtensionAPI) {
 			}
 
 			ctx.ui.setStatus("echo", "asking…");
+			const started = Date.now();
 			try {
 				const result = await askWithOptionalLoader(options, ctx);
 				if (!result) {
@@ -614,6 +619,7 @@ export default function echo(pi: ExtensionAPI) {
 					return;
 				}
 
+				log.info("command.ask.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, model: result.model, exitCode: result.exitCode, stopReason: result.stopReason, usage: usageMetadata({ ...result.usage, turns: result.usage.turns }) });
 				pi.appendEntry(HISTORY_CUSTOM_TYPE, { ...result, timestamp: Date.now() });
 				if (ctx.hasUI) {
 					ctx.ui.setWidget("echo", undefined);
@@ -621,6 +627,7 @@ export default function echo(pi: ExtensionAPI) {
 				}
 				await showAnswer(result, ctx);
 			} catch (error) {
+				log.error("command.ask.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, error: errorMetadata(error) });
 				const message = error instanceof Error ? error.message : String(error);
 				if (ctx.hasUI) ctx.ui.notify(`Echo failed: ${message}`, "error");
 				else console.error(`Echo failed: ${message}`);
@@ -633,6 +640,7 @@ export default function echo(pi: ExtensionAPI) {
 	pi.registerCommand("ask-clear", {
 		description: "Hide any stale Echo answer widget",
 		handler: async (args, ctx) => {
+			log.info("command.ask-clear", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 			const commandHelp = getEchoCommandHelp("ask-clear", args);
 			if (commandHelp) {
 				await showMarkdown("/ask-clear help", commandHelp, ctx);
@@ -647,6 +655,7 @@ export default function echo(pi: ExtensionAPI) {
 	});
 
 	const showAskedHistory = async (_args: string, ctx: ExtensionCommandContext) => {
+		log.info("command.asked", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 		const items = ctx.sessionManager
 			.getEntries()
 			.filter((entry: any) => entry.type === "custom" && entry.customType === HISTORY_CUSTOM_TYPE)

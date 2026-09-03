@@ -28,6 +28,7 @@ import {
   resolveCodexUsageAuth,
   type CodexUsage,
 } from "./codex-usage.ts";
+import { createPithosLogger, errorMetadata } from "./logging.ts";
 
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
@@ -138,6 +139,8 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   const isOffline = dependencies.isOffline ?? (() => ["1", "true", "yes"].includes(process.env.PI_OFFLINE?.toLowerCase() ?? ""));
   const codexUsageTimeoutMs = dependencies.codexUsageTimeoutMs ?? CODEX_USAGE_TIMEOUT_MS;
   const codexUsageAuthPollMs = dependencies.codexUsageAuthPollMs ?? CODEX_USAGE_AUTH_POLL_MS;
+  const log = createPithosLogger();
+  log.info("extension.register");
   let enabled = true;
   let snapshot = emptySnapshot();
   let messages: ContextMessageLike[] = [];
@@ -214,6 +217,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   }
 
   async function refreshCodexUsage(ctx: ExtensionContext, force = false): Promise<void> {
+    const started = now();
     if (!isCodexUsageEligible(ctx)) {
       invalidateCodexUsage(ctx);
       return;
@@ -325,6 +329,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
             continue;
           }
           codexUsage = nextUsage;
+          log.info("codex_usage.refresh.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: now() - started, force: effectiveForce, plan: nextUsage.plan, primary: nextUsage.primary, secondary: nextUsage.secondary });
           codexUsageStale = false;
           codexUsageError = undefined;
           ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage));
@@ -335,6 +340,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
         const timedOut = controller.signal.reason instanceof CodexUsageError;
         const reportableError = timedOut ? controller.signal.reason : error;
         const message = safeCodexUsageError(reportableError);
+        log.warn("codex_usage.refresh.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: now() - started, force, error: errorMetadata(reportableError) });
         codexUsageForceRequested = false;
         if (reportableError instanceof CodexUsageAuthError) {
           resetCodexUsage(ctx);
@@ -391,6 +397,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
       aggregateMatchesRequest: providerRequestFingerprint === requestFingerprint(systemPrompt, tools),
       model: ctx.model ? { provider: ctx.model.provider, id: ctx.model.id } : undefined,
     });
+    log.info("context.snapshot", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), totalTokens: snapshot.tokens, contextWindow: snapshot.contextWindow, percent: snapshot.percent, basis: snapshot.basis, messageCount: messages.length, toolCount: tools.length });
   }
 
   function installArgumentAutocomplete(ctx: ExtensionContext): void {
@@ -510,7 +517,8 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
     );
   }
 
-  pi.on("session_start", (_event, ctx) => {
+  pi.on("session_start", (event, ctx) => {
+    log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     enabled = restoreEnabled(ctx);
     providerRequestFingerprint = undefined;
     if (enabled) {
@@ -579,7 +587,8 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
     refresh(ctx);
   });
 
-  pi.on("session_shutdown", (_event, ctx) => {
+  pi.on("session_shutdown", (event, ctx) => {
+    log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     stopCodexUsageAuthPoll();
     messages = [];
     systemPrompt = "";
@@ -635,6 +644,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
     },
     handler: async (args, ctx) => {
       const action = args.trim().toLowerCase();
+      log.info("command.context-bar", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), action: action || "toggle" });
       if (action === "--help" || action === "-h") {
         emitHelp(ctx);
       } else if (!action) {

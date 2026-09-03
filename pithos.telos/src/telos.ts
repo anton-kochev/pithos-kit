@@ -5,6 +5,7 @@ import { Type } from "typebox";
 import { formatArtifactList, isMutatingOperation, loadTaskArtifact, mutateTaskArtifact, taskFilePath } from "./artifact";
 import { parseTasksCommand, TASKS_HELP } from "./commands";
 import { activeTaskListText, showTaskList } from "./ui";
+import { createPithosLogger, errorMetadata } from "./logging";
 import {
 	applyTaskOperation,
 	TASK_PRIORITIES,
@@ -43,6 +44,8 @@ type TaskToolParams = {
 };
 
 export default function telos(pi: ExtensionAPI) {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Telos Tasks",
@@ -55,13 +58,21 @@ export default function telos(pi: ExtensionAPI) {
 		],
 		parameters: TaskToolParams,
 
-		async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+		async execute(toolCallId, params, _signal, _onUpdate, ctx) {
+			const started = Date.now();
 			const operation = operationFromToolParams(params as TaskToolParams);
+			log.info("tool.telos_tasks.start", { toolCallId, action: operation.action, id: "id" in operation ? operation.id : undefined });
+			try {
 			const result = await runOperation(ctx.cwd, operation);
+			log.info("tool.telos_tasks.complete", { toolCallId, durationMs: Date.now() - started, action: operation.action, rejected: result.rejected });
 			return {
 				content: [{ type: "text", text: result.text }],
 				details: summarizeResult(result),
 			};
+			} catch (error) {
+				log.error("tool.telos_tasks.error", { toolCallId, durationMs: Date.now() - started, action: operation.action, error: errorMetadata(error) });
+				throw error;
+			}
 		},
 
 		renderCall(args, theme) {
@@ -82,6 +93,7 @@ export default function telos(pi: ExtensionAPI) {
 		description: "View and manage Telos project tasks",
 		handler: async (args, ctx) => {
 			const parsed = parseTasksCommand(args ?? "");
+			log.info("command.tasks", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), type: parsed.type });
 
 			if (parsed.type === "interactive") {
 				if (ctx.hasUI) {
@@ -95,9 +107,12 @@ export default function telos(pi: ExtensionAPI) {
 			if (parsed.type === "error") return emitText(ctx, `Error: ${parsed.message}`, "error");
 
 			try {
+				const started = Date.now();
 				const result = await runOperation(ctx.cwd, parsed.operation);
+				log.info("command.tasks.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, action: parsed.operation.action, rejected: result.rejected });
 				return emitText(ctx, result.text, result.rejected ? "warning" : "info");
 			} catch (error) {
+				log.error("command.tasks.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), error: errorMetadata(error) });
 				return emitText(ctx, `Error: ${error instanceof Error ? error.message : String(error)}`, "error");
 			}
 		},

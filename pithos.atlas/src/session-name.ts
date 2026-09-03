@@ -2,6 +2,7 @@ import { randomInt } from "node:crypto";
 import { existsSync } from "node:fs";
 import { complete } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
+import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata } from "./logging.ts";
 import { isOfflineEnvironment } from "./registry.ts";
 
 const EIGHTIES_WORDS = [
@@ -107,6 +108,7 @@ interface SessionNameCompletionTransport {
 	): Promise<{
 		stopReason: string;
 		content: Array<{ type: string; text?: string }>;
+		usage?: unknown;
 	}>;
 }
 
@@ -165,7 +167,7 @@ export async function completeSyntheticSessionName(
 		.filter((part): part is { type: "text"; text: string } => part.type === "text" && typeof part.text === "string")
 		.map((part) => part.text)
 		.join("\n");
-	return { text, stopReason: response.stopReason };
+	return { text, stopReason: response.stopReason, ...(response.usage ? { usage: response.usage } : {}) };
 }
 
 function estimatedSessionNameCost(model: SessionNameModel): number {
@@ -201,6 +203,7 @@ export function generateSessionName(pickIndex: SessionNameIndexPicker = randomIn
 export interface SessionNameCompletionResult {
 	text: string;
 	stopReason: string;
+	usage?: unknown;
 }
 
 export interface SessionNamingDependencies {
@@ -224,6 +227,7 @@ export function registerSessionNaming(
 	const isOffline = dependencies.isOffline ?? isOfflineEnvironment;
 	const completeName = dependencies.complete ?? completeSyntheticSessionName;
 	const scheduleTimeout = dependencies.scheduleTimeout ?? scheduleSessionNameTimeout;
+	const log = createPithosLogger();
 	type PendingAttempt = { controller: AbortController; cancelTimeout: () => void };
 	let eligible = false;
 	let attempted = false;
@@ -270,6 +274,7 @@ export function registerSessionNaming(
 		if (event.message.role !== "user" || !eligible || attempted || pi.getSessionName() || pending) return;
 		attempted = true;
 		if (isOffline()) {
+			log.info("session_name.fallback", { reason: "offline" });
 			pi.setSessionName(generateFallback());
 			return;
 		}
@@ -284,18 +289,21 @@ export function registerSessionNaming(
 			settle(attempt, generateFallback());
 		}, SESSION_NAME_TIMEOUT_MS);
 		void (async () => {
+			const started = Date.now();
 			try {
 				const model = selectSessionNameModel(
 					ctx.modelRegistry.getAvailable(),
 					ctx.scopedModels,
 				);
 				if (!model) {
+					log.info("session_name.fallback", { reason: "no_model" });
 					settle(attempt, generateFallback());
 					return;
 				}
 				const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
 				if (pending !== attempt || attempt.controller.signal.aborted) return;
 				if (!auth.ok) {
+					log.warn("session_name.auth_unavailable", { ...modelMetadata(model), error: auth.error });
 					settle(attempt, generateFallback());
 					return;
 				}
@@ -303,8 +311,10 @@ export function registerSessionNaming(
 				const generated = result.stopReason === "stop"
 					? validateGeneratedSessionName(result.text)
 					: undefined;
+				log.info("session_name.complete", { durationMs: Date.now() - started, ...modelMetadata(model), stopReason: result.stopReason, accepted: generated !== undefined, usage: usageMetadata(result.usage) });
 				settle(attempt, generated ?? generateFallback());
-			} catch {
+			} catch (error) {
+				log.warn("session_name.error", { durationMs: Date.now() - started, error: errorMetadata(error) });
 				settle(attempt, generateFallback());
 			}
 		})();

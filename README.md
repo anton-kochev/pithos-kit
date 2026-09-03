@@ -64,6 +64,25 @@ Pi can hide or expose the Guild TDD skill without another extension. Run `pi con
 
 Current package metadata declares Pi `>=0.83.0` except Translate, which requires Pi `>=0.84.0`, and Context Bar and Themes, which require Pi `>=0.84.1`. Atlas reports incompatible combinations rather than silently accepting them.
 
+## Diagnostics logging
+
+Pithos Kit runtime extensions support opt-in JSON Lines diagnostics. Logging is disabled by default. Enable per-package logs while debugging with:
+
+```bash
+PITHOS_LOG_LEVEL=info PITHOS_LOG_DIR=.pi/logs pi
+PITHOS_LOG_LEVEL=debug PITHOS_LOG_DIR=.pi/logs pi
+```
+
+Use one combined file instead with:
+
+```bash
+PITHOS_LOG_LEVEL=debug PITHOS_LOG_FILE=.pi/pithos-kit.jsonl pi
+```
+
+`info` records high-level lifecycle, command/tool completion, and token/spend benchmarking fields where available. `debug` adds diagnostic breadcrumbs. Log records are best-effort, bounded, and redact secret-like fields, but may still include project paths and operational metadata; disable logging and delete `.pi/logs` after diagnosis if needed.
+
+Model-backed extensions log token and spend numbers when the underlying model response or extension already exposes them. These values are provider-dependent and may be absent.
+
 ## Package-local help
 
 Atlas documents its own command with `/pithos help`. Every other public package command documents itself with `--help` or `-h`, for example:

@@ -16,6 +16,7 @@ import { observeRuntime, type ObservedRuntimePackage } from "./runtime.ts";
 import { registerSessionNaming } from "./session-name.ts";
 import { planModeState } from "./safety.ts";
 import { runConfigWizard } from "./ui.ts";
+import { createPithosLogger, errorMetadata } from "./logging.ts";
 
 const MAX_OUTPUT_CHARS = 40_000;
 const DOCTOR_STATUS_KEY = "atlas-doctor";
@@ -279,6 +280,8 @@ function formatDoctor(report: DiagnosticsReport, warnings: string[], timing: Doc
 }
 
 export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies = {}): void {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	registerSessionNaming(pi);
 	registerAtlasFooter(pi);
 
@@ -296,8 +299,9 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 		promptSnippet: "Rename the current Pi session in lowercase kebab-case when explicitly requested",
 		promptGuidelines: ["Use rename_session only when the user explicitly asks to name or rename the current Pi session, and always provide the name in lowercase kebab-case."],
 		parameters: RENAME_SESSION_PARAMETERS,
-		async execute(_toolCallId, request: RenameSessionRequest) {
+		async execute(toolCallId, request: RenameSessionRequest) {
 			const name = request.name.trim();
+			log.info("tool.rename_session", { toolCallId });
 			if (!KEBAB_CASE_SESSION_NAME_RE.test(name)) {
 				throw new Error("Session name must use lowercase kebab-case");
 			}
@@ -383,7 +387,9 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 		promptSnippet: "Inspect pithos-kit packages and configuration without changing files.",
 		promptGuidelines: ["Use pithos_info only for read-only inspection. Configuration changes require the user's interactive /pithos config command."],
 		parameters: INFO_PARAMETERS,
-		async execute(_toolCallId, request: InfoRequest, signal, _onUpdate, ctx) {
+		async execute(toolCallId, request: InfoRequest, signal, _onUpdate, ctx) {
+			const started = Date.now();
+			log.info("tool.pithos_info.start", { toolCallId, action: request.action, package: request.package, refresh: request.refresh });
 			try {
 				if (request.action === "catalog") {
 					const packages = selectPackage(catalog.packages, request.package);
@@ -417,6 +423,7 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 					};
 				}
 			} catch (error) {
+				log.error("tool.pithos_info.error", { toolCallId, durationMs: Date.now() - started, action: request.action, error: errorMetadata(error) });
 				const message = error instanceof Error ? error.message : String(error);
 				return { content: [{ type: "text", text: bounded(message) }], details: { error: message }, isError: true };
 			}
@@ -424,6 +431,9 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 	});
 
 	const runCommand = async (command: AtlasCommand, ctx: ExtensionCommandContext): Promise<void> => {
+		const started = Date.now();
+		log.info("command.pithos.start", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), action: command.action });
+		try {
 		if (command.action === "menu") {
 			if (ctx.mode !== "tui") {
 				emitText(ctx, ATLAS_HELP);
@@ -608,6 +618,11 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 				: "No .pithos changes were written.", "info");
 		} catch (error) {
 			emitText(ctx, error instanceof Error ? error.message : String(error), "error");
+		}
+			log.info("command.pithos.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), action: command.action, durationMs: Date.now() - started });
+		} catch (error) {
+			log.error("command.pithos.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), action: command.action, durationMs: Date.now() - started, error: errorMetadata(error) });
+			throw error;
 		}
 	};
 
