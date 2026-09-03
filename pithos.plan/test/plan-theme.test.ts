@@ -152,6 +152,7 @@ async function createHarness(options: {
 		footerFactories,
 		getActiveTools: () => activeTools,
 		getThemeName: () => themeName,
+		setThemeName: (name: string) => { themeName = name; },
 		cleanup: () => rm(cwd, { recursive: true, force: true }),
 	};
 }
@@ -300,6 +301,31 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 			assert.equal(harness.getActiveTools().includes("create_plan"), false);
 			assert.equal(harness.getActiveTools().includes("update_plan_draft"), false);
 			assert.equal(harness.autocompleteFactories.length, 1);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("keeps and reapplies the Plan theme across reload without replacing the pre-Plan theme", async () => {
+		const harness = await createHarness({ mode: "tui" });
+		try {
+			await enter(harness);
+			assert.equal(harness.getThemeName(), "plan");
+			assert.equal(latestState(harness).previousThemeName, "dark");
+
+			await harness.handlers.get("session_shutdown")?.(
+				{ type: "session_shutdown", reason: "reload" },
+				harness.ctx,
+			);
+			assert.equal(harness.getThemeName(), "plan", "reload cleanup must not flash back to the default theme");
+
+			harness.setThemeName("dark");
+			await harness.handlers.get("session_start")?.(
+				{ type: "session_start", reason: "reload" },
+				harness.ctx,
+			);
+			assert.equal(harness.getThemeName(), "plan");
+			assert.equal(latestState(harness).previousThemeName, "dark");
 		} finally {
 			await harness.cleanup();
 		}

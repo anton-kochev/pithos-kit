@@ -1,7 +1,7 @@
 import type { AssistantMessage, Usage, UserMessage } from "@earendil-works/pi-ai";
 import type { ModelRegistry } from "@earendil-works/pi-coding-agent";
 import type { TranslateConfig } from "./config.ts";
-import { parseModelSpec } from "./config.ts";
+import { DEFAULT_TRANSLATION_TIMEOUT_MS, parseModelSpec } from "./config.ts";
 import { protectMarkdown, restoreMarkdown } from "./markdown-protection.ts";
 
 export const TRANSLATION_SYSTEM_PROMPT = `You are a faithful Markdown translator.
@@ -17,7 +17,7 @@ Translate the supplied assistant prose into the requested target language.
 
 type TranslationFailureWithoutUsage = {
   ok: false;
-  kind: "model-unavailable" | "unauthenticated" | "cancelled" | "request-failed" | "unsupported-mode";
+  kind: "model-unavailable" | "unauthenticated" | "cancelled" | "timeout" | "request-failed" | "unsupported-mode";
   error: string;
   usage?: never;
 };
@@ -33,6 +33,16 @@ export type TranslationResult =
   | { ok: true; markdown: string; usage: Usage }
   | TranslationFailureWithoutUsage
   | ModelReturnedTranslationFailure;
+
+class TranslationInterruptedError extends Error {
+  constructor(readonly kind: "cancelled" | "timeout", timeoutMs?: number) {
+    super(kind === "timeout" ? `Translation timed out after ${formatDuration(timeoutMs!)}.` : "Translation cancelled.");
+  }
+}
+
+function formatDuration(timeoutMs: number): string {
+  return timeoutMs % 1_000 === 0 ? `${timeoutMs / 1_000}s` : `${timeoutMs}ms`;
+}
 
 export async function translateMarkdown(
   source: string,
@@ -50,10 +60,28 @@ export async function translateMarkdown(
   }
   if (signal?.aborted) return { ok: false, kind: "cancelled", error: "Translation cancelled." };
 
+  const timeoutMs = config.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS;
+  const requestController = new AbortController();
+  const requestSignal = signal ? AbortSignal.any([signal, requestController.signal]) : requestController.signal;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  let removeAbort: (() => void) | undefined;
+  const interruption = new Promise<never>((_resolve, reject) => {
+    timer = setTimeout(() => {
+      requestController.abort();
+      reject(new TranslationInterruptedError("timeout", timeoutMs));
+    }, timeoutMs);
+    const onAbort = () => {
+      requestController.abort();
+      reject(new TranslationInterruptedError("cancelled"));
+    };
+    signal?.addEventListener("abort", onAbort, { once: true });
+    removeAbort = () => signal?.removeEventListener("abort", onAbort);
+  });
+
   try {
-    const auth = await modelRegistry.getApiKeyAndHeaders(model);
+    const auth = await Promise.race([modelRegistry.getApiKeyAndHeaders(model), interruption]);
     if (!auth.ok) {
-      return { ok: false, kind: "unauthenticated", error: `Configured translation model ${config.model} is not authenticated. Run /translate config.` };
+      return { ok: false, kind: "unauthenticated", error: `Configured translation model ${config.model} is not authenticated. Run /login ${modelSpec.provider} or /translate config.` };
     }
 
     const protection = protectMarkdown(source);
@@ -62,14 +90,17 @@ export async function translateMarkdown(
       content: [{ type: "text", text: protection.markdown }],
       timestamp: Date.now(),
     };
-    const response = await modelRegistry.complete(
-      model,
-      {
-        systemPrompt: `${TRANSLATION_SYSTEM_PROMPT}\n\nTarget language (JSON string): ${JSON.stringify(config.language)}`,
-        messages: [message],
-      },
-      signal ? { signal } : undefined,
-    );
+    const response = await Promise.race([
+      modelRegistry.complete(
+        model,
+        {
+          systemPrompt: `${TRANSLATION_SYSTEM_PROMPT}\n\nTarget language (JSON string): ${JSON.stringify(config.language)}`,
+          messages: [message],
+        },
+        { signal: requestSignal },
+      ),
+      interruption,
+    ]);
     if (response.stopReason === "aborted" || signal?.aborted) {
       return { ok: false, kind: "cancelled", error: "Translation cancelled.", usage: response.usage };
     }
@@ -112,6 +143,9 @@ export async function translateMarkdown(
       };
     }
   } catch (error) {
+    if (error instanceof TranslationInterruptedError) {
+      return { ok: false, kind: error.kind, error: error.message };
+    }
     if (signal?.aborted || (error instanceof Error && error.name === "AbortError")) {
       return { ok: false, kind: "cancelled", error: "Translation cancelled." };
     }
@@ -120,6 +154,9 @@ export async function translateMarkdown(
       kind: "request-failed",
       error: error instanceof Error ? error.message : "Translation model request failed.",
     };
+  } finally {
+    if (timer) clearTimeout(timer);
+    removeAbort?.();
   }
 }
 

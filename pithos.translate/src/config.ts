@@ -15,9 +15,14 @@ export interface TranslateConfig {
   language: string;
   model: string;
   mode: TranslationMode;
+  timeoutMs?: number;
 }
 
-const CONFIG_KEYS = ["language", "mode", "model"];
+export const DEFAULT_TRANSLATION_TIMEOUT_MS = 60_000;
+export const MIN_TRANSLATION_TIMEOUT_MS = 1_000;
+export const MAX_TRANSLATION_TIMEOUT_MS = 300_000;
+const REQUIRED_CONFIG_KEYS = ["language", "mode", "model"];
+const CONFIG_KEYS = [...REQUIRED_CONFIG_KEYS, "timeoutMs"];
 
 export function parseLanguage(value: unknown): string | undefined {
   if (typeof value !== "string" || /[\r\n]/u.test(value)) return undefined;
@@ -28,15 +33,22 @@ export function parseLanguage(value: unknown): string | undefined {
 export function parseConfig(value: unknown): TranslateConfig | undefined {
   if (!value || typeof value !== "object" || Array.isArray(value)) return undefined;
   const record = value as Record<string, unknown>;
-  if (Object.keys(record).sort().join("|") !== CONFIG_KEYS.join("|")) return undefined;
+  const keys = Object.keys(record).sort();
+  if (keys.some((key) => !CONFIG_KEYS.includes(key)) || REQUIRED_CONFIG_KEYS.some((key) => !keys.includes(key))) return undefined;
   const language = parseLanguage(record.language);
   if (!language) return undefined;
   if (typeof record.model !== "string" || !parseModelSpec(record.model)) return undefined;
   if (record.mode !== "manual" && record.mode !== "automatic") return undefined;
+  if (record.timeoutMs !== undefined && (
+    !Number.isInteger(record.timeoutMs) ||
+    (record.timeoutMs as number) < MIN_TRANSLATION_TIMEOUT_MS ||
+    (record.timeoutMs as number) > MAX_TRANSLATION_TIMEOUT_MS
+  )) return undefined;
   return {
     language,
     model: record.model,
     mode: record.mode,
+    ...(record.timeoutMs !== undefined ? { timeoutMs: record.timeoutMs as number } : {}),
   };
 }
 

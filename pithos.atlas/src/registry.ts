@@ -44,14 +44,30 @@ export class RegistryClient {
 		this.#timeoutMs = options.timeoutMs ?? DEFAULT_TIMEOUT_MS;
 	}
 
-	async #responseBody(response: Response, target: string): Promise<string> {
+	async #responseBody(response: Response, target: string, signal: AbortSignal): Promise<string> {
 		if (!response.body) return "";
 		const reader = response.body.getReader();
 		const chunks: Uint8Array[] = [];
 		let bytes = 0;
+		let removeAbort: (() => void) | undefined;
 		try {
 			while (true) {
-				const { done, value } = await reader.read();
+				if (signal.aborted) {
+					void reader.cancel().catch(() => undefined);
+					throw new RegistryError(`Unable to read the npm registry response for ${target}`);
+				}
+				const read = reader.read();
+				const abort = new Promise<never>((_resolve, reject) => {
+					const onAbort = () => {
+						void reader.cancel().catch(() => undefined);
+						reject(new RegistryError(`Unable to read the npm registry response for ${target}`));
+					};
+					signal.addEventListener("abort", onAbort, { once: true });
+					removeAbort = () => signal.removeEventListener("abort", onAbort);
+				});
+				const { done, value } = await Promise.race([read, abort]);
+				removeAbort?.();
+				removeAbort = undefined;
 				if (done) break;
 				bytes += value.byteLength;
 				if (bytes > this.#maxResponseBytes) {
@@ -64,7 +80,12 @@ export class RegistryClient {
 			if (error instanceof RegistryError) throw error;
 			throw new RegistryError(`Unable to read the npm registry response for ${target}`, { cause: error });
 		} finally {
-			reader.releaseLock();
+			removeAbort?.();
+			try {
+				reader.releaseLock();
+			} catch {
+				// A provider may leave read() pending after ignoring cancellation.
+			}
 		}
 		return Buffer.concat(chunks.map((chunk) => Buffer.from(chunk)), bytes).toString("utf8");
 	}
@@ -88,7 +109,7 @@ export class RegistryClient {
 			await response.body?.cancel().catch(() => undefined);
 			throw new RegistryError(`npm registry response for ${target} is too large`);
 		}
-		const body = await this.#responseBody(response, target);
+		const body = await this.#responseBody(response, target, signal);
 		try {
 			return JSON.parse(body);
 		} catch (error) {

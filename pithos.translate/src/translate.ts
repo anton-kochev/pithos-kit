@@ -7,6 +7,7 @@ import {
   resolveTranslateSource,
   ScopedConfigStore,
   sourceIdentity,
+  DEFAULT_TRANSLATION_TIMEOUT_MS,
   TRANSLATE_COMMAND_DESCRIPTION,
   type ConfigScope,
   type TranslateConfig,
@@ -196,7 +197,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
         notify(
           ctx,
           config
-            ? `Translation scope: ${store!.scope}\nLanguage: ${config.language}\nModel: ${config.model}\nMode: ${config.mode}`
+            ? `Translation scope: ${store!.scope}\nLanguage: ${config.language}\nModel: ${config.model}\nMode: ${config.mode}\nTimeout: ${formatTimeout(config.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}`
             : `Translation scope: ${store!.scope}\nNot configured. Run /translate config.`,
           "info",
         );
@@ -409,6 +410,10 @@ function addUsage(target: TranslationUsageRecord, usage: Usage): void {
   target.cacheWrite += usage.cacheWrite;
   target.totalTokens += usage.totalTokens;
   target.cost += usage.cost.total;
+}
+
+function formatTimeout(timeoutMs: number): string {
+  return timeoutMs % 1_000 === 0 ? `${timeoutMs / 1_000}s` : `${timeoutMs}ms`;
 }
 
 function emitHelp(ctx: ExtensionCommandContext, help: string): void {

@@ -49,6 +49,29 @@ describe("npm registry client", () => {
 		await assert.rejects(client.latest("@pithos-kit/example"), /Unable to reach/);
 	});
 
+	it("aborts a stalled response body after the configured timeout", async () => {
+		let cancelled = false;
+		const response = {
+			ok: true,
+			status: 200,
+			headers: { get: () => null },
+			body: {
+				getReader: () => ({
+					read: () => new Promise(() => undefined),
+					cancel: async () => { cancelled = true; },
+					releaseLock: () => {},
+				}),
+			},
+		} as unknown as Response;
+		const client = new RegistryClient({
+			fetch: async () => response,
+			timeoutMs: 5,
+		});
+
+		await assert.rejects(client.latest("@pithos-kit/example"), /Unable to read the npm registry response/);
+		assert.equal(cancelled, true);
+	});
+
 	it("stops consuming an oversized response body", async () => {
 		let pulls = 0;
 		let cancelled = false;

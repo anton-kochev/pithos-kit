@@ -33,7 +33,7 @@ pi:
 | `/translate` | Translate the latest completed assistant prose into a context-free card |
 | `/translate on` | Enable automatic terminal translation |
 | `/translate off` | Return to manual mode for future responses |
-| `/translate status` | Show the active scope, language, exact model, and mode |
+| `/translate status` | Show the active scope, language, exact model, mode, and effective timeout |
 | `/translate config` | Choose the target language and authenticated translation model again |
 | `/translate --help` | Show package-local help (`-h` also works) |
 
@@ -55,13 +55,14 @@ User and project files are replaced atomically and use this strict shape:
 {
   "language": "French",
   "model": "anthropic/claude-haiku-4-5",
-  "mode": "manual"
+  "mode": "manual",
+  "timeoutMs": 60000
 }
 ```
 
-`language` is free-form non-empty single-line text. `model` is one exact `provider/model-id` selected from authenticated available Pi models. The first slash separates the provider, so model IDs may contain further slashes (for example, `openrouter/anthropic/claude-sonnet-4`). `mode` is `manual` or `automatic`. Unknown or incomplete fields make the scoped file invalid and cause setup to run again.
+`language` is free-form non-empty single-line text. `model` is one exact `provider/model-id` selected from authenticated available Pi models. The first slash separates the provider, so model IDs may contain further slashes (for example, `openrouter/anthropic/claude-sonnet-4`). `mode` is `manual` or `automatic`. Optional `timeoutMs` is an integer from `1000` through `300000`; when omitted, Translate uses `60000` (60 seconds). Existing three-field files remain valid, and the default field is not written merely by loading them. Unknown or incomplete fields make the scoped file invalid and cause setup to run again. `/translate config` retains an existing explicit timeout; set or change it directly in the scoped JSON file and use `/translate status` to verify the effective value.
 
-There is **no fallback model**. If that exact model disappears or loses authentication, Translate reports the problem and suggests `/translate config`; it never uses the active coding model instead.
+There is **no fallback model**. If that exact model disappears or loses authentication, Translate reports the provider and suggests `/login <provider>` or `/translate config`; it never uses the active coding model instead. Provider names are literal authentication boundaries: `openai/...` requires OpenAI API-key authentication (for example `OPENAI_API_KEY` or `/login openai`), while `openai-codex/...` uses ChatGPT/Codex subscription authentication. Working `openai-codex` credentials do not authenticate `openai` requests.
 
 ## Manual mode
 
@@ -73,7 +74,7 @@ Translation · French · anthropic/claude-haiku-4-5
 Voici la réponse traduite…
 ```
 
-The card is a durable Pi custom entry. It is saved in the session but is context-free: Pi does not send it to the main model. While the manual request runs, `/translate` retains its cancellable bordered loader. Errors and cancellation append no card.
+The card is a durable Pi custom entry. It is saved in the session but is context-free: Pi does not send it to the main model. While the manual request runs, `/translate` retains its cancellable bordered loader. Errors, cancellation, and timeout append no card, even when a provider ignores cancellation.
 
 ## Automatic mode
 
@@ -95,7 +96,11 @@ Automatic mode prioritizes complete visual replacement over token streaming:
 
 The animated status uses Pi's keyed `setStatus` API under Translate's own key, so clearing it does not overwrite statuses owned by other extensions. It starts only after terminal-message eligibility is confirmed and only when Translate reaches the first block that will make a translation-model request. Translate clears an active status on completion, failure, cancellation, mode changes, branch/session changes, reload, and shutdown. Tool-calling, errored, length-stopped, empty, non-TUI, and all-Mermaid-skipped messages make no translation request and never show Translate's footer.
 
-Thinking, user messages, tool calls, tool results, extension UI, logs, errors, images, and aborted responses are not translated. Tool-calling turns are not delayed by a translation request. If automatic translation fails or is cancelled, the final renderer shows the original response instead of leaving the prose hidden. A failed or skipped repeated source also invalidates any older cached translation for that exact source immediately and after resume, because Pi does not provide message IDs to Markdown transformers.
+Thinking, user messages, tool calls, tool results, extension UI, logs, errors, images, and aborted responses are not translated. Tool-calling turns are not delayed by a translation request. If automatic translation fails, is cancelled, or reaches its configured timeout, the keyed status is cleared and the final renderer shows the original response instead of leaving the prose hidden. A failed or skipped repeated source also invalidates any older cached translation for that exact source immediately and after resume, because Pi does not provide message IDs to Markdown transformers.
+
+## Troubleshooting
+
+Run `/translate status` first and verify the exact provider/model and timeout. If authentication is missing, run `/login <provider>` or choose an authenticated model with `/translate config`. In particular, choose `openai-codex/...` when you intend to use Codex subscription authentication; choosing `openai/...` requires a separately valid OpenAI API key, model access, billing, and quota. Escape cancels the manual loader. Automatic failures and timeouts retain the original prose and clear `Translating...`; Translate never silently switches to the coding model.
 
 Turning automatic mode off affects future responses. Historical automatic translations on the active branch continue to render as their saved translations unless a newer identical source must be forced original after failure.
 

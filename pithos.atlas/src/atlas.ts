@@ -19,6 +19,7 @@ import { runConfigWizard } from "./ui.ts";
 
 const MAX_OUTPUT_CHARS = 40_000;
 const DOCTOR_STATUS_KEY = "atlas-doctor";
+const DEFAULT_WAIT_FOR_IDLE_TIMEOUT_MS = 10_000;
 
 export const ATLAS_HELP = `Pithos Atlas gives eligible new sessions readable 3–5-word session names after their first user message, configures reproducible toolchain, Pi, and package pins, and diagnoses the active environment.
 
@@ -132,6 +133,7 @@ interface FooterPatchExpectation {
 
 export interface AtlasDependencies {
 	activePiPackage?: ActivePiPackage;
+	waitForIdleTimeoutMs?: number;
 	runFooterPatch?: (
 		operation: FooterPatchOperation,
 		packageRoot: string,
@@ -222,6 +224,29 @@ function formatFooterPatch(report: FooterPatchReport): string {
 		`Target: ${report.file}`,
 		...(report.restartRequired ? ["Restart Pi to use the changed footer."] : []),
 	].join("\n");
+}
+
+async function waitForIdleOrTimeout(ctx: Pick<ExtensionCommandContext, "waitForIdle" | "signal">, timeoutMs: number): Promise<void> {
+	let timeout: ReturnType<typeof setTimeout> | undefined;
+	let removeAbort: (() => void) | undefined;
+	try {
+		await Promise.race([
+			ctx.waitForIdle(),
+			new Promise<never>((_resolve, reject) => {
+				timeout = setTimeout(() => reject(new Error("Atlas is waiting for Pi to become idle. Abort the current model run or try again after it finishes; no changes were made.")), timeoutMs);
+				timeout.unref?.();
+				if (ctx.signal) {
+					const abort = () => reject(new Error("Atlas command cancelled; no changes were made."));
+					ctx.signal.addEventListener("abort", abort, { once: true });
+					removeAbort = () => ctx.signal?.removeEventListener("abort", abort);
+					if (ctx.signal.aborted) abort();
+				}
+			}),
+		]);
+	} finally {
+		if (timeout) clearTimeout(timeout);
+		removeAbort?.();
+	}
 }
 
 function doctorErrorMessage(error: unknown): string {
@@ -319,6 +344,7 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 		}
 		return report;
 	});
+	const waitForIdleTimeoutMs = dependencies.waitForIdleTimeoutMs ?? DEFAULT_WAIT_FOR_IDLE_TIMEOUT_MS;
 	const catalog = loadBundledCatalog();
 	const registry = new RegistryClient({ offline: isOfflineEnvironment() });
 
@@ -513,7 +539,7 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 				emitText(ctx, "/pithos patch footer apply/remove requires an interactive TUI.", "error");
 				return;
 			}
-			await ctx.waitForIdle();
+			await waitForIdleOrTimeout(ctx, waitForIdleTimeoutMs);
 			if (planModeState(ctx.sessionManager.getBranch()) !== "inactive") {
 				emitText(ctx, "/pithos patch footer is unavailable while Plan mode is active or indeterminate.", "error");
 				return;
@@ -550,7 +576,7 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 			emitText(ctx, "/pithos config requires a trusted interactive TUI.", "error");
 			return;
 		}
-		await ctx.waitForIdle();
+		await waitForIdleOrTimeout(ctx, waitForIdleTimeoutMs);
 		if (planModeState(ctx.sessionManager.getBranch()) !== "inactive") {
 			emitText(ctx, "/pithos config is unavailable while Plan mode is active or indeterminate.", "error");
 			return;

@@ -247,6 +247,31 @@ describe("Atlas extension", () => {
 		assert.match(notifications.at(-1)?.message ?? "", /Restart Pi/);
 	});
 
+	it("refuses footer mutation when Pi does not become idle", async () => {
+		const patchCalls: string[] = [];
+		const { commands } = createHarness({
+			activePiPackage: { root: "/opt/pi", version: "0.84.2" },
+			waitForIdleTimeoutMs: 5,
+			runFooterPatch: async (operation: string) => {
+				patchCalls.push(operation);
+				throw new Error("should not run");
+			},
+		});
+		const notifications: string[] = [];
+
+		await commands.get("pithos").handler("patch footer apply", {
+			mode: "tui",
+			hasUI: true,
+			waitForIdle: async () => new Promise(() => undefined),
+			sessionManager: { getBranch: () => [] },
+			ui: { notify: (message: string) => notifications.push(message) },
+		} as never);
+
+		assert.deepEqual(patchCalls, []);
+		assert.match(notifications[0] ?? "", /waiting for Pi to become idle/);
+		assert.match(notifications[0] ?? "", /no changes were made/i);
+	});
+
 	it("refuses footer mutation while Plan mode is active", async () => {
 		const patchCalls: string[] = [];
 		const { commands } = createHarness({
@@ -347,6 +372,23 @@ describe("Atlas extension", () => {
 			console.log = originalLog;
 		}
 		assert.deepEqual(logs, ["/pithos config requires a trusted interactive TUI."]);
+	});
+
+	it("refuses configuration when Pi does not become idle", async () => {
+		const { commands } = createHarness({ waitForIdleTimeoutMs: 5 });
+		const notifications: string[] = [];
+		await commands.get("pithos").handler("config", {
+			mode: "tui",
+			hasUI: true,
+			cwd: "/does-not-exist",
+			isProjectTrusted: () => true,
+			waitForIdle: async () => new Promise(() => undefined),
+			sessionManager: { getBranch: () => [] },
+			ui: { notify: (message: string) => notifications.push(message) },
+		} as never);
+
+		assert.match(notifications[0] ?? "", /waiting for Pi to become idle/);
+		assert.match(notifications[0] ?? "", /no changes were made/i);
 	});
 
 	it("refuses configuration while Plan mode is active", async () => {

@@ -538,7 +538,7 @@
           {
             "kind": "file",
             "key": ".pi/translate.json",
-            "summary": "Project-scoped translation language, model, and mode."
+            "summary": "Project-scoped translation language, model, mode, and optional request timeout."
           }
         ]
       }

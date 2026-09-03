@@ -562,13 +562,13 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		updatePlanStatus(ctx.ui, true, () => pi.getSessionName());
 	}
 
-	function applyInactiveMode(ctx: ExtensionContext, restoreOwnedTools: boolean): void {
+	function applyInactiveMode(ctx: ExtensionContext, restoreOwnedTools: boolean, restoreTheme = true): void {
 		if (restoreOwnedTools && state?.previousToolNames) {
 			pi.setActiveTools(withoutInternalPlanTools(state.previousToolNames));
 		} else {
 			pi.setActiveTools(withoutInternalPlanTools(pi.getActiveTools()));
 		}
-		if (ctx.mode === "tui" && restoreOwnedTools && state?.previousThemeName) {
+		if (ctx.mode === "tui" && restoreOwnedTools && restoreTheme && state?.previousThemeName) {
 			setTheme(ctx, state.previousThemeName) || setTheme(ctx, FALLBACK_THEME_NAME);
 		}
 		updatePlanStatus(ctx.ui, false);
@@ -1067,14 +1067,17 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		await reconcileSession(ctx, true);
 	});
 
-	pi.on("session_shutdown", async (_event, ctx) => {
+	pi.on("session_shutdown", async (event, ctx) => {
 		activityGeneration += 1;
 		sessionGeneration += 1;
 		revokePublicationAuthorizationInMemory();
 		exitFallbackOperation = undefined;
 		abortAwaitedUiOperation();
 		lifecycleAgentRunActive = false;
-		if (state?.active) applyInactiveMode(ctx, true);
+		// Reload immediately reconstructs active Plan state in a fresh extension
+		// runtime. Clean up owned tools/footer, but keep the visual mode until the
+		// new runtime can reapply it after packaged themes are rediscovered.
+		if (state?.active) applyInactiveMode(ctx, true, event.reason !== "reload");
 		deferredExitWithoutPublication = false;
 	});
 

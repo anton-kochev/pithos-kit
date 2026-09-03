@@ -81,5 +81,6 @@ export async function runConfigWizard(
     language,
     model: `${model.provider}/${model.id}`,
     mode: current?.mode ?? "manual",
+    ...(current?.timeoutMs !== undefined ? { timeoutMs: current.timeoutMs } : {}),
   };
 }

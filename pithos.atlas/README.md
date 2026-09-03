@@ -163,7 +163,7 @@ The toolchain and package selectors use `◆` for selected entries, `◇` for av
 
 A configuration transaction:
 
-1. requires a trusted TUI project and waits for the agent to become idle;
+1. requires a trusted TUI project and waits up to ten seconds for the agent to become idle;
 2. refuses to run while `@pithos-kit/plan` Plan mode is active or indeterminate;
 3. reads only `<cwd>/.pithos` and rejects links, special files, aliases, duplicate keys, malformed managed nodes, and oversized input;
 4. stages exact Pi and npm versions in memory;
@@ -172,7 +172,7 @@ A configuration transaction:
 7. rechecks trust, idle/Plan state, file type, and original bytes inside Pi's per-file mutation queue;
 8. writes and synchronizes a same-directory temporary file before atomically replacing the target.
 
-Cancellation and pre-commit errors leave `.pithos` unchanged. After a successful write, rebuild/restart Pithos before expecting the selected Pi or package versions to be active.
+Cancellation, an idle-wait timeout, and pre-commit errors leave `.pithos` unchanged. Footer patch apply/remove uses the same bounded idle wait and does not start its child process if Pi remains busy. After a successful write, rebuild/restart Pithos before expecting the selected Pi or package versions to be active.
 
 ## Agent tools
 
@@ -200,7 +200,11 @@ PI_OFFLINE=true pi
 PI_OFFLINE=yes pi
 ```
 
-When offline, session naming uses its local fallback. Registry operations that are timed out, unpublished, or otherwise unavailable use the generated bundled catalog and clearly report that latest registry data is unavailable. The interactive manager can still select bundled exact versions; registry-only versions are unavailable until a successful explicit check.
+When offline, session naming uses its local fallback. Registry operations—including response-body streaming—are bounded by the same request timeout. Operations that are timed out, unpublished, or otherwise unavailable use the generated bundled catalog and clearly report that latest registry data is unavailable. The interactive manager can still select bundled exact versions; registry-only versions are unavailable until a successful explicit check.
+
+## Troubleshooting stuck operations
+
+Start with `/pithos packages`: it is local and does not contact npm. Run `/pithos doctor` to see bounded phase timings and press Escape to cancel its registry-backed work. To isolate registry access entirely, restart as `PI_OFFLINE=1 pi`; Atlas then uses bundled metadata. If `/pithos config` or a footer apply/remove action reports that Pi did not become idle, abort or let the current model run finish and retry. Atlas refuses after ten seconds and guarantees that no configuration or runtime-file change was started.
 
 ## Development
 

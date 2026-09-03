@@ -194,7 +194,7 @@ describe("translate extension", () => {
     const command = harness.commands.get("translate")!;
 
     await command.handler("status", harness.context);
-    assert.match(harness.notifications.at(-1)?.message ?? "", /temporary.*French.*provider\/model.*manual/is);
+    assert.match(harness.notifications.at(-1)?.message ?? "", /temporary.*French.*provider\/model.*manual.*60s/is);
 
     await command.handler("on", harness.context);
     assert.equal(stored.mode, "automatic");
@@ -332,6 +332,7 @@ describe("translate extension", () => {
     const outcomes = [
       { name: "failure", result: { ok: false, kind: "request-failed", error: "provider down" } },
       { name: "cancellation", result: { ok: false, kind: "cancelled", error: "Translation cancelled." } },
+      { name: "timeout", result: { ok: false, kind: "timeout", error: "Translation timed out after 60s." } },
     ] as const;
 
     for (const outcome of outcomes) {

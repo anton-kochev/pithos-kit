@@ -94,6 +94,8 @@ of compaction summaries.
 
 Completed checkpoints survive compaction, `/tree`, cancellation, `/quit` and
 resume, reload, and process restart when the Pi session itself is persisted.
+Active Plan mode also keeps or reapplies the bundled `plan` theme during `/reload`
+without replacing the saved pre-Plan theme that will be restored on exit.
 Ephemeral (`--no-session`) use is supported for the current process, but Plan
 warns on activation and reports the limitation in `/plan status`.
 
@@ -179,7 +181,10 @@ spoofed-source, and unrelated custom tools stay blocked. Plan also blocks writes
 edits, shell tools, manual `!`/`!!` shell commands, delegation, mutating or
 untrusted custom tools, and same-named overrides of trusted built-ins. It applies
 the bundled Plan theme and planning footer while active, restoring the previous
-theme and exact tool selection on exit.
+theme and exact tool selection on exit. If the visual distinction is ever absent
+while `/plan status` reports active mode, run `/reload`; the reloaded runtime
+reconstructs state and reapplies the Plan presentation without relaxing tool
+restrictions.
 
 ### Enforcement boundary
 

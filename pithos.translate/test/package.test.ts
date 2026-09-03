@@ -18,7 +18,7 @@ describe("translate package", () => {
     assert.deepEqual(manifest.pithosKit.configuration, [{
       kind: "file",
       key: ".pi/translate.json",
-      summary: "Project-scoped translation language, model, and mode.",
+      summary: "Project-scoped translation language, model, mode, and optional request timeout.",
     }]);
     assert.ok(manifest.files.includes("src"));
     assert.equal(typeof extension.default, "function");
@@ -30,6 +30,8 @@ describe("translate package", () => {
     assert.match(readme, /footer status.*language.*model/is);
     assert.doesNotMatch(readme, /Translating….*placeholder/is);
     assert.match(readme, /no fallback/i);
+    assert.match(readme, /timeoutMs.*60000/is);
+    assert.match(readme, /openai\/\.\.\..*API-key.*openai-codex\/\.\.\..*subscription/is);
     assert.match(readme, /code.*link destination/is);
     assert.match(readme, /tool calls/i);
     assert.match(readme, /~\/\.pi\/agent\/translate\.json/);

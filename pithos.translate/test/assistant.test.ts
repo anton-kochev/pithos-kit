@@ -205,6 +205,50 @@ describe("assistant prose eligibility", () => {
     }
   });
 
+  it("times out even when the configured provider ignores cancellation", async () => {
+    const model = { provider: "translator", id: "exact" };
+    let receivedSignal: AbortSignal | undefined;
+    const result = await translateMarkdown(
+      "Original prose",
+      { language: "French", model: "translator/exact", mode: "manual", timeoutMs: 5 },
+      {
+        find: () => model,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "secret" }),
+        complete: async (_model: unknown, _context: unknown, options: { signal?: AbortSignal }) => {
+          receivedSignal = options.signal;
+          return new Promise(() => undefined);
+        },
+      } as never,
+    );
+
+    assert.deepEqual(result, {
+      ok: false,
+      kind: "timeout",
+      error: "Translation timed out after 5ms.",
+    });
+    assert.equal(receivedSignal?.aborted, true);
+  });
+
+  it("reports timeout rather than cancellation when the provider honors the deadline abort", async () => {
+    const model = { provider: "translator", id: "exact" };
+    const result = await translateMarkdown(
+      "Original prose",
+      { language: "French", model: "translator/exact", mode: "manual", timeoutMs: 5 },
+      {
+        find: () => model,
+        getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "secret" }),
+        complete: async (_model: unknown, _context: unknown, options: { signal: AbortSignal }) =>
+          new Promise((_resolve, reject) => options.signal.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")), { once: true })),
+      } as never,
+    );
+
+    assert.deepEqual(result, {
+      ok: false,
+      kind: "timeout",
+      error: "Translation timed out after 5ms.",
+    });
+  });
+
   it("does not invent usage when no model response exists", async () => {
     const model = { provider: "translator", id: "exact" };
     const config = { language: "French", model: "translator/exact", mode: "manual" } as const;
@@ -224,6 +268,11 @@ describe("assistant prose eligibility", () => {
       complete: async () => { throw new Error("network down"); },
     } as never);
 
+    assert.deepEqual(unauthenticated, {
+      ok: false,
+      kind: "unauthenticated",
+      error: "Configured translation model translator/exact is not authenticated. Run /login translator or /translate config.",
+    });
     assert.equal("usage" in unauthenticated, false);
     assert.equal("usage" in preAborted, false);
     assert.equal("usage" in thrown, false);

@@ -12,12 +12,10 @@ import {
 import { runConfigWizard } from "../src/ui.ts";
 
 describe("translate configuration", () => {
-  it("accepts only a complete strict configuration", () => {
-    assert.deepEqual(parseConfig({ language: "French", model: "openrouter/anthropic/claude-sonnet-4", mode: "manual" }), {
-      language: "French",
-      model: "openrouter/anthropic/claude-sonnet-4",
-      mode: "manual",
-    });
+  it("accepts strict configuration with an optional bounded timeout", () => {
+    const legacy = { language: "French", model: "openrouter/anthropic/claude-sonnet-4", mode: "manual" };
+    assert.deepEqual(parseConfig(legacy), legacy);
+    assert.deepEqual(parseConfig({ ...legacy, timeoutMs: 10_000 }), { ...legacy, timeoutMs: 10_000 });
     for (const invalid of [
       null,
       {},
@@ -28,6 +26,10 @@ describe("translate configuration", () => {
       { language: "French", model: "/model", mode: "manual" },
       { language: "French", model: "provider/", mode: "manual" },
       { language: "French", model: "a/b", mode: "sometimes" },
+      { language: "French", model: "a/b", mode: "manual", timeoutMs: 999 },
+      { language: "French", model: "a/b", mode: "manual", timeoutMs: 300_001 },
+      { language: "French", model: "a/b", mode: "manual", timeoutMs: 1.5 },
+      { language: "French", model: "a/b", mode: "manual", timeoutMs: "60s" },
       { language: "French", model: "a/b", mode: "manual", fallback: "c/d" },
     ]) {
       assert.equal(parseConfig(invalid), undefined);
@@ -133,10 +135,16 @@ describe("translate configuration", () => {
       },
     };
 
-    assert.deepEqual(await runConfigWizard(context as never), {
+    assert.deepEqual(await runConfigWizard(context as never, {
+      language: "French",
+      model: "provider/model",
+      mode: "manual",
+      timeoutMs: 10_000,
+    }), {
       language: "Ukrainian",
       model: "provider/model",
       mode: "manual",
+      timeoutMs: 10_000,
     });
     assert.deepEqual(notifications, [{ message: "Target language must be a single line.", level: "warning" }]);
   });
