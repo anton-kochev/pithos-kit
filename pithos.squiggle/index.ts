@@ -1,1 +1,1 @@
-export { default } from "./extensions/squiggle.ts";
+export { default } from "./extensions/index.ts";

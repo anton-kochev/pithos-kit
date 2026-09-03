@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { registerSquiggle } from "../extensions/squiggle.ts";
+import { registerSquiggle } from "../extensions/index.ts";
 
 function createHarness(corrected: string) {
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
