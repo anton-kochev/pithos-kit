@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/web",
-  "version": "0.1.1",
+  "version": "0.2.0",
   "description": "Trusted public-web search and static page fetching tools for Pi.",
   "keywords": [
     "pi-package",

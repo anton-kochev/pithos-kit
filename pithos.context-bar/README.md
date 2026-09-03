@@ -27,7 +27,7 @@ pi install -l ./pithos.context-bar
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/context-bar": "npm:0.1.1"
+    "@pithos-kit/context-bar": "npm:0.2.0"
 ```
 
 ## Commands

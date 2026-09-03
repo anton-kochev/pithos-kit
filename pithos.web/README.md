@@ -13,7 +13,7 @@ pi install npm:@pithos-kit/web
 Pin the initial release:
 
 ```bash
-pi install npm:@pithos-kit/web@0.1.1
+pi install npm:@pithos-kit/web@0.2.0
 ```
 
 For local development:
@@ -27,7 +27,7 @@ pi install -l ./pithos.web
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/web": "npm:0.1.1"
+    "@pithos-kit/web": "npm:0.2.0"
 ```
 
 ## Brave Search onboarding

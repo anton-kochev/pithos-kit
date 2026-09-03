@@ -34,7 +34,7 @@ pi -e ./pithos.telos
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/telos": "npm:0.2.0"
+    "@pithos-kit/telos": "npm:0.3.0"
 ```
 
 ## Usage

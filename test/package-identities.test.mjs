@@ -6,18 +6,18 @@ import { describe, it } from "node:test";
 const root = resolve(import.meta.dirname, "..");
 const repositoryUrl = "git+https://github.com/anton-kochev/pithos-kit.git";
 const packages = [
-  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.4.1", minimumPi: ">=0.83.0" },
-  { directory: "pithos.echo", shortName: "echo", version: "0.4.1", minimumPi: ">=0.83.0" },
-  { directory: "pithos.answer", shortName: "answer", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.telos", shortName: "telos", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.aegis", shortName: "aegis", version: "0.1.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.5.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.echo", shortName: "echo", version: "0.5.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.answer", shortName: "answer", version: "0.3.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.telos", shortName: "telos", version: "0.3.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.guild", shortName: "guild", version: "0.3.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.1.1", minimumPi: ">=0.84.1" },
-  { directory: "pithos.plan", shortName: "plan", version: "0.4.1", minimumPi: ">=0.83.0" },
+  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0", minimumPi: ">=0.84.1" },
+  { directory: "pithos.plan", shortName: "plan", version: "0.5.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.themes", shortName: "themes", version: "0.1.0", minimumPi: ">=0.84.1" },
-  { directory: "pithos.translate", shortName: "translate", version: "1.0.0", minimumPi: ">=0.84.0" },
-  { directory: "pithos.web", shortName: "web", version: "0.1.1", minimumPi: ">=0.83.0" },
-  { directory: "pithos.atlas", shortName: "atlas", version: "0.7.1", minimumPi: ">=0.83.0" },
+  { directory: "pithos.translate", shortName: "translate", version: "1.1.0", minimumPi: ">=0.84.0" },
+  { directory: "pithos.web", shortName: "web", version: "0.2.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.0", minimumPi: ">=0.83.0" },
 ];
 
 const capabilityKinds = ["commands", "tools", "prompts", "skills", "themes", "agents"];

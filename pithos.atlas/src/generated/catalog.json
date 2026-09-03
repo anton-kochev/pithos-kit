@@ -3,7 +3,7 @@
   "packages": [
     {
       "name": "@pithos-kit/aegis",
-      "version": "0.1.0",
+      "version": "0.2.0",
       "description": "Protect Pi agent shell commands and file mutations with configurable block and confirmation rules.",
       "pi": {
         "extensions": [
@@ -37,7 +37,7 @@
     },
     {
       "name": "@pithos-kit/answer",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Interactive Q&A extraction and answer submission for Pi assistant responses.",
       "pi": {
         "extensions": [
@@ -65,7 +65,7 @@
     },
     {
       "name": "@pithos-kit/atlas",
-      "version": "0.7.1",
+      "version": "0.8.0",
       "description": "Session names, catalog, diagnostics, configuration, and guarded Pi runtime patches for pithos-kit.",
       "pi": {
         "extensions": [
@@ -118,7 +118,7 @@
     },
     {
       "name": "@pithos-kit/context-bar",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "description": "A context-window composition bar with ChatGPT Codex subscription usage for Pi.",
       "pi": {
         "extensions": [
@@ -152,7 +152,7 @@
     },
     {
       "name": "@pithos-kit/echo",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Echo: a read-only side-channel question asker for Pi sessions and project code.",
       "pi": {
         "extensions": [
@@ -326,7 +326,7 @@
     },
     {
       "name": "@pithos-kit/plan",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Session-owned read-only planning with durable checkpoints, explicit lifecycle commands, previews, and conflict-safe atomic publication for Pi.",
       "pi": {
         "extensions": [
@@ -387,7 +387,7 @@
     },
     {
       "name": "@pithos-kit/squiggle",
-      "version": "0.4.1",
+      "version": "0.5.0",
       "description": "Quietly polish grammar and spelling in your Pi prompts.",
       "pi": {
         "extensions": [
@@ -441,7 +441,7 @@
     },
     {
       "name": "@pithos-kit/telos",
-      "version": "0.2.0",
+      "version": "0.3.0",
       "description": "Telos: repo-scoped structured task tracking for Pi.",
       "pi": {
         "extensions": [
@@ -511,7 +511,7 @@
     },
     {
       "name": "@pithos-kit/translate",
-      "version": "1.0.0",
+      "version": "1.1.0",
       "description": "Faithful manual and display-only automatic assistant translation for Pi.",
       "pi": {
         "extensions": [
@@ -545,7 +545,7 @@
     },
     {
       "name": "@pithos-kit/web",
-      "version": "0.1.1",
+      "version": "0.2.0",
       "description": "Trusted public-web search and static page fetching tools for Pi.",
       "pi": {
         "extensions": [

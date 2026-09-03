@@ -41,7 +41,7 @@ pi -e ./pithos.aegis
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/aegis": "npm:0.1.0"
+    "@pithos-kit/aegis": "npm:0.2.0"
 ```
 
 ## Default behavior

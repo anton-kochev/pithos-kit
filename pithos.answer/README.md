@@ -24,7 +24,7 @@ Inside a [pithos](https://github.com/anton-kochev/pithos) container this extensi
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/answer": "npm:0.2.0"
+    "@pithos-kit/answer": "npm:0.3.0"
 ```
 
 For local development from this repository:

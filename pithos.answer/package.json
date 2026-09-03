@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/answer",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Interactive Q&A extraction and answer submission for Pi assistant responses.",
   "keywords": [
     "pi-package",

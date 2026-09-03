@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/telos",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "description": "Telos: repo-scoped structured task tracking for Pi.",
   "keywords": [
     "pi-package",

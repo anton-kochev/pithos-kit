@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/echo",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "description": "Echo: a read-only side-channel question asker for Pi sessions and project code.",
   "keywords": [
     "pi-package",
