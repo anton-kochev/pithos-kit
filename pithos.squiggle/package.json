@@ -40,10 +40,11 @@
     "themes": [],
     "agents": [],
     "configuration": [
-      { "kind": "file", "key": ".pi/squiggle.json", "summary": "Project correction mode, model, and input limit." },
+      { "kind": "file", "key": ".pi/squiggle.json", "summary": "Project correction mode, model, input limit, and timeout." },
       { "kind": "environment", "key": "SQUIGGLE_MODE", "summary": "Override correction mode." },
       { "kind": "environment", "key": "SQUIGGLE_MODEL", "summary": "Override the correction model." },
-      { "kind": "environment", "key": "SQUIGGLE_MAX_CHARS", "summary": "Override the maximum corrected input length." }
+      { "kind": "environment", "key": "SQUIGGLE_MAX_CHARS", "summary": "Override the maximum corrected input length." },
+      { "kind": "environment", "key": "SQUIGGLE_TIMEOUT_MS", "summary": "Override the bounded correction timeout." }
     ]
   },
   "pi": {

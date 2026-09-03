@@ -419,7 +419,7 @@
           {
             "kind": "file",
             "key": ".pi/squiggle.json",
-            "summary": "Project correction mode, model, and input limit."
+            "summary": "Project correction mode, model, input limit, and timeout."
           },
           {
             "kind": "environment",
@@ -435,6 +435,11 @@
             "kind": "environment",
             "key": "SQUIGGLE_MAX_CHARS",
             "summary": "Override the maximum corrected input length."
+          },
+          {
+            "kind": "environment",
+            "key": "SQUIGGLE_TIMEOUT_MS",
+            "summary": "Override the bounded correction timeout."
           }
         ]
       }

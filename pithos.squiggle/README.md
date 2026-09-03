@@ -50,7 +50,8 @@ Create `.pi/squiggle.json` in your project:
 {
   "mode": "on",
   "model": "openai-codex/gpt-5.4-mini",
-  "maxInputChars": 500
+  "maxInputChars": 500,
+  "timeoutMs": 10000
 }
 ```
 
@@ -59,6 +60,7 @@ Options:
 - `mode`: `"on"` or `"off"`
 - `model`: pi model spec in `provider/model` format
 - `maxInputChars`: maximum input length to send to the correction model
+- `timeoutMs`: correction deadline in milliseconds, from `1000` to `60000` (default: `10000`)
 
 Environment variables override the config file:
 
@@ -66,6 +68,7 @@ Environment variables override the config file:
 SQUIGGLE_MODE=off pi
 SQUIGGLE_MODEL=openai-codex/gpt-5.4-mini pi
 SQUIGGLE_MAX_CHARS=1000 pi
+SQUIGGLE_TIMEOUT_MS=15000 pi
 ```
 
 ## Commands
@@ -82,6 +85,8 @@ Inside pi:
 `-h` is accepted wherever `--help` is shown.
 
 The toggle state is saved in the current pi session and overrides `.pi/squiggle.json` and environment configuration for that session.
+
+If authentication or correction exceeds the configured deadline, Squiggle cancels the request, clears the spinner, and submits the original prompt unchanged. Session shutdown, reload, and an active Pi cancellation signal also cancel in-flight correction.
 
 ## Notes
 

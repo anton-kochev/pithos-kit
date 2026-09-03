@@ -18,17 +18,43 @@ Show whether Squiggle is enabled and which correction model it uses.
 Options:
   --help, -h  Show this help`;
 
+export type SquiggleConfig = {
+	mode: "on" | "off";
+	model: string;
+	maxInputChars: number;
+	timeoutMs: number;
+};
+
+export const DEFAULT_CORRECTION_TIMEOUT_MS = 10_000;
+export const MIN_CORRECTION_TIMEOUT_MS = 1_000;
+export const MAX_CORRECTION_TIMEOUT_MS = 60_000;
+
+type CorrectPrompt = (
+	input: string,
+	ctx: ExtensionContext,
+	config: SquiggleConfig,
+	log?: PithosLogger,
+	signal?: AbortSignal,
+) => Promise<string | null>;
+
 export function registerSquiggle(
 	pi: ExtensionAPI,
-	correctPrompt: (input: string, ctx: ExtensionContext, config: SquiggleConfig, log?: PithosLogger) => Promise<string | null> = correctWithModel,
+	correctPrompt: CorrectPrompt = correctWithModel,
 ) {
 	const log = createPithosLogger();
 	log.info("extension.register");
 	let runtimeMode: SquiggleConfig["mode"] | undefined;
+	let correctionScope = new AbortController();
 
 	pi.on("session_start", async (event, ctx) => {
+		correctionScope.abort();
+		correctionScope = new AbortController();
 		runtimeMode = restoreRuntimeMode(ctx);
 		log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), runtimeMode });
+	});
+
+	pi.on("session_shutdown", async () => {
+		correctionScope.abort();
 	});
 
 	pi.registerCommand("squiggle", {
@@ -45,6 +71,10 @@ export function registerSquiggle(
 
 			const config = loadEffectiveConfig(ctx.cwd, runtimeMode);
 			runtimeMode = config.mode === "on" ? "off" : "on";
+			if (runtimeMode === "off") {
+				correctionScope.abort();
+				correctionScope = new AbortController();
+			}
 			persistRuntimeMode(pi, runtimeMode);
 			ctx.ui.notify(formatStatus(ctx, loadEffectiveConfig(ctx.cwd, runtimeMode)), "info");
 		},
@@ -67,7 +97,10 @@ export function registerSquiggle(
 		if (!event.text.trim()) return { action: "continue" };
 
 		const stopIndicator = startSquiggleIndicator(ctx);
-		const corrected = await correctPrompt(event.text, ctx, config, log).finally(stopIndicator);
+		const cancellationSignal = ctx.signal
+			? AbortSignal.any([ctx.signal, correctionScope.signal])
+			: correctionScope.signal;
+		const corrected = await correctPrompt(event.text, ctx, config, log, cancellationSignal).finally(stopIndicator);
 		if (!corrected || corrected === event.text) return { action: "continue" };
 
 		if (ctx.hasUI) ctx.ui.notify(formatColoredDiff(event.text, corrected), "info");
@@ -102,22 +135,67 @@ Task:
 const DEFAULT_CORRECTION_MODEL = "openai-codex/gpt-5.4-mini";
 const DEFAULT_MAX_LLM_INPUT_CHARS = 500;
 
-type SquiggleConfig = {
-	mode: "on" | "off";
-	model: string;
-	maxInputChars: number;
-};
+type CorrectionInterruption = "cancelled" | "timeout";
 
-async function correctWithModel(input: string, ctx: ExtensionContext, config: SquiggleConfig, log = createPithosLogger()): Promise<string | null> {
+class CorrectionInterruptedError extends Error {
+	readonly kind: CorrectionInterruption;
+
+	constructor(kind: CorrectionInterruption, timeoutMs?: number) {
+		super(kind === "timeout" ? `Correction timed out after ${formatDuration(timeoutMs!)}.` : "Correction cancelled.");
+		this.kind = kind;
+	}
+}
+
+export async function correctWithModel(
+	input: string,
+	ctx: ExtensionContext,
+	config: SquiggleConfig,
+	log = createPithosLogger(),
+	signal?: AbortSignal,
+	completePrompt: typeof complete = complete,
+): Promise<string | null> {
 	const model = selectCorrectionModel(ctx, config);
 	if (!model) return null;
 	if (input.length > config.maxInputChars) return null;
 
+	const started = Date.now();
+	const sessionId = (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.();
+	log.info("model.correct.start", { sessionId, inputChars: input.length, timeoutMs: config.timeoutMs, ...modelMetadata(model) });
+
+	if (signal?.aborted) {
+		log.warn("model.correct.cancelled", { sessionId, durationMs: Date.now() - started, inputChars: input.length, ...modelMetadata(model) });
+		return null;
+	}
+
+	const requestController = new AbortController();
+	let interruptionKind: CorrectionInterruption | undefined;
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	let removeAbort: (() => void) | undefined;
+	const interruption = new Promise<never>((_resolve, reject) => {
+		timer = setTimeout(() => {
+			interruptionKind = "timeout";
+			requestController.abort();
+			reject(new CorrectionInterruptedError("timeout", config.timeoutMs));
+		}, config.timeoutMs);
+		const onAbort = () => {
+			if (interruptionKind) return;
+			interruptionKind = "cancelled";
+			requestController.abort();
+			reject(new CorrectionInterruptedError("cancelled"));
+		};
+		signal?.addEventListener("abort", onAbort, { once: true });
+		removeAbort = () => signal?.removeEventListener("abort", onAbort);
+	});
+
 	try {
-		const started = Date.now();
-		log.info("model.correct.start", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), inputChars: input.length, ...modelMetadata(model) });
-		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(model);
-		if (!auth.ok || !auth.apiKey) return null;
+		const auth = await Promise.race([
+			ctx.modelRegistry.getApiKeyAndHeaders(model),
+			interruption,
+		]);
+		if (!auth.ok || !auth.apiKey) {
+			log.warn("model.correct.unavailable", { sessionId, durationMs: Date.now() - started, inputChars: input.length, ...modelMetadata(model) });
+			return null;
+		}
 
 		const userMessage: UserMessage = {
 			role: "user",
@@ -125,14 +203,24 @@ async function correctWithModel(input: string, ctx: ExtensionContext, config: Sq
 			timestamp: Date.now(),
 		};
 
-		const response = await complete(
-			model,
-			{ systemPrompt: CORRECTION_PROMPT, messages: [userMessage] },
-			{ apiKey: auth.apiKey, headers: auth.headers },
-		);
+		const response = await Promise.race([
+			completePrompt(
+				model,
+				{ systemPrompt: CORRECTION_PROMPT, messages: [userMessage] },
+				{ apiKey: auth.apiKey, headers: auth.headers, signal: requestController.signal },
+			),
+			interruption,
+		]);
 
 		if (response.stopReason === "aborted") {
-			log.warn("model.correct.aborted", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, ...modelMetadata(model), usage: usageMetadata(response.usage) });
+			const metadata = { sessionId, durationMs: Date.now() - started, inputChars: input.length, ...modelMetadata(model), usage: usageMetadata(response.usage) };
+			if (interruptionKind === "timeout") {
+				log.warn("model.correct.timeout", { ...metadata, timeoutMs: config.timeoutMs });
+			} else if (interruptionKind === "cancelled" || signal?.aborted) {
+				log.warn("model.correct.cancelled", metadata);
+			} else {
+				log.warn("model.correct.aborted", metadata);
+			}
 			return null;
 		}
 
@@ -141,12 +229,25 @@ async function correctWithModel(input: string, ctx: ExtensionContext, config: Sq
 			.map((c) => c.text)
 			.join("\n")
 			.trim();
-		log.info("model.correct.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, inputChars: input.length, changed: corrected !== input, ...modelMetadata(model), usage: usageMetadata(response.usage) });
+		log.info("model.correct.complete", { sessionId, durationMs: Date.now() - started, inputChars: input.length, changed: corrected !== input, ...modelMetadata(model), usage: usageMetadata(response.usage) });
 		return corrected;
 	} catch (error) {
-		log.warn("model.correct.error", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), inputChars: input.length, ...modelMetadata(model), error: errorMetadata(error) });
+		if (interruptionKind === "timeout" || (error instanceof CorrectionInterruptedError && error.kind === "timeout")) {
+			log.warn("model.correct.timeout", { sessionId, durationMs: Date.now() - started, inputChars: input.length, timeoutMs: config.timeoutMs, ...modelMetadata(model) });
+		} else if (interruptionKind === "cancelled" || signal?.aborted || error instanceof CorrectionInterruptedError || (error instanceof Error && error.name === "AbortError")) {
+			log.warn("model.correct.cancelled", { sessionId, durationMs: Date.now() - started, inputChars: input.length, ...modelMetadata(model) });
+		} else {
+			log.warn("model.correct.error", { sessionId, durationMs: Date.now() - started, inputChars: input.length, ...modelMetadata(model), error: errorMetadata(error) });
+		}
 		return null;
+	} finally {
+		if (timer) clearTimeout(timer);
+		removeAbort?.();
 	}
+}
+
+function formatDuration(timeoutMs: number): string {
+	return timeoutMs % 1_000 === 0 ? `${timeoutMs / 1_000}s` : `${timeoutMs}ms`;
 }
 
 function loadConfig(cwd: string): SquiggleConfig {
@@ -155,6 +256,7 @@ function loadConfig(cwd: string): SquiggleConfig {
 		mode: normalizeMode(process.env.SQUIGGLE_MODE ?? fileConfig.mode) ?? "on",
 		model: process.env.SQUIGGLE_MODEL ?? fileConfig.model ?? DEFAULT_CORRECTION_MODEL,
 		maxInputChars: normalizePositiveInt(process.env.SQUIGGLE_MAX_CHARS ?? fileConfig.maxInputChars) ?? DEFAULT_MAX_LLM_INPUT_CHARS,
+		timeoutMs: normalizeTimeoutMs(process.env.SQUIGGLE_TIMEOUT_MS ?? fileConfig.timeoutMs) ?? DEFAULT_CORRECTION_TIMEOUT_MS,
 	};
 }
 
@@ -189,6 +291,7 @@ function readConfigFile(cwd: string): Partial<SquiggleConfig> {
 			mode: typeof parsed.mode === "string" ? normalizeMode(parsed.mode) : undefined,
 			model: typeof parsed.model === "string" ? parsed.model : undefined,
 			maxInputChars: normalizePositiveInt(parsed.maxInputChars),
+			timeoutMs: normalizeTimeoutMs(parsed.timeoutMs),
 		};
 	} catch {
 		return {};
@@ -202,6 +305,13 @@ function normalizeMode(value: unknown): SquiggleConfig["mode"] | undefined {
 function normalizePositiveInt(value: unknown): number | undefined {
 	const parsed = typeof value === "number" ? value : typeof value === "string" ? Number.parseInt(value, 10) : Number.NaN;
 	return Number.isInteger(parsed) && parsed > 0 ? parsed : undefined;
+}
+
+export function normalizeTimeoutMs(value: unknown): number | undefined {
+	const parsed = normalizePositiveInt(value);
+	return parsed !== undefined && parsed >= MIN_CORRECTION_TIMEOUT_MS && parsed <= MAX_CORRECTION_TIMEOUT_MS
+		? parsed
+		: undefined;
 }
 
 function selectCorrectionModel(ctx: ExtensionContext, config: SquiggleConfig) {

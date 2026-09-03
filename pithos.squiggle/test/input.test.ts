@@ -2,7 +2,9 @@ import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { registerSquiggle } from "../extensions/index.ts";
 
-function createHarness(corrected: string) {
+type Corrector = (...args: any[]) => Promise<string | null>;
+
+function createHarness(corrected: string | Corrector) {
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
 	let corrections = 0;
 	registerSquiggle({
@@ -11,9 +13,9 @@ function createHarness(corrected: string) {
 		},
 		registerCommand() {},
 		appendEntry() {},
-	} as never, async () => {
+	} as never, async (...args: any[]) => {
 		corrections += 1;
-		return corrected;
+		return typeof corrected === "function" ? corrected(...args) : corrected;
 	});
 
 	const notifications: string[] = [];
@@ -30,6 +32,7 @@ function createHarness(corrected: string) {
 
 	return {
 		handleInput: (event: any) => handlers.get("input")!(event, ctx),
+		shutdown: () => handlers.get("session_shutdown")!({ reason: "reload" }, ctx),
 		notifications,
 		statuses,
 		get corrections() {
@@ -83,5 +86,32 @@ describe("Squiggle input transformation", () => {
 
 		assert.deepEqual(result, { action: "continue" });
 		assert.equal(harness.corrections, 0);
+	});
+
+	it("cancels an in-flight correction on shutdown, preserves the input, and clears the spinner", async () => {
+		let receivedSignal: AbortSignal | undefined;
+		let markStarted!: () => void;
+		const started = new Promise<void>((resolve) => {
+			markStarted = resolve;
+		});
+		const harness = createHarness(async (_input, _ctx, _config, _log, signal: AbortSignal) => {
+			receivedSignal = signal;
+			markStarted();
+			return new Promise((resolve) => {
+				signal.addEventListener("abort", () => resolve(null), { once: true });
+			});
+		});
+		const pending = harness.handleInput({
+			type: "input",
+			source: "interactive",
+			text: "Corected prompt",
+		});
+		await started;
+
+		await harness.shutdown();
+
+		assert.deepEqual(await pending, { action: "continue" });
+		assert.equal(receivedSignal?.aborted, true);
+		assert.equal(harness.statuses.at(-1), undefined);
 	});
 });
