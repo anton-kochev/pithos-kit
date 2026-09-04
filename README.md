@@ -52,7 +52,7 @@ pi:
     "@pithos-kit/guild": "npm:0.3.0"
     "@pithos-kit/plan": "npm:0.4.1"
     "@pithos-kit/squiggle": "npm:0.4.1"
-    "@pithos-kit/translate": "npm:1.1.0"
+    "@pithos-kit/translate": "npm:2.0.0"
     "@pithos-kit/web": "npm:0.1.1"
 ```
 

@@ -60,5 +60,5 @@
 - [x] Record source-free provider/model/stop metadata and available usage for each completed main assistant-model response, without recording response text.
 - [x] Record unsupported inbound blocking and unexpected inbound exceptions with safe classifications and no source or provider-error content.
 - [x] Document that the local runtime and configured translation provider necessarily receive inbound source transiently.
-- [x] Publish `@pithos-kit/translate` v1.1.0 for Pi >=0.84.0 with one extension entry, one `translate` command, directional metadata, scripts, and packed files.
+- [x] Publish `@pithos-kit/translate` v2.0.0 for Pi >=0.84.0 with one extension entry, one `translate` command, directional metadata, scripts, and packed files.
 - [x] Document the intentionally breaking command grammar and strict unified configuration schema.

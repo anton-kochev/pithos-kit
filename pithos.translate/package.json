@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/translate",
-  "version": "1.1.0",
+  "version": "2.0.0",
   "description": "Translate interactive input into English and assistant output into a chosen language for Pi.",
   "keywords": [
     "pi-package",

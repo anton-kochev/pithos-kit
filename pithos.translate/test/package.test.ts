@@ -11,7 +11,7 @@ describe("translate package", () => {
     const extension = await import("../extensions/index.ts");
 
     assert.equal(manifest.name, "@pithos-kit/translate");
-    assert.equal(manifest.version, "1.1.0");
+    assert.equal(manifest.version, "2.0.0");
     assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.0");
     assert.equal(manifest.pithosKit.minimumPi, ">=0.84.0");
     assert.deepEqual(manifest.pi.extensions, ["./extensions"]);
