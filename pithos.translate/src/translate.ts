@@ -2,7 +2,7 @@ import type { Usage } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { getMarkdownTheme } from "@earendil-works/pi-coding-agent";
 import { Box, Markdown, Text } from "@earendil-works/pi-tui";
-import { parseTranslateCommand, TRANSLATE_HELP } from "./command-help.ts";
+import { parseTranslateCommand, TRANSLATE_CONTROL_ARGUMENTS, TRANSLATE_HELP } from "./command-help.ts";
 import {
   resolveTranslateSource,
   ScopedConfigStore,
@@ -10,6 +10,8 @@ import {
   DEFAULT_TRANSLATION_TIMEOUT_MS,
   TRANSLATE_COMMAND_DESCRIPTION,
   type ConfigScope,
+  type InputTranslateConfig,
+  type OutputTranslateConfig,
   type TranslateConfig,
 } from "./config.ts";
 import {
@@ -21,12 +23,19 @@ import {
   type TranslationUsageRecord,
 } from "./display-cache.ts";
 import { containsMermaidFence } from "./markdown-protection.ts";
-import { getEligibleTextBlocks, latestEligibleAssistant, translateMarkdown, type TranslationResult } from "./translation.ts";
-import { runConfigWizard, runTranslationWithUi } from "./ui.ts";
-import { createPithosLogger, errorMetadata, usageMetadata } from "./logging.ts";
+import {
+  getEligibleTextBlocks,
+  latestEligibleAssistant,
+  translateInputMarkdown,
+  translateMarkdown,
+  type TranslationResult,
+} from "./translation.ts";
+import { runConfigWizard, runInputConfigWizard, runTranslationWithUi } from "./ui.ts";
+import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata, type PithosLogger } from "./logging.ts";
 
 export const MANUAL_ENTRY_TYPE = "pithos.translate.manual";
 const AUTOMATIC_STATUS_KEY = "pithos.translate";
+const INPUT_STATUS_KEY = "pithos.translate.input";
 const AUTOMATIC_STATUS_FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 
 export interface ManualTranslationRecord {
@@ -47,22 +56,32 @@ interface PendingAutomaticRecord {
 }
 
 export interface TranslateDependencies {
-  configure?: (ctx: ExtensionContext, current?: TranslateConfig) => Promise<TranslateConfig | undefined>;
+  configure?: (ctx: ExtensionContext, current?: OutputTranslateConfig) => Promise<OutputTranslateConfig | undefined>;
+  configureInput?: (ctx: ExtensionContext, current?: InputTranslateConfig) => Promise<InputTranslateConfig | undefined>;
   translate?: (
     source: string,
-    config: TranslateConfig,
+    config: OutputTranslateConfig,
+    modelRegistry: ExtensionContext["modelRegistry"],
+    signal?: AbortSignal,
+  ) => Promise<TranslationResult>;
+  translateInput?: (
+    source: string,
+    config: InputTranslateConfig,
     modelRegistry: ExtensionContext["modelRegistry"],
     signal?: AbortSignal,
   ) => Promise<TranslationResult>;
   runWithUi?: typeof runTranslationWithUi;
   createStore?: (scope: ConfigScope, cwd: string, temporarySource: string) => ScopedConfigStore;
+  logger?: Pick<PithosLogger, "info" | "error">;
 }
 
 export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDependencies = {}): void {
-  const log = createPithosLogger();
+  const log = dependencies.logger ?? createPithosLogger();
   log.info("extension.register");
-  const configure = dependencies.configure ?? runConfigWizard;
+  const configureOutput = dependencies.configure ?? runConfigWizard;
+  const configureInput = dependencies.configureInput ?? runInputConfigWizard;
   const translate = dependencies.translate ?? translateMarkdown;
+  const translateInput = dependencies.translateInput ?? translateInputMarkdown;
   const runWithUi = dependencies.runWithUi ?? runTranslationWithUi;
   const displayCache = new TranslationDisplayCache();
   let store: ScopedConfigStore | undefined;
@@ -70,6 +89,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   let pendingAutomaticRecords = new WeakMap<object, PendingAutomaticRecord>();
   let pendingAutomaticRecordsByKey = new Map<string, Set<PendingAutomaticRecord>>();
   let stopAutomaticIndicator: (() => void) | undefined;
+  let stopInputIndicator: (() => void) | undefined;
 
   const clearAutomaticIndicator = (): void => {
     stopAutomaticIndicator?.();
@@ -77,7 +97,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
 
   const startAutomaticIndicator = (
     ctx: ExtensionContext,
-    activeConfig: TranslateConfig,
+    activeConfig: OutputTranslateConfig,
   ): (() => void) => {
     clearAutomaticIndicator();
     if (ctx.mode !== "tui" || !ctx.hasUI) return () => {};
@@ -115,6 +135,42 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     return stopIfCurrent;
   };
 
+  const clearInputIndicator = (): void => {
+    stopInputIndicator?.();
+  };
+
+  const startInputIndicator = (
+    ctx: ExtensionContext,
+    activeConfig: InputTranslateConfig,
+  ): (() => void) => {
+    clearInputIndicator();
+    if (ctx.mode !== "tui" || !ctx.hasUI) return () => {};
+
+    let frame = 0;
+    let stopped = false;
+    let timer: ReturnType<typeof setInterval> | undefined;
+    const render = (): void => {
+      const theme = ctx.ui.theme;
+      const spinner = theme.fg("accent", AUTOMATIC_STATUS_FRAMES[frame]!);
+      const text = theme.fg("dim", ` Translating prompt into English with ${activeConfig.model}...`);
+      ctx.ui.setStatus(INPUT_STATUS_KEY, spinner + text);
+      frame = (frame + 1) % AUTOMATIC_STATUS_FRAMES.length;
+    };
+    const stop = (): void => {
+      if (stopped) return;
+      stopped = true;
+      if (timer) clearInterval(timer);
+      if (stopInputIndicator === stop) stopInputIndicator = undefined;
+      ctx.ui.setStatus(INPUT_STATUS_KEY, undefined);
+    };
+
+    stopInputIndicator = stop;
+    render();
+    timer = setInterval(render, 120);
+    timer.unref?.();
+    return stop;
+  };
+
   const clearPendingAutomaticRecords = (): void => {
     pendingAutomaticRecords = new WeakMap();
     pendingAutomaticRecordsByKey = new Map();
@@ -146,25 +202,42 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     return true;
   };
 
-  const ensureConfig = async (
+  const ensureOutputConfig = async (
     ctx: ExtensionContext,
-    initialMode?: TranslateConfig["mode"],
-  ): Promise<TranslateConfig | undefined> => {
+    initialMode?: OutputTranslateConfig["mode"],
+  ): Promise<OutputTranslateConfig | undefined> => {
     if (!store && !(await initialize(ctx))) return undefined;
-    if (config) return config;
-    const selected = await configure(ctx);
+    if (config?.output) return config.output;
+    const selected = await configureOutput(ctx);
     if (!selected) {
       notify(ctx, "Translation configuration was cancelled.", "warning");
       return undefined;
     }
     const completed = initialMode ? { ...selected, mode: initialMode } : selected;
-    await store!.save(completed);
-    config = completed;
+    config = { ...config, output: completed };
+    await store!.save(config);
+    return completed;
+  };
+
+  const ensureInputConfig = async (
+    ctx: ExtensionContext,
+    initialMode?: InputTranslateConfig["mode"],
+  ): Promise<InputTranslateConfig | undefined> => {
+    if (!store && !(await initialize(ctx))) return undefined;
+    if (config?.input) return config.input;
+    const selected = await configureInput(ctx);
+    if (!selected) {
+      notify(ctx, "Input translation configuration was cancelled.", "warning");
+      return undefined;
+    }
+    const completed = initialMode ? { ...selected, mode: initialMode } : selected;
+    config = { ...config, input: completed };
+    await store!.save(config);
     return completed;
   };
 
   pi.registerMarkdownTransformer((markdown, context) =>
-    displayCache.transform(markdown, context, config?.mode === "automatic"),
+    displayCache.transform(markdown, context, config?.output?.mode === "on"),
   );
 
   pi.registerEntryRenderer<ManualTranslationRecord>(MANUAL_ENTRY_TYPE, (entry, _options, theme) => {
@@ -180,7 +253,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     description: TRANSLATE_COMMAND_DESCRIPTION,
     getArgumentCompletions: (prefix) => {
       if (/\s/.test(prefix)) return null;
-      const items = ["on", "off", "status", "config", "--help"]
+      const items = [...TRANSLATE_CONTROL_ARGUMENTS, "--help"]
         .filter((value) => value.startsWith(prefix))
         .map((value) => ({ value, label: value }));
       return items.length > 0 ? items : null;
@@ -196,62 +269,116 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
         notify(ctx, `${command.message}\n\n${TRANSLATE_HELP}`, "warning");
         return;
       }
-      if (command.type === "status") {
-        if (!store && !(await initialize(ctx))) return;
-        notify(
-          ctx,
-          config
-            ? `Translation scope: ${store!.scope}\nLanguage: ${config.language}\nModel: ${config.model}\nMode: ${config.mode}\nTimeout: ${formatTimeout(config.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}`
-            : `Translation scope: ${store!.scope}\nNot configured. Run /translate config.`,
-          "info",
-        );
-        return;
-      }
-      if (command.type === "config") {
-        if (!store && !(await initialize(ctx))) return;
-        const selected = await configure(ctx, config);
-        if (!selected) {
-          notify(ctx, "Translation configuration was cancelled.", "warning");
+      if (command.type === "control") {
+        if (command.direction === "input") {
+          if (command.action === "status") {
+            if (!store && !(await initialize(ctx))) return;
+            notify(
+              ctx,
+              config?.input
+                ? `Translation scope: ${store!.scope}\nLanguage: English\nModel: ${config.input.model}\nMode: ${config.input.mode}\nTimeout: ${formatTimeout(config.input.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}`
+                : `Translation scope: ${store!.scope}\nNot configured. Run /translate input-config.`,
+              "info",
+            );
+            return;
+          }
+          if (command.action === "config") {
+            if (!store && !(await initialize(ctx))) return;
+            const selected = await configureInput(ctx, config?.input);
+            if (!selected) {
+              notify(ctx, "Input translation configuration was cancelled.", "warning");
+              return;
+            }
+            config = { ...config, input: selected };
+            await store!.save(config);
+            if (selected.mode !== "on") clearInputIndicator();
+            notify(ctx, `Input translation configured for English with ${selected.model} (${store!.scope} scope).`, "info");
+            return;
+          }
+          if (command.action === "off") {
+            clearInputIndicator();
+            if (!store && !(await initialize(ctx))) return;
+            if (!config?.input) {
+              notify(ctx, "Input translation is already off.", "info");
+              return;
+            }
+            if (config.input.mode === "on") {
+              config = { ...config, input: { ...config.input, mode: "off" } };
+              await store!.save(config);
+              notify(ctx, "Input translation is off.", "info");
+            } else {
+              notify(ctx, "Input translation is already off.", "info");
+            }
+            return;
+          }
+          if (command.action === "on") {
+            const activeConfig = await ensureInputConfig(ctx, "on");
+            if (!activeConfig) return;
+            if (activeConfig.mode !== "on") {
+              config = { ...config, input: { ...activeConfig, mode: "on" } };
+              await store!.save(config);
+            }
+            notify(ctx, "Input translation is on.", "info");
+            return;
+          }
+        }
+        if (command.action === "status") {
+          if (!store && !(await initialize(ctx))) return;
+          notify(
+            ctx,
+            config?.output
+              ? `Translation scope: ${store!.scope}\nLanguage: ${config.output.language}\nModel: ${config.output.model}\nMode: ${config.output.mode}\nTimeout: ${formatTimeout(config.output.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}`
+              : `Translation scope: ${store!.scope}\nNot configured. Run /translate output-config.`,
+            "info",
+          );
           return;
         }
-        await store!.save(selected);
-        config = selected;
-        if (selected.mode !== "automatic") clearAutomaticIndicator();
-        notify(ctx, `Translation configured for ${selected.language} with ${selected.model} (${store!.scope} scope).`, "info");
-        return;
-      }
-      if (command.type === "off") {
-        clearAutomaticIndicator();
-        if (!store && !(await initialize(ctx))) return;
-        if (!config) {
-          notify(ctx, "Automatic translation is already off.", "info");
+        if (command.action === "config") {
+          if (!store && !(await initialize(ctx))) return;
+          const selected = await configureOutput(ctx, config?.output);
+          if (!selected) {
+            notify(ctx, "Translation configuration was cancelled.", "warning");
+            return;
+          }
+          config = { ...config, output: selected };
+          await store!.save(config);
+          if (selected.mode !== "on") clearAutomaticIndicator();
+          notify(ctx, `Translation configured for ${selected.language} with ${selected.model} (${store!.scope} scope).`, "info");
           return;
         }
-        if (config.mode === "automatic") {
-          config = { ...config, mode: "manual" };
-          await store!.save(config);
-          notify(ctx, "Automatic translation is off.", "info");
-        } else {
-          notify(ctx, "Automatic translation is already off.", "info");
+        if (command.action === "off") {
+          clearAutomaticIndicator();
+          if (!store && !(await initialize(ctx))) return;
+          if (!config?.output) {
+            notify(ctx, "Automatic translation is already off.", "info");
+            return;
+          }
+          if (config.output.mode === "on") {
+            config = { ...config, output: { ...config.output, mode: "off" } };
+            await store!.save(config);
+            notify(ctx, "Automatic translation is off.", "info");
+          } else {
+            notify(ctx, "Automatic translation is already off.", "info");
+          }
+          return;
         }
-        return;
-      }
-      if (command.type === "on") {
-        const activeConfig = await ensureConfig(ctx, "automatic");
-        if (!activeConfig) return;
-        if (activeConfig.mode !== "automatic") {
-          config = { ...activeConfig, mode: "automatic" };
-          await store!.save(config);
+        if (command.action === "on") {
+          const activeConfig = await ensureOutputConfig(ctx, "on");
+          if (!activeConfig) return;
+          if (activeConfig.mode !== "on") {
+            config = { ...config, output: { ...activeConfig, mode: "on" } };
+            await store!.save(config);
+          }
+          notify(ctx, "Automatic translation is on.", "info");
+          return;
         }
-        notify(ctx, "Automatic translation is on.", "info");
-        return;
       }
 
       if (ctx.mode !== "tui") {
         notify(ctx, "Translation display is available only in Pi's interactive TUI.", "error");
         return;
       }
-      const activeConfig = await ensureConfig(ctx);
+      const activeConfig = await ensureOutputConfig(ctx);
       if (!activeConfig) return;
       const entry = latestEligibleAssistant(ctx.sessionManager.getBranch());
       const blocks = entry ? getEligibleTextBlocks(entry.message) : undefined;
@@ -285,15 +412,92 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     },
   });
 
+  pi.on("input", async (event, ctx) => {
+    if (event.source === "extension") return { action: "continue" };
+    if (!store && !(await initialize(ctx))) return { action: "continue" };
+
+    const activeConfig = config?.input;
+    if (activeConfig?.mode !== "on") return { action: "continue" };
+
+    const idle = ctx.isIdle();
+    const supported = ctx.mode === "tui" &&
+      event.source === "interactive" &&
+      event.streamingBehavior === undefined &&
+      idle;
+    if (!supported) {
+      log.info("translation.input.blocked", {
+        sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
+        language: "English",
+        model: activeConfig.model,
+        sourceChars: event.text.length,
+        mode: ctx.mode,
+        inputSource: event.source,
+        streamingBehavior: event.streamingBehavior,
+        idle,
+      });
+      restoreInputDraft(event.text, event.source, ctx);
+      notify(ctx, "Input translation supports only ordinary idle interactive prompts; this input was blocked.", "warning");
+      return { action: "handled" };
+    }
+
+    const prepared = prepareInboundPrompt(event.text, pi.getCommands());
+    if (!prepared) return { action: "continue" };
+
+    const stopIndicator = startInputIndicator(ctx, activeConfig);
+    const started = Date.now();
+    let result: TranslationResult;
+    try {
+      result = await translateInput(prepared.source, activeConfig, ctx.modelRegistry, ctx.signal);
+    } catch {
+      log.error("translation.input.error", {
+        sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
+        durationMs: Date.now() - started,
+        language: "English",
+        model: activeConfig.model,
+        sourceChars: prepared.source.length,
+        kind: "unexpected-error",
+      });
+      restoreInputDraft(event.text, event.source, ctx);
+      notify(ctx, "Input translation failed. Your draft was restored.", "error");
+      return { action: "handled" };
+    } finally {
+      stopIndicator();
+    }
+
+    log.info(result.ok ? "translation.input.complete" : "translation.input.failed", {
+      sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
+      durationMs: Date.now() - started,
+      language: "English",
+      model: activeConfig.model,
+      sourceChars: prepared.source.length,
+      changed: result.ok ? result.markdown !== prepared.source : undefined,
+      usage: usageMetadata(result.usage),
+      ...(!result.ok ? { kind: result.kind } : {}),
+    });
+    if (!result.ok) {
+      restoreInputDraft(event.text, event.source, ctx);
+      notify(ctx, inputFailureMessage(result.kind), result.kind === "cancelled" ? "warning" : "error");
+      return { action: "handled" };
+    }
+
+    return {
+      action: "transform",
+      text: prepared.prefix + result.markdown,
+      ...(event.images !== undefined ? { images: event.images } : {}),
+    };
+  });
+
   pi.on("session_start", async (event, ctx) => {
     log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     clearAutomaticIndicator();
+    clearInputIndicator();
     clearPendingAutomaticRecords();
     await initialize(ctx);
   });
 
   pi.on("session_tree", (_event, ctx) => {
     clearAutomaticIndicator();
+    clearInputIndicator();
     clearPendingAutomaticRecords();
     displayCache.restore(ctx.sessionManager.getBranch());
   });
@@ -301,12 +505,22 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   pi.on("session_shutdown", (event) => {
     log.info("session.shutdown", { reason: event.reason });
     clearAutomaticIndicator();
+    clearInputIndicator();
   });
 
   pi.on("message_end", async (event, ctx) => {
-    const activeConfig = config;
+    if (event.message.role === "assistant") {
+      log.info("agent.response.complete", {
+        sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
+        ...modelMetadata(event.message),
+        stopReason: event.message.stopReason,
+        usage: usageMetadata(event.message.usage),
+      });
+    }
+
+    const activeConfig = config?.output;
     const blocks = getEligibleTextBlocks(event.message);
-    if (ctx.mode !== "tui" || activeConfig?.mode !== "automatic" || !blocks) {
+    if (ctx.mode !== "tui" || activeConfig?.mode !== "on" || !blocks) {
       clearAutomaticIndicator();
       return;
     }
@@ -377,6 +591,44 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   });
 }
 
+interface PreparedInboundPrompt {
+  prefix: string;
+  source: string;
+}
+
+function prepareInboundPrompt(
+  text: string,
+  commands: readonly { name: string; source: string }[],
+): PreparedInboundPrompt | undefined {
+  if (!text.trim()) return undefined;
+
+  const directive = /^(\S+)(\s+)([\s\S]*)$/u.exec(text);
+  const token = directive?.[1] ?? (/^\S+$/u.test(text) ? text : undefined);
+  if (token?.startsWith("/") && commands.some(
+    (command) =>
+      (command.source === "prompt" || command.source === "skill") &&
+      command.name === token.slice(1),
+  )) {
+    if (!directive || !directive[3]?.trim()) return undefined;
+    return { prefix: directive[1]! + directive[2]!, source: directive[3] };
+  }
+
+  return { prefix: "", source: text };
+}
+
+function restoreInputDraft(text: string, source: string, ctx: ExtensionContext): void {
+  if (ctx.mode === "tui" && source === "interactive" && ctx.hasUI) ctx.ui.setEditorText(text);
+}
+
+function inputFailureMessage(kind: string): string {
+  if (kind === "cancelled") return "Input translation was cancelled. Your draft was restored.";
+  if (kind === "timeout") return "Input translation timed out. Your draft was restored.";
+  if (kind === "model-unavailable" || kind === "unauthenticated") {
+    return "The configured input translation model is unavailable. Your draft was restored.";
+  }
+  return "Input translation failed. Your draft was restored.";
+}
+
 function automaticMessageKey(message: unknown): string | undefined {
   if (!message || typeof message !== "object") return undefined;
   const blocks = getEligibleTextBlocks(message);
@@ -397,7 +649,7 @@ function suppressionFor(
 }
 
 function automaticRecord(
-  config: TranslateConfig,
+  config: OutputTranslateConfig,
   sources: readonly string[],
   outcomes: AutomaticTranslationRecordV2["outcomes"],
   usage: TranslationUsageRecord,

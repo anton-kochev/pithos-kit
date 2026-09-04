@@ -1,5 +1,9 @@
 import { BorderedLoader, type ExtensionCommandContext, type ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { parseLanguage, type TranslateConfig } from "./config.ts";
+import {
+  parseLanguage,
+  type InputTranslateConfig,
+  type OutputTranslateConfig,
+} from "./config.ts";
 import { TARGET_LANGUAGE_PLACEHOLDER, TargetLanguageInput } from "./language-input.ts";
 import type { TranslationResult } from "./translation.ts";
 
@@ -41,8 +45,8 @@ export async function runTranslationWithUi(
 
 export async function runConfigWizard(
   ctx: ExtensionContext,
-  current?: TranslateConfig,
-): Promise<TranslateConfig | undefined> {
+  current?: OutputTranslateConfig,
+): Promise<OutputTranslateConfig | undefined> {
   if (!ctx.hasUI) return undefined;
 
   let language: string | undefined;
@@ -61,6 +65,31 @@ export async function runConfigWizard(
     }
   }
 
+  const model = await chooseAuthenticatedModel(ctx, "Exact output translation model");
+  if (!model) return undefined;
+  return {
+    language,
+    model,
+    mode: current?.mode ?? "off",
+    ...(current?.timeoutMs !== undefined ? { timeoutMs: current.timeoutMs } : {}),
+  };
+}
+
+export async function runInputConfigWizard(
+  ctx: ExtensionContext,
+  current?: InputTranslateConfig,
+): Promise<InputTranslateConfig | undefined> {
+  if (!ctx.hasUI) return undefined;
+  const model = await chooseAuthenticatedModel(ctx, "Exact input translation model");
+  if (!model) return undefined;
+  return {
+    model,
+    mode: current?.mode ?? "off",
+    ...(current?.timeoutMs !== undefined ? { timeoutMs: current.timeoutMs } : {}),
+  };
+}
+
+async function chooseAuthenticatedModel(ctx: ExtensionContext, title: string): Promise<string | undefined> {
   const models = ctx.modelRegistry
     .getAvailable()
     .filter((model) => ctx.modelRegistry.hasConfiguredAuth(model))
@@ -71,16 +100,8 @@ export async function runConfigWizard(
   }
 
   const choices = models.map((model) => `${model.provider}/${model.id} — ${model.name}`);
-  const selected = await ctx.ui.select("Exact translation model", choices);
+  const selected = await ctx.ui.select(title, choices);
   if (!selected) return undefined;
-  const selectedIndex = choices.indexOf(selected);
-  const model = models[selectedIndex];
-  if (!model) return undefined;
-
-  return {
-    language,
-    model: `${model.provider}/${model.id}`,
-    mode: current?.mode ?? "manual",
-    ...(current?.timeoutMs !== undefined ? { timeoutMs: current.timeoutMs } : {}),
-  };
+  const model = models[choices.indexOf(selected)];
+  return model ? `${model.provider}/${model.id}` : undefined;
 }

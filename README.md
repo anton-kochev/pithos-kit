@@ -13,7 +13,7 @@ A monorepo of independently published Pi extensions, skills, prompts, themes, an
 - [`pithos.context-bar/`](./pithos.context-bar) — context-window composition above the editor and ChatGPT Codex subscription usage in the footer. [![npm version](https://img.shields.io/npm/v/@pithos-kit/context-bar.svg)](https://www.npmjs.com/package/@pithos-kit/context-bar)
 - [`pithos.plan/`](./pithos.plan) — session-owned read-only planning with durable checkpoints, explicit lifecycle commands, and conflict-safe publication. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
 - [`pithos.themes/`](./pithos.themes) — accessible Auric light and dark themes with automatic appearance switching. [![npm version](https://img.shields.io/npm/v/@pithos-kit/themes.svg)](https://www.npmjs.com/package/@pithos-kit/themes)
-- [`pithos.translate/`](./pithos.translate) — faithful manual and display-only automatic assistant translation. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
+- [`pithos.translate/`](./pithos.translate) — translate ordinary interactive prompts into English and assistant prose manually or display-only. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
 - [`pithos.web/`](./pithos.web) — Brave-backed public-web search and bounded static HTML/text fetching, including trusted Plan-mode research. [![npm version](https://img.shields.io/npm/v/@pithos-kit/web.svg)](https://www.npmjs.com/package/@pithos-kit/web)
 - [`pithos.atlas/`](./pithos.atlas) — name sessions, diagnose and configure Pithos, and manage guarded Pi runtime patches. [![npm version](https://img.shields.io/npm/v/@pithos-kit/atlas.svg)](https://www.npmjs.com/package/@pithos-kit/atlas)
 
@@ -52,7 +52,7 @@ pi:
     "@pithos-kit/guild": "npm:0.3.0"
     "@pithos-kit/plan": "npm:0.4.1"
     "@pithos-kit/squiggle": "npm:0.4.1"
-    "@pithos-kit/translate": "npm:1.0.0"
+    "@pithos-kit/translate": "npm:1.1.0"
     "@pithos-kit/web": "npm:0.1.1"
 ```
 

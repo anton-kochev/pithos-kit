@@ -517,7 +517,7 @@
     {
       "name": "@pithos-kit/translate",
       "version": "1.1.0",
-      "description": "Faithful manual and display-only automatic assistant translation for Pi.",
+      "description": "Translate interactive input into English and assistant output into a chosen language for Pi.",
       "pi": {
         "extensions": [
           "./extensions"
@@ -525,13 +525,13 @@
       },
       "pithosKit": {
         "displayName": "Translate",
-        "summary": "Translate assistant prose manually or replace it only in terminal display.",
+        "summary": "Translate interactive input into English and assistant output manually or display-only.",
         "minimumPi": ">=0.84.0",
         "commands": [
           {
             "name": "translate",
-            "summary": "Translate the latest assistant response or configure automatic translation.",
-            "usage": "/translate [on|off|status|config|--help]"
+            "summary": "Translate interactive input into English or manage assistant-output translation.",
+            "usage": "/translate [input-on|input-off|input-status|input-config|output-on|output-off|output-status|output-config|--help]"
           }
         ],
         "tools": [],
@@ -543,7 +543,7 @@
           {
             "kind": "file",
             "key": ".pi/translate.json",
-            "summary": "Project-scoped translation language, model, mode, and optional request timeout."
+            "summary": "Project-scoped input/output translation models, modes, target language, and optional request timeouts."
           }
         ]
       }

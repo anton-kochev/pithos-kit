@@ -15,21 +15,36 @@ describe("translate package", () => {
     assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.84.0");
     assert.equal(manifest.pithosKit.minimumPi, ">=0.84.0");
     assert.deepEqual(manifest.pi.extensions, ["./extensions"]);
+    assert.match(manifest.description, /input.*English.*assistant/i);
+    assert.match(manifest.pithosKit.summary, /input.*English.*assistant/i);
+    assert.deepEqual(manifest.pithosKit.commands, [{
+      name: "translate",
+      usage: "/translate [input-on|input-off|input-status|input-config|output-on|output-off|output-status|output-config|--help]",
+      summary: "Translate interactive input into English or manage assistant-output translation.",
+    }]);
     assert.deepEqual(manifest.pithosKit.configuration, [{
       kind: "file",
       key: ".pi/translate.json",
-      summary: "Project-scoped translation language, model, mode, and optional request timeout.",
+      summary: "Project-scoped input/output translation models, modes, target language, and optional request timeouts.",
     }]);
     assert.ok(manifest.files.includes("src"));
     assert.equal(typeof extension.default, "function");
 
-    assert.match(readme, /\/translate (?:on|off|status|config)/);
+    for (const argument of [
+      "input-on", "input-off", "input-status", "input-config",
+      "output-on", "output-off", "output-status", "output-config",
+    ]) {
+      assert.match(readme, new RegExp(`/translate ${argument}\\b`));
+    }
+    assert.doesNotMatch(readme, /`\/translate (?:on|off|status|config)`/);
     assert.match(readme, /user.*project.*temporary/is);
     assert.match(readme, /display-only/i);
-    assert.match(readme, /Translated ·.*target language/is);
+    assert.match(readme, /display-only marker[\s\S]*Translated · French/i);
     assert.match(readme, /footer status.*language.*model/is);
     assert.doesNotMatch(readme, /Translating….*placeholder/is);
     assert.match(readme, /no fallback/i);
+    assert.match(readme, /"input"[\s\S]*"output"[\s\S]*"mode": "(?:on|off)"/);
+    assert.doesNotMatch(readme, /"mode": "(?:manual|automatic)"/);
     assert.match(readme, /timeoutMs.*60000/is);
     assert.match(readme, /openai\/\.\.\..*API-key.*openai-codex\/\.\.\..*subscription/is);
     assert.match(readme, /code.*link destination/is);
@@ -39,8 +54,16 @@ describe("translate package", () => {
     assert.doesNotMatch(readme, /pithos\.translate\.json/);
     assert.match(readme, /Mermaid.*original/is);
     assert.match(readme, /precede.*display-transforming/is);
-    assert.match(readme, /does not enforce English/i);
-    assert.match(readme, /does not modify Pi(?:'s)? prompts or model context/i);
-    assert.match(readme, /English-default policy.*user or project instructions/is);
+    assert.match(readme, /ordinary idle.*interactive TUI/is);
+    assert.match(readme, /before.*skill.*template.*expansion/is);
+    assert.match(readme, /extension-originated.*bypass/is);
+    assert.match(readme, /RPC.*print.*JSON.*steer.*follow-up.*block/is);
+    assert.match(readme, /directive token.*exact/is);
+    assert.match(readme, /attachments.*preserv/is);
+    assert.match(readme, /fails? closed.*draft.*restor/is);
+    assert.match(readme, /original.*not.*persist.*main model context/is);
+    assert.match(readme, /transiently.*translation provider/is);
+    assert.match(readme, /never record raw inbound text/i);
+    assert.match(readme, /main assistant-model response.*usage.*response text/is);
   });
 });

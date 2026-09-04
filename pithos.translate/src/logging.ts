@@ -65,7 +65,9 @@ export function modelMetadata(model: unknown): Record<string, unknown> | undefin
 	const record = model as Record<string, unknown>;
 	return {
 		...(typeof record.provider === "string" ? { provider: record.provider } : {}),
-		...(typeof record.id === "string" ? { model: record.id } : {}),
+		...(typeof record.id === "string"
+			? { model: record.id }
+			: typeof record.model === "string" ? { model: record.model } : {}),
 		...(typeof record.api === "string" ? { api: record.api } : {}),
 	};
 }
