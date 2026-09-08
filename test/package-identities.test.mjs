@@ -6,7 +6,7 @@ import { describe, it } from "node:test";
 const root = resolve(import.meta.dirname, "..");
 const repositoryUrl = "git+https://github.com/anton-kochev/pithos-kit.git";
 const packages = [
-  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.5.0", minimumPi: ">=0.83.0" },
+  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.6.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.echo", shortName: "echo", version: "0.5.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.answer", shortName: "answer", version: "0.3.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.telos", shortName: "telos", version: "0.3.0", minimumPi: ">=0.83.0" },
