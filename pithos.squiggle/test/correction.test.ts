@@ -69,6 +69,17 @@ function createContext(getApiKeyAndHeaders = async (): Promise<unknown> => ({ ok
 }
 
 describe("Squiggle correction deadline and cancellation", () => {
+	it("never substitutes the coding model when the exact correction model is unavailable", async () => {
+		const context = { ...createContext(), model, modelRegistry: {
+			find: () => undefined,
+			getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "secret" }),
+		} };
+		let calls = 0;
+		const result = await correctWithModel("text", context as never, config, createLogger().logger as never, undefined,
+			(async () => { calls++; return assistant("Changed"); }) as never);
+		assert.equal(calls, 0);
+		assert.equal(result, null);
+	});
 	it("accepts only bounded timeout configuration", () => {
 		assert.equal(normalizeTimeoutMs(MIN_CORRECTION_TIMEOUT_MS), MIN_CORRECTION_TIMEOUT_MS);
 		assert.equal(normalizeTimeoutMs(String(DEFAULT_CORRECTION_TIMEOUT_MS)), DEFAULT_CORRECTION_TIMEOUT_MS);

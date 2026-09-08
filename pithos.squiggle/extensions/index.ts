@@ -1,12 +1,21 @@
-import { existsSync, readFileSync } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
+import { randomUUID } from "node:crypto";
+import { dirname, join } from "node:path";
 import { complete, type UserMessage } from "@earendil-works/pi-ai";
+import * as piRuntime from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata, type PithosLogger } from "./logging.ts";
 
+// Older supported Pi releases do not export CONFIG_DIR_NAME.
+const CONFIG_DIR_NAME = (piRuntime as { CONFIG_DIR_NAME?: string }).CONFIG_DIR_NAME ?? ".pi";
+
 const SQUIGGLE_HELP = `Usage: /squiggle toggle
+       /squiggle config
 
 Toggle Squiggle on or off for the current session.
+Configure an authenticated exact correction model for the project.
+Model precedence: SQUIGGLE_MODEL > project > default.
+Cancelling configuration makes no changes.
 
 Options:
   --help, -h  Show this help`;
@@ -21,6 +30,7 @@ Options:
 export type SquiggleConfig = {
 	mode: "on" | "off";
 	model: string;
+	modelScope?: "SQUIGGLE_MODEL" | "project" | "default";
 	maxInputChars: number;
 	timeoutMs: number;
 };
@@ -45,6 +55,7 @@ export function registerSquiggle(
 	log.info("extension.register");
 	let runtimeMode: SquiggleConfig["mode"] | undefined;
 	let correctionScope = new AbortController();
+	const effectiveConfig = (cwd: string): SquiggleConfig => loadEffectiveConfig(cwd, runtimeMode);
 
 	pi.on("session_start", async (event, ctx) => {
 		correctionScope.abort();
@@ -58,14 +69,30 @@ export function registerSquiggle(
 	});
 
 	pi.registerCommand("squiggle", {
-		description: "Toggle squiggle on/off",
+		description: "Toggle squiggle on/off or configure its correction model",
+		getArgumentCompletions: (prefix) => ["toggle", "config", "--help"]
+			.filter((value) => value.startsWith(prefix)).map((value) => ({ value, label: value })),
 		handler: async (args, ctx) => {
 			log.info("command.squiggle", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), args: args.trim() });
 			if (isHelpRequest(args)) return emitHelp(ctx, SQUIGGLE_HELP);
 
 			const command = args.trim().toLowerCase();
+			if (command === "config") {
+				const model = await chooseModel(ctx);
+				if (!model) return;
+				try {
+					saveModel(join(ctx.cwd, CONFIG_DIR_NAME, "squiggle.json"), model);
+				} catch {
+					ctx.ui.notify("Could not save Squiggle configuration. Check the config file and its permissions.", "error");
+					return;
+				}
+				const effective = effectiveConfig(ctx.cwd);
+				ctx.ui.notify(`Saved ${model}. ${formatStatus(ctx, effective)}`,
+					effective.model === model ? "info" : "warning");
+				return;
+			}
 			if (command !== "toggle") {
-				ctx.ui.notify("Usage: /squiggle toggle", "warning");
+				ctx.ui.notify("Usage: /squiggle toggle | config", "warning");
 				return;
 			}
 
@@ -76,7 +103,7 @@ export function registerSquiggle(
 				correctionScope = new AbortController();
 			}
 			persistRuntimeMode(pi, runtimeMode);
-			ctx.ui.notify(formatStatus(ctx, loadEffectiveConfig(ctx.cwd, runtimeMode)), "info");
+			ctx.ui.notify(formatStatus(ctx, effectiveConfig(ctx.cwd)), "info");
 		},
 	});
 
@@ -85,14 +112,14 @@ export function registerSquiggle(
 		handler: async (args, ctx) => {
 			log.info("command.squiggle-status", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 			if (isHelpRequest(args)) return emitHelp(ctx, SQUIGGLE_STATUS_HELP);
-			ctx.ui.notify(formatStatus(ctx, loadEffectiveConfig(ctx.cwd, runtimeMode)), "info");
+			ctx.ui.notify(formatStatus(ctx, effectiveConfig(ctx.cwd)), "info");
 		},
 	});
 
 	pi.on("input", async (event, ctx) => {
 		if (event.source === "extension") return { action: "continue" };
 
-		const config = loadEffectiveConfig(ctx.cwd, runtimeMode);
+		const config = effectiveConfig(ctx.cwd);
 		if (config.mode === "off") return { action: "continue" };
 		if (!event.text.trim()) return { action: "continue" };
 
@@ -255,6 +282,7 @@ function loadConfig(cwd: string): SquiggleConfig {
 	return {
 		mode: normalizeMode(process.env.SQUIGGLE_MODE ?? fileConfig.mode) ?? "on",
 		model: process.env.SQUIGGLE_MODEL ?? fileConfig.model ?? DEFAULT_CORRECTION_MODEL,
+		modelScope: process.env.SQUIGGLE_MODEL !== undefined ? "SQUIGGLE_MODEL" : fileConfig.model !== undefined ? "project" : "default",
 		maxInputChars: normalizePositiveInt(process.env.SQUIGGLE_MAX_CHARS ?? fileConfig.maxInputChars) ?? DEFAULT_MAX_LLM_INPUT_CHARS,
 		timeoutMs: normalizeTimeoutMs(process.env.SQUIGGLE_TIMEOUT_MS ?? fileConfig.timeoutMs) ?? DEFAULT_CORRECTION_TIMEOUT_MS,
 	};
@@ -274,16 +302,52 @@ function restoreRuntimeMode(ctx: ExtensionContext): SquiggleConfig["mode"] | und
 	return undefined;
 }
 
+function saveModel(path: string, model: string): void {
+	const current = existsSync(path) ? JSON.parse(readFileSync(path, "utf8")) : {};
+	if (!current || typeof current !== "object" || Array.isArray(current)) throw new Error("Invalid config");
+	const temporaryPath = `${path}.${randomUUID()}.tmp`;
+	mkdirSync(dirname(path), { recursive: true });
+	try {
+		writeFileSync(temporaryPath, `${JSON.stringify({ ...current, model }, null, 2)}\n`, { mode: 0o600 });
+		renameSync(temporaryPath, path);
+	} finally {
+		rmSync(temporaryPath, { force: true });
+	}
+}
+
+async function chooseModel(ctx: ExtensionCommandContext): Promise<string | undefined> {
+	if (!ctx.hasUI) {
+		emitHelp(ctx, "Squiggle configuration requires an interactive UI.");
+		return;
+	}
+	const models = ctx.modelRegistry.getAvailable()
+		.filter((model) => ctx.modelRegistry.hasConfiguredAuth(model))
+		.sort((a, b) => `${a.provider}/${a.id}`.localeCompare(`${b.provider}/${b.id}`));
+	if (!models.length) {
+		ctx.ui.notify("No authenticated correction models are available. Configure a provider with /login first.", "error");
+		return;
+	}
+	const choices = models.map((model) => `${model.provider}/${model.id} — ${model.name}`);
+	const selected = await ctx.ui.select("Exact correction model", choices);
+	const model = models[choices.indexOf(selected ?? "")];
+	return model ? `${model.provider}/${model.id}` : undefined;
+}
+
 function persistRuntimeMode(pi: ExtensionAPI, mode: SquiggleConfig["mode"]): void {
 	pi.appendEntry("squiggle-mode", { mode });
 }
 
 function formatStatus(ctx: ExtensionContext, config: SquiggleConfig): string {
-	return `squiggle is ${config.mode} (${formatModel(selectCorrectionModel(ctx, config))}).`;
+	const unavailable = selectCorrectionModel(ctx, config) ? "" : "; unavailable — run /squiggle config";
+	const source = config.modelScope === "SQUIGGLE_MODEL" ? "; SQUIGGLE_MODEL" : "";
+	return `squiggle is ${config.mode} (${config.model}${source}${unavailable}).`;
 }
 
 function readConfigFile(cwd: string): Partial<SquiggleConfig> {
-	const path = join(cwd, ".pi", "squiggle.json");
+	return readConfigPath(join(cwd, CONFIG_DIR_NAME, "squiggle.json"));
+}
+
+function readConfigPath(path: string): Partial<SquiggleConfig> {
 	if (!existsSync(path)) return {};
 	try {
 		const parsed = JSON.parse(readFileSync(path, "utf8")) as Record<string, unknown>;
@@ -320,17 +384,13 @@ function selectCorrectionModel(ctx: ExtensionContext, config: SquiggleConfig) {
 		const model = ctx.modelRegistry.find(configured.provider, configured.model);
 		if (model) return model;
 	}
-	return ctx.model;
+	return undefined;
 }
 
 function parseModelSpec(spec: string): { provider: string; model: string } | null {
 	const slash = spec.indexOf("/");
 	if (slash <= 0 || slash === spec.length - 1) return null;
 	return { provider: spec.slice(0, slash), model: spec.slice(slash + 1) };
-}
-
-function formatModel(model: ReturnType<typeof selectCorrectionModel>): string {
-	return model ? `${model.provider}/${model.id}` : "no model";
 }
 
 function startSquiggleIndicator(ctx: ExtensionContext): () => void {

@@ -401,8 +401,8 @@
         "commands": [
           {
             "name": "squiggle",
-            "summary": "Toggle prompt correction.",
-            "usage": "/squiggle [toggle|--help]"
+            "summary": "Toggle prompt correction or configure its model.",
+            "usage": "/squiggle [toggle|config|--help]"
           },
           {
             "name": "squiggle-status",

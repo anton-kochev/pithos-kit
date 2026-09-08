@@ -44,7 +44,11 @@ pi:
 
 ## Configuration
 
-Create `.pi/squiggle.json` in your project:
+Run `/squiggle config` to choose an exact correction model from providers with configured authentication, just like Translate's model picker. If none are available, run `/login` first. The picker opens directly and saves to `<cwd>/.pi/squiggle.json` (honors Pi's configured project directory name). There is no session or user-level model configuration.
+
+Model precedence is **`SQUIGGLE_MODEL` > project > default**. An environment override may still take precedence after saving, which the completion message shows. Cancelling the picker changes nothing. Existing file fields are preserved, and malformed files are not overwritten.
+
+You can still edit `.pi/squiggle.json` directly:
 
 ```json
 {
@@ -58,11 +62,11 @@ Create `.pi/squiggle.json` in your project:
 Options:
 
 - `mode`: `"on"` or `"off"`
-- `model`: pi model spec in `provider/model` format
+- `model`: exact pi model spec in `provider/model` format (model IDs may contain additional slashes)
 - `maxInputChars`: maximum input length to send to the correction model
 - `timeoutMs`: correction deadline in milliseconds, from `1000` to `60000` (default: `10000`)
 
-Environment variables override the config file:
+Environment variables override the project config (except the session on/off toggle):
 
 ```bash
 SQUIGGLE_MODE=off pi
@@ -77,7 +81,8 @@ Inside pi:
 
 ```text
 /squiggle toggle          # switch between on/off
-/squiggle --help          # show toggle usage
+/squiggle config          # choose and save the correction model
+/squiggle --help          # show toggle/config usage
 /squiggle-status          # show status
 /squiggle-status --help   # show status-command usage
 ```
@@ -85,6 +90,8 @@ Inside pi:
 `-h` is accepted wherever `--help` is shown.
 
 The toggle state is saved in the current pi session and overrides `.pi/squiggle.json` and environment configuration for that session.
+
+The default correction model is `openai-codex/gpt-5.4-mini`. Squiggle uses only the exact configured model, never silently substituting the active coding model. `/squiggle-status` shows its exact ID, configuration source, and whether it is missing from the registry. Missing models or failed authentication leave the original prompt unchanged.
 
 If authentication or correction exceeds the configured deadline, Squiggle cancels the request, clears the spinner, and submits the original prompt unchanged. Session shutdown, reload, and an active Pi cancellation signal also cancel in-flight correction.
 

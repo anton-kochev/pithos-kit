@@ -31,7 +31,7 @@
     "summary": "Quietly polish grammar and spelling in user prompts.",
     "minimumPi": ">=0.83.0",
     "commands": [
-      { "name": "squiggle", "usage": "/squiggle [toggle|--help]", "summary": "Toggle prompt correction." },
+      { "name": "squiggle", "usage": "/squiggle [toggle|config|--help]", "summary": "Toggle prompt correction or configure its model." },
       { "name": "squiggle-status", "usage": "/squiggle-status [--help]", "summary": "Show correction status and configuration." }
     ],
     "tools": [],
