@@ -19,7 +19,7 @@ const theme = {
 } as any;
 
 describe("Guild visual presentation", () => {
-  it("renders the summary and each live run on separate lines with balanced half-row edges", () => {
+  it("renders canonical queued and running entries distinctly with balanced half-row edges", () => {
     const backgrounds: string[] = [];
     const panelTheme = {
       name: "auric-light",
@@ -36,8 +36,8 @@ describe("Guild visual presentation", () => {
     } as any;
     const panel = createGuildPanel([
       "Guild · 2 active",
-      "⏳ dotnet-architect · 5s · 2 turns",
-      "⏳ angular-coder · 49m 38s",
+      "⏳ architect/dotnet · queued · 5s · 2 turns",
+      "⏳ coder/angular · running · 49m 38s",
     ], panelTheme);
 
     const lines = panel.render(400);
@@ -45,11 +45,11 @@ describe("Guild visual presentation", () => {
     assert.equal(lines.length, 5);
     assert.match(lines[0] ?? "", /^\u001b\[38;2;233;221;242m▄+/);
     assert.match(lines[1] ?? "", /^\u001b\[48;2;233;221;242m <accent>Guild<\/accent><muted> · 2 active<\/muted>/);
-    assert.match(lines[2] ?? "", /^\u001b\[48;2;233;221;242m <warning>●<\/warning> <accent>dotnet-architect<\/accent><dim> · 5s · 2 turns<\/dim>/);
-    assert.match(lines[3] ?? "", /^\u001b\[48;2;233;221;242m <warning>●<\/warning> <accent>angular-coder<\/accent><dim> · 49m 38s<\/dim>/);
+    assert.match(lines[2] ?? "", /^\u001b\[48;2;233;221;242m <muted>○<\/muted> <accent>architect\/dotnet<\/accent><dim> · queued · 5s · 2 turns<\/dim>/);
+    assert.match(lines[3] ?? "", /^\u001b\[48;2;233;221;242m <warning>●<\/warning> <accent>coder\/angular<\/accent><dim> · running · 49m 38s<\/dim>/);
     assert.match(lines[4] ?? "", /^\u001b\[38;2;233;221;242m▀+/);
     assert.deepEqual(backgrounds, []);
-    assert.doesNotMatch(rendered, /Running|Design order cancellation|openai-codex|read, grep|built-in|read only/);
+    assert.doesNotMatch(rendered, /Design order cancellation|openai-codex|read, grep|built-in|read only/);
   });
 
   it("uses a dedicated Guild background for dark themes", () => {
@@ -74,9 +74,9 @@ describe("Guild visual presentation", () => {
     const details = {
       runId: "guild-command-123",
       initiatedBy: "user",
-      member: "dotnet-architect",
-      memberSource: "builtin",
       role: "architect",
+      profile: "dotnet",
+      source: "package",
       task: "Explore the repository and report any .NET artifacts",
       inheritedModel: "openai-codex/gpt-5.6-sol",
       thinkingLevel: "xhigh",
@@ -95,9 +95,9 @@ describe("Guild visual presentation", () => {
 
     assert.ok(lines.every((line) => visibleWidth(line) <= 110));
     assert.match(rendered, /╭─.*Guild Relay.*\[✓ Completed\].*─╮/);
-    assert.match(rendered, /dotnet-architect.*built-in.*read-only/i);
+    assert.match(rendered, /architect\/dotnet.*package.*read-only/i);
     assert.match(rendered, /Request.*Explore the repository/);
-    assert.doesNotMatch(rendered, /USER|MISSION|built-in.*architect.*read-only/i);
+    assert.doesNotMatch(rendered, /USER|MISSION|dotnet-architect|built-in/i);
     assert.match(rendered, /REPORT/);
     assert.match(rendered, /Summary/);
     assert.match(rendered, /no actual \.NET artifacts/);
@@ -110,9 +110,9 @@ describe("Guild visual presentation", () => {
       {
         content: "lifecycle",
         details: {
-          member: "code-reviewer",
-          memberSource: "builtin",
           role: "reviewer",
+          profile: "general",
+          source: "package",
           status: "completed",
           task: "Review the current change",
           output: "No findings.",
@@ -122,18 +122,56 @@ describe("Guild visual presentation", () => {
       theme,
     ).render(100).join("\n");
 
-    assert.match(rendered, /code-reviewer/i);
-    assert.match(rendered, /read-only review/i);
+    assert.match(rendered, /reviewer\/general.*package.*read-only review/i);
+    assert.doesNotMatch(rendered, /code-reviewer/i);
     assert.doesNotMatch(rendered, /write enabled/i);
+  });
+
+  it("shows canonical queued and running phases in lifecycle and result presentations", () => {
+    const base = {
+      role: "explorer",
+      profile: "general",
+      source: "package",
+      task: "Inspect repository facts",
+    };
+    const queuedLifecycle = renderGuildLifecycleMessage(
+      { content: "lifecycle", details: { ...base, status: "started", phase: "queued" } },
+      { expanded: false },
+      theme,
+    ).render(100).join("\n");
+    assert.match(queuedLifecycle, /\[○ Queued\]/);
+    assert.match(queuedLifecycle, /explorer\/general.*package.*read-only/i);
+
+    const runningLifecycle = renderGuildLifecycleMessage(
+      { content: "lifecycle", details: { ...base, status: "started", phase: "running" } },
+      { expanded: false },
+      theme,
+    ).render(100).join("\n");
+    assert.match(runningLifecycle, /\[● Running\]/);
+
+    const queuedResult = renderGuildResult(
+      { details: { ...base, status: "queued", phase: "queued" } },
+      { expanded: false, isPartial: true },
+      theme,
+    ).render(100).join("\n");
+    assert.match(queuedResult, /○ Queued.*explorer\/general/);
+    assert.match(queuedResult, /package.*READ-ONLY/i);
+
+    const runningResult = renderGuildResult(
+      { details: { ...base, status: "running", phase: "running" } },
+      { expanded: false, isPartial: true },
+      theme,
+    ).render(100).join("\n");
+    assert.match(runningResult, /● Running.*explorer\/general/);
   });
 
   it("uses compact framed treatments for failed and cancelled handovers", () => {
     const base = {
       runId: "guild-command-123",
       initiatedBy: "user",
-      member: "csharp-coder",
-      memberSource: "builtin",
       role: "coder",
+      profile: "dotnet",
+      source: "package",
       task: "Implement validation",
       elapsedMs: 2500,
     };
@@ -159,9 +197,10 @@ describe("Guild visual presentation", () => {
   it("renders animated live activity and exposes cancellable progress", () => {
     let renders = 0;
     const progress = createGuildHandoverProgress({
-      member: "dotnet-architect",
-      memberSource: "builtin",
       role: "architect",
+      profile: "dotnet",
+      source: "package",
+      phase: "queued",
       task: "Explore the repository and report any .NET artifacts",
       startedAt: Date.now(),
     }, {
@@ -173,15 +212,16 @@ describe("Guild visual presentation", () => {
     try {
       const initial = progress.render(180);
       assert.ok(initial.every((line) => visibleWidth(line) <= 110));
-      assert.match(initial.join("\n"), /Guild Relay.*\[● Running\s+00:00\]/);
-      assert.match(initial.join("\n"), /dotnet-architect.*built-in.*read-only/i);
+      assert.match(initial.join("\n"), /Guild Relay.*\[○ Queued\s+00:00\]/);
+      assert.match(initial.join("\n"), /architect\/dotnet.*package.*read-only/i);
       assert.match(initial.join("\n"), /Request.*Explore the repository/);
       assert.match(initial.join("\n"), /Starting handover.*cancel/);
       assert.ok(initial.length <= 5);
       assert.doesNotMatch(initial.join("\n"), /USER|MISSION|◇|◆|openai-codex/);
 
-      progress.update({ activity: "Scanning repository", activityTool: "find", turns: 2 });
+      progress.update({ phase: "running", activity: "Scanning repository", activityTool: "find", turns: 2 });
       const active = progress.render(100).join("\n");
+      assert.match(active, /Guild Relay.*\[● Running\s+00:00\]/);
       assert.match(active, /Scanning repository/);
       assert.match(active, /find · 2 turns/);
       assert.ok(renders > 0);
@@ -203,9 +243,9 @@ describe("Guild visual presentation", () => {
     } as any;
     const details = {
       status: "completed",
-      member: "dotnet-architect",
-      memberSource: "builtin",
       role: "architect",
+      profile: "typescript",
+      source: "package",
       task: "Inspect repository",
       elapsedMs: 1000,
       output: "Inspection complete.",
@@ -218,9 +258,9 @@ describe("Guild visual presentation", () => {
     ).render(90));
 
     const progress = createGuildHandoverProgress({
-      member: "dotnet-architect",
-      memberSource: "builtin",
       role: "architect",
+      profile: "typescript",
+      source: "package",
       task: "Inspect repository",
       startedAt: Date.now(),
     }, { requestRender: () => undefined } as any, lightweightTheme, { matches: () => false } as any);
@@ -231,19 +271,63 @@ describe("Guild visual presentation", () => {
     }
   });
 
-  it("renders polished call and expandable completion cards", () => {
+  it("renders legacy persisted identities, calls, and progress options as compatibility fallbacks", () => {
+    const legacyDetails = {
+      member: "dotnet-architect",
+      memberSource: "builtin",
+      role: "architect",
+    };
+    const lifecycle = renderGuildLifecycleMessage(
+      { content: "persisted lifecycle", details: legacyDetails },
+      { expanded: false },
+      theme,
+    ).render(100).join("\n");
+    assert.match(lifecycle, /dotnet-architect.*built-in.*read-only/i);
+
+    const result = renderGuildResult(
+      { details: legacyDetails },
+      { expanded: false, isPartial: false },
+      theme,
+    ).render(100).join("\n");
+    assert.match(result, /Completed.*dotnet-architect/i);
+    assert.match(result, /built-in.*READ-ONLY/i);
+
+    const call = renderGuildCall({ member: "dotnet-architect", task: "Resume history" }, theme)
+      .render(100).join("\n");
+    assert.match(call, /Guild.*dotnet-architect/);
+    assert.match(call, /Resume history/);
+
+    const progress = createGuildHandoverProgress({
+      member: "dotnet-architect",
+      memberSource: "builtin",
+      role: "architect",
+      task: "Resume in-flight handover",
+      startedAt: Date.now(),
+    }, { requestRender: () => undefined } as any, theme, { matches: () => false } as any);
+    try {
+      assert.match(progress.render(100).join("\n"), /dotnet-architect.*built-in.*read-only/i);
+    } finally {
+      progress.dispose();
+    }
+  });
+
+  it("renders canonical calls and expandable completion cards without legacy member fields", () => {
     const call = renderGuildCall({
-      member: "csharp-coder",
+      role: "coder",
+      profile: "dotnet",
       task: "Implement order validation",
     }, theme);
-    assert.match(call.render(100).join("\n"), /✦ Guild.*csharp-coder/);
-    assert.match(call.render(100).join("\n"), /Implement order validation/);
+    const renderedCall = call.render(100).join("\n");
+    assert.match(renderedCall, /✦ Guild.*coder\/dotnet.*package.*write-enabled/i);
+    assert.match(renderedCall, /Implement order validation/);
+    assert.doesNotMatch(renderedCall, /csharp-coder|selecting/);
 
     const details = {
       status: "completed",
-      member: "csharp-coder",
-      memberSource: "builtin",
+      phase: "running",
       role: "coder",
+      profile: "dotnet",
+      source: "package",
       tools: ["read", "edit", "bash"],
       inheritedModel: "openai-codex/gpt-5.6-sol",
       thinkingLevel: "xhigh",
@@ -257,8 +341,17 @@ describe("Guild visual presentation", () => {
       theme,
     );
     const rendered = result.render(100).join("\n");
-    assert.match(rendered, /✓ Completed.*csharp-coder/);
+    assert.match(rendered, /✓ Completed.*coder\/dotnet/);
+    assert.match(rendered, /package.*WRITE-ENABLED/i);
     assert.match(rendered, /2 turns/);
     assert.match(rendered, /Completed successfully/);
+    assert.doesNotMatch(rendered, /csharp-coder/);
   });
+});
+
+it("renders cancelled tool results distinctly even when Pi marks the tool result as an error", () => {
+ const rendered = renderGuildResult({content: [{type: "text", text: "Stopped"}], details: {status: "cancelled", role: "coder", profile: "general", usageKnown: false}}, {}, theme, {isError: true}).render(100).join("\n");
+ assert.match(rendered, /■ Cancelled/);
+ assert.match(rendered, /usage unknown/);
+ assert.doesNotMatch(rendered, /Completed|Failed/);
 });

@@ -76,17 +76,18 @@ describe("Guild code-review-standards skill", () => {
     assert.match(skill, /read-only[\s\S]*(?:do not|never)[\s\S]*(?:modify|edit|create|delete)/iu);
   });
 
-  it("documents proactive loading while leaving the reviewer self-contained when disabled", () => {
+  it("keeps parent skill discovery separate from the self-contained reviewer role", () => {
     const readme = readFileSync(resolve(guildRoot, "README.md"), "utf8");
     const notice = readFileSync(resolve(guildRoot, "NOTICE.md"), "utf8");
-    const reviewer = readFileSync(resolve(guildRoot, "agents/code-reviewer.md"), "utf8");
+    const reviewer = readFileSync(resolve(guildRoot, "agents/roles/reviewer.md"), "utf8");
 
-    assert.match(readme, /code-review-standards[\s\S]*(?:installed|enabled)[\s\S]*(?:main agent|Guild child)[\s\S]*(?:proactive|automatically|model-visible)[\s\S]*(?:without|does not require)[^\n]*explicit/iu);
-    assert.match(readme, /disable[\s\S]*code-reviewer[\s\S]*self-contained/iu);
+    assert.match(readme, /code-review-standards[\s\S]*main agent[\s\S]*proactively[\s\S]*without requiring explicit invocation/iu);
+    assert.match(readme, /Guild children[\s\S]*skill discovery disabled[\s\S]*reviewer[\s\S]*self-contained/iu);
     assert.match(notice, /code-review-standards[\s\S]*adapted/iu);
     assert.doesNotMatch(reviewer, /code-review-standards/u);
-    assert.match(reviewer, /Hard boundary: read-only review[\s\S]*Never create, edit, or delete files/u);
-    assert.match(reviewer, /Request changes[\s\S]*Comment[\s\S]*Approve/u);
-    assert.match(reviewer, /### Findings[\s\S]*### Summary/u);
+    assert.match(reviewer, /strictly read-only[\s\S]*Do not create, edit, or delete files/iu);
+    assert.match(reviewer, /findings-first[\s\S]*severity[\s\S]*evidence[\s\S]*verdict/iu);
+    assert.match(reviewer, /Request changes[\s\S]*Comment[\s\S]*Approve/iu);
+    assert.match(reviewer, /cannot run shell commands[\s\S]*do not claim/iu);
   });
 });

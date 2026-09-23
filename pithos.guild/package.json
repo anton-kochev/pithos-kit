@@ -34,6 +34,9 @@
     "access": "public"
   },
   "devDependencies": {
+    "@earendil-works/pi-ai": "0.87.0",
+    "@earendil-works/pi-coding-agent": "0.87.0",
+    "@earendil-works/pi-tui": "0.87.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.4",
     "typescript": "^5.9.0"
@@ -46,44 +49,95 @@
   },
   "pithosKit": {
     "displayName": "Guild",
-    "summary": "Delegate focused software work and apply repository-aware development guidance.",
-    "minimumPi": ">=0.83.0",
+    "summary": "Delegate focused software work through bounded role/profile handovers and repository-aware development guidance.",
+    "minimumPi": ">=0.87.0",
     "commands": [
-      { "name": "guild", "usage": "/guild [--help]", "summary": "List the active Guild roster." },
-      { "name": "guild-handover", "usage": "/guild-handover [member] [task]", "summary": "Delegate directly from the interactive TUI." },
-      { "name": "commit", "usage": "/commit [instructions]", "summary": "Create a context-scoped Conventional Commit with confirmation." },
-      { "name": "skill:conventional-commit", "usage": "/skill:conventional-commit [instructions]", "summary": "Load the confirmed, context-aware Conventional Commit workflow explicitly." },
-      { "name": "skill:tdd", "usage": "/skill:tdd [task context]", "summary": "Load the test-driven development workflow explicitly." },
-      { "name": "skill:code-review-standards", "usage": "/skill:code-review-standards [review scope]", "summary": "Load the evidence-based code-review methodology explicitly." },
-      { "name": "skill:dotnet-clean-architecture", "usage": "/skill:dotnet-clean-architecture [task context]", "summary": "Load repository-aware .NET Clean Architecture guidance explicitly." }
+      {
+        "name": "guild",
+        "usage": "/guild [--help]",
+        "summary": "List the active Guild roster."
+      },
+      {
+        "name": "guild-handover",
+        "usage": "/guild-handover [role/profile | legacy-alias] [task]",
+        "summary": "Delegate directly from the interactive TUI."
+      },
+      {
+        "name": "commit",
+        "usage": "/commit [instructions]",
+        "summary": "Create a context-scoped Conventional Commit with confirmation."
+      },
+      {
+        "name": "skill:conventional-commit",
+        "usage": "/skill:conventional-commit [instructions]",
+        "summary": "Load the confirmed, context-aware Conventional Commit workflow explicitly."
+      },
+      {
+        "name": "skill:tdd",
+        "usage": "/skill:tdd [task context]",
+        "summary": "Load the test-driven development workflow explicitly."
+      },
+      {
+        "name": "skill:code-review-standards",
+        "usage": "/skill:code-review-standards [review scope]",
+        "summary": "Load the evidence-based code-review methodology explicitly."
+      },
+      {
+        "name": "skill:dotnet-clean-architecture",
+        "usage": "/skill:dotnet-clean-architecture [task context]",
+        "summary": "Load repository-aware .NET Clean Architecture guidance explicitly."
+      }
     ],
     "tools": [
-      { "name": "guild_handover", "summary": "Hand focused work to an isolated Guild member." },
-      { "name": "create_commit", "summary": "Controlled git commit creator with mandatory interactive confirmation.", "internal": true }
+      {
+        "name": "guild_handover",
+        "summary": "Hand focused work to an isolated Guild role/profile target."
+      },
+      {
+        "name": "create_commit",
+        "summary": "Controlled git commit creator with mandatory interactive confirmation.",
+        "internal": true
+      }
     ],
     "prompts": [],
     "skills": [
-      { "name": "conventional-commit", "summary": "Context-aware staging and confirmed Conventional Commit generation." },
-      { "name": "tdd", "summary": "Test-driven development through red-green-refactor." },
-      { "name": "code-review-standards", "summary": "Evidence-based review severity and deterministic merge decisions." },
-      { "name": "dotnet-clean-architecture", "summary": "Repository-aware .NET architecture boundaries and proportional design." }
+      {
+        "name": "conventional-commit",
+        "summary": "Context-aware staging and confirmed Conventional Commit generation."
+      },
+      {
+        "name": "tdd",
+        "summary": "Test-driven development through red-green-refactor."
+      },
+      {
+        "name": "code-review-standards",
+        "summary": "Evidence-based review severity and deterministic merge decisions."
+      },
+      {
+        "name": "dotnet-clean-architecture",
+        "summary": "Repository-aware .NET architecture boundaries and proportional design."
+      }
     ],
     "themes": [],
     "agents": [
-      { "name": "dotnet-architect", "summary": "Read-only .NET architecture and review." },
-      { "name": "frontend-architect", "summary": "Read-only front-end architecture and review." },
-      { "name": "typescript-architect", "summary": "Read-only TypeScript and Node.js architecture and review." },
-      { "name": "csharp-coder", "summary": "Scoped C# and .NET implementation." },
-      { "name": "angular-coder", "summary": "Scoped Angular implementation." },
-      { "name": "typescript-coder", "summary": "Scoped TypeScript and JavaScript implementation." },
-      { "name": "rust-coder", "summary": "Scoped Rust implementation." },
-      { "name": "rust-architect", "summary": "Read-only Rust architecture and structural review." },
-      { "name": "code-reviewer", "summary": "Read-only language-agnostic code review." }
+      {
+        "name": "explorer",
+        "summary": "Read-only repository evidence gathering."
+      },
+      {
+        "name": "architect",
+        "summary": "Read-only architecture, contracts, test plans, and implementation handoffs."
+      },
+      {
+        "name": "coder",
+        "summary": "Scoped implementation, tests, and verification."
+      },
+      {
+        "name": "reviewer",
+        "summary": "Read-only findings-first review."
+      }
     ],
-    "configuration": [
-      { "kind": "directory", "key": ".pi/agents", "summary": "Trusted project Guild member overrides." },
-      { "kind": "directory", "key": "~/.pi/agent/agents", "summary": "User Guild member overrides." }
-    ]
+    "configuration": []
   },
   "pi": {
     "extensions": [

@@ -1,110 +1,334 @@
 import assert from "node:assert/strict";
-import { describe, it } from "node:test";
-import { GUILD_MEMBER_NAMES, GUILD_MEMBER_POLICIES, type GuildMember } from "../src/agents";
+import { promises as fsPromises, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join, resolve } from "node:path";
+import { afterEach, describe, it } from "node:test";
+import { setTimeout as delay } from "node:timers/promises";
+import {
+  GUILD_PROFILES,
+  GUILD_ROLE_DEFINITIONS,
+  GUILD_ROLES,
+} from "../src/agents";
 import {
   applyJsonEvent,
-  buildChildArguments,
-  createEmptyRunResult,
+  createEmptyGuildRoleRunResult,
   getRunFailure,
+  runGuildRole,
   truncateUtf8,
 } from "../src/runner";
 
-const coder: GuildMember = {
-  name: "csharp-coder",
-  description: "Implements C# code",
-  tools: GUILD_MEMBER_POLICIES["csharp-coder"].tools,
-  systemPrompt: "You are a C# coder.",
-  source: "builtin",
-  filePath: "/package/agents/csharp-coder.md",
-};
+interface CapturedCanonicalRun {
+  args: string[];
+  basePromptPath: string;
+  basePrompt: string;
+  basePromptMode: number;
+  roleProfilePromptPath: string;
+  roleProfilePrompt: string;
+  roleProfilePromptMode: number;
+}
 
-describe("child pi invocation", () => {
-  it("inherits the active model and thinking level while enforcing the member tools", () => {
-    const args = buildChildArguments({
-      member: coder,
-      task: "Implement order validation",
-      systemPromptFile: "/tmp/csharp-coder.md",
+const temporaryDirectories: string[] = [];
+
+function temporaryDirectory(): string {
+  const directory = mkdtempSync(join(tmpdir(), "pi-guild-runner-test-"));
+  temporaryDirectories.push(directory);
+  return directory;
+}
+
+async function waitForFile(filePath: string): Promise<void> {
+  for (let attempt = 0; attempt < 300; attempt++) {
+    if (existsSync(filePath)) return;
+    await delay(10);
+  }
+  throw new Error(`Timed out waiting for ${filePath}`);
+}
+
+async function captureCanonicalRun(
+  options: Parameters<typeof runGuildRole>[0],
+  protocol = true,
+  tail = "",
+): Promise<{ capture: CapturedCanonicalRun; result: Awaited<ReturnType<typeof runGuildRole>> }> {
+  const directory = temporaryDirectory();
+  const childPath = join(directory, "capture-child.mjs");
+  const capturePath = join(directory, "capture.json");
+  writeFileSync(childPath, `
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+const option = (name) => args[args.indexOf(name) + 1];
+const basePromptPath = option("--system-prompt");
+const roleProfilePromptPath = option("--append-system-prompt");
+writeFileSync(process.env.GUILD_RUNNER_CAPTURE_PATH, JSON.stringify({
+  args,
+  basePromptPath,
+  basePrompt: readFileSync(basePromptPath, "utf8"),
+  basePromptMode: statSync(basePromptPath).mode & 0o777,
+  roleProfilePromptPath,
+  roleProfilePrompt: readFileSync(roleProfilePromptPath, "utf8"),
+  roleProfilePromptMode: statSync(roleProfilePromptPath).mode & 0o777,
+}));
+const emit = event => process.stdout.write(JSON.stringify(event) + "\\n");
+const task = JSON.parse(readFileSync(process.env.GUILD_TASK_FILE, "utf8"));
+const {task: text, ...header} = task;
+const payloads = {explorer: {observations: [], unknowns: []}, architect: {decisions: [], contracts: [], handoff: []}, coder: {changes: [], verification: []}, reviewer: {scope: [], findings: [], verdict: "Approve"}};
+const report = {...header, summary: "Captured", blockers: [], limitations: [], payload: payloads[task.role]};
+if (${protocol}) emit({type: "message_end", message: {role: "custom", customType: "guild-protocol-ready", details: {protocol: task.protocol, version: 1, runId: task.runId, taskId: task.taskId, tools: option("--tools").split(",")}}});
+process.stdout.write(JSON.stringify({ type: "tool_execution_start", toolName: "read" }) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "message_update",
+  assistantMessageEvent: { type: "text_delta", delta: "Streamed" },
+}) + "\\n");
+process.stdout.write(JSON.stringify({
+  type: "message_end",
+  message: {
+    role: "assistant",
+    model: "captured-model",
+    stopReason: "stop",
+    content: [{ type: "text", text: "Captured" }],
+    usage: { input: 3, output: 2, totalTokens: 5 },
+  },
+}) + "\\n");
+if (${protocol}) {
+ emit({type: "message_end", message: {role: "assistant", content: [{type: "toolCall", name: "guild_submit_result", id: "submit", arguments: report}]}});
+ emit({type: "tool_execution_start", toolName: "guild_submit_result", toolCallId: "submit", args: report});
+ emit({type: "tool_execution_end", toolName: "guild_submit_result", toolCallId: "submit", isError: false, result: {details: report}});
+}
+${tail}
+emit({type: "agent_settled"});
+`);
+
+  const previousScript = process.argv[1];
+  const previousCapturePath = process.env.GUILD_RUNNER_CAPTURE_PATH;
+  process.argv[1] = childPath;
+  process.env.GUILD_RUNNER_CAPTURE_PATH = capturePath;
+  try {
+    const result = await runGuildRole(options);
+    return {
+      capture: JSON.parse(readFileSync(capturePath, "utf8")) as CapturedCanonicalRun,
+      result,
+    };
+  } finally {
+    if (previousScript === undefined) process.argv.splice(1, 1);
+    else process.argv[1] = previousScript;
+    if (previousCapturePath === undefined) delete process.env.GUILD_RUNNER_CAPTURE_PATH;
+    else process.env.GUILD_RUNNER_CAPTURE_PATH = previousCapturePath;
+  }
+}
+
+afterEach(() => {
+  while (temporaryDirectories.length > 0) {
+    rmSync(temporaryDirectories.pop()!, { recursive: true, force: true });
+  }
+});
+
+describe("canonical role/profile child invocation", () => {
+  it("enforces isolation and role-owned tools without runtime source, tool, or prompt overrides", async () => {
+    const task = "Review --tools ownership without rewriting this free-form task";
+    const overrideSentinel = "CALLER_OVERRIDE_MUST_NOT_APPEAR";
+    const callerOptions = {
+      role: "reviewer",
+      profile: "typescript",
+      task,
+      cwd: process.cwd(),
       model: "openai-codex/gpt-5.6-sol",
       thinkingLevel: "xhigh",
       projectTrusted: true,
-    });
+      source: "project",
+      tools: ["write", "bash"],
+      systemPrompt: overrideSentinel,
+      rolePrompt: overrideSentinel,
+      profilePrompt: overrideSentinel,
+    } as const;
+    const { capture, result } = await captureCanonicalRun(callerOptions);
 
-    assert.deepEqual(args, [
+    assert.deepEqual(capture.args, [
       "--mode",
       "json",
       "-p",
       "--no-session",
       "--no-extensions",
+      "--no-skills",
       "--no-prompt-templates",
+      "--no-context-files",
       "--approve",
       "--tools",
-      "read,grep,find,ls,edit,write,bash",
+      [...GUILD_ROLE_DEFINITIONS.reviewer.tools, "guild_submit_result"].join(","),
+      "--extension",
+      resolve(import.meta.dirname, "../src/child-protocol.ts"),
       "--model",
       "openai-codex/gpt-5.6-sol",
       "--thinking",
       "xhigh",
+      "--system-prompt",
+      capture.basePromptPath,
       "--append-system-prompt",
-      "/tmp/csharp-coder.md",
-      "Task: Implement order validation",
+      capture.roleProfilePromptPath,
+      `Task: ${task}`,
     ]);
+    assert.deepEqual(GUILD_ROLE_DEFINITIONS.reviewer.tools, ["read", "grep", "find", "ls"]);
+    assert.equal(GUILD_ROLE_DEFINITIONS.reviewer.tools.includes("bash"), false);
+    assert.equal(capture.basePrompt.includes(overrideSentinel), false);
+    assert.equal(capture.roleProfilePrompt.includes(overrideSentinel), false);
+    assert.equal("source" in result, false);
+    assert.equal("memberSource" in result, false);
+    assert.match(result.output, /Captured/);
+      assert.equal(result.status, "completed");
+    assert.equal(result.usage.contextTokens, 5);
   });
 
-  it("forwards every member's exact hard tool ceiling", () => {
-    for (const name of GUILD_MEMBER_NAMES) {
-      const member: GuildMember = {
-        name,
-        description: `${name} description`,
-        tools: GUILD_MEMBER_POLICIES[name].tools,
-        systemPrompt: `${name} prompt`,
-        source: "builtin",
-        filePath: `/package/agents/${name}.md`,
-      };
-      const args = buildChildArguments({
-        member,
-        task: "Characterize tool forwarding",
-        systemPromptFile: `/tmp/${name}.md`,
-        projectTrusted: true,
-      });
-      const toolsFlag = args.indexOf("--tools");
-
-      assert.notEqual(toolsFlag, -1, `${name} must receive --tools`);
-      assert.equal(args[toolsFlag + 1], GUILD_MEMBER_POLICIES[name].tools.join(","), name);
-    }
-  });
-
-  it("pins the current child resource isolation flags without claiming future isolation", () => {
-    const args = buildChildArguments({
-      member: coder,
-      task: "Inspect the project",
-      systemPromptFile: "/tmp/prompt.md",
-      projectTrusted: true,
-    });
-
-    for (const flag of ["--no-session", "--no-extensions", "--no-prompt-templates"]) {
-      assert.ok(args.includes(flag), `Expected current child flag ${flag}`);
-    }
-    for (const futureFlag of ["--no-skills", "--no-context-files"]) {
-      assert.equal(args.includes(futureFlag), false, `${futureFlag} is intentionally absent in Phase 0`);
-    }
-  });
-
-  it("propagates an untrusted project decision and omits unavailable model settings", () => {
-    const args = buildChildArguments({
-      member: coder,
-      task: "Inspect the project",
-      systemPromptFile: "/tmp/prompt.md",
+  it("gives coders write tools while omitting model settings and denying untrusted approval", async () => {
+    const { capture } = await captureCanonicalRun({
+      role: "coder",
+      profile: "angular",
+      task: "Implement the focused change",
+      cwd: process.cwd(),
       projectTrusted: false,
     });
+    const toolsFlag = capture.args.indexOf("--tools");
 
-    assert.ok(args.includes("--no-approve"));
-    assert.equal(args.includes("--model"), false);
-    assert.equal(args.includes("--thinking"), false);
+    assert.equal(capture.args[toolsFlag + 1], "read,grep,find,ls,edit,write,bash,guild_submit_result");
+    assert.deepEqual(GUILD_ROLE_DEFINITIONS.coder.tools, ["read", "grep", "find", "ls", "edit", "write", "bash"]);
+    assert.ok(capture.args.includes("--no-approve"));
+    assert.equal(capture.args.includes("--approve"), false);
+    assert.equal(capture.args.includes("--model"), false);
+    assert.equal(capture.args.includes("--thinking"), false);
+  });
+
+  it("loads and composes every fixed package role/profile prompt in private temporary files", async () => {
+    for (const role of GUILD_ROLES) {
+      const rolePrompt = readFileSync(resolve(import.meta.dirname, `../agents/roles/${role}.md`), "utf8");
+      for (const profile of GUILD_PROFILES) {
+        const profilePrompt = readFileSync(resolve(import.meta.dirname, `../agents/profiles/${profile}.md`), "utf8");
+        const { capture } = await captureCanonicalRun({
+          role,
+          profile,
+          task: `Exercise ${role}/${profile}`,
+          cwd: process.cwd(),
+          projectTrusted: true,
+        });
+
+        assert.equal(
+          capture.basePrompt,
+          [
+            `# Standalone Guild member: ${role}/${profile}`,
+            "",
+            "Work only on the delegated task. You have an isolated context and cannot ask another member to finish your role.",
+            "Treat the tool allowlist as a hard capability boundary.",
+          ].join("\n"),
+          `${role}/${profile} base prompt`,
+        );
+        assert.equal(
+          capture.roleProfilePrompt,
+          `${rolePrompt.trimEnd()}\n\n${profilePrompt.trimEnd()}`,
+          `${role}/${profile} appended prompt`,
+        );
+        const toolsFlag = capture.args.indexOf("--tools");
+        assert.equal(
+          capture.args[toolsFlag + 1],
+          [...GUILD_ROLE_DEFINITIONS[role].tools, "guild_submit_result"].join(","),
+          `${role}/${profile} tools`,
+        );
+        assert.equal(capture.basePromptMode, 0o600, `${role}/${profile} base prompt mode`);
+        assert.equal(capture.roleProfilePromptMode, 0o600, `${role}/${profile} appended prompt mode`);
+        assert.equal(existsSync(capture.basePromptPath), false, `${role}/${profile} base prompt cleanup`);
+        assert.equal(existsSync(capture.roleProfilePromptPath), false, `${role}/${profile} appended prompt cleanup`);
+      }
+    }
+  });
+
+  it("waits for an aborted child to stop before cleaning both prompt files", async () => {
+    const directory = temporaryDirectory();
+    const childPath = join(directory, "abort-child.mjs");
+    const capturePath = join(directory, "abort-capture.json");
+    const markerPath = join(directory, "abort-complete.txt");
+    writeFileSync(childPath, `
+import { writeFileSync } from "node:fs";
+
+const args = process.argv.slice(2);
+const option = (name) => args[args.indexOf(name) + 1];
+const basePromptPath = option("--system-prompt");
+const roleProfilePromptPath = option("--append-system-prompt");
+process.on("SIGTERM", () => {
+  setTimeout(() => {
+    writeFileSync(process.env.GUILD_RUNNER_ABORT_MARKER_PATH, "child cleanup complete");
+    process.exit(0);
+  }, 40);
+});
+writeFileSync(process.env.GUILD_RUNNER_CAPTURE_PATH, JSON.stringify({ basePromptPath, roleProfilePromptPath }));
+setInterval(() => undefined, 1000);
+`);
+
+    const previousScript = process.argv[1];
+    const previousCapturePath = process.env.GUILD_RUNNER_CAPTURE_PATH;
+    const previousMarkerPath = process.env.GUILD_RUNNER_ABORT_MARKER_PATH;
+    const controller = new AbortController();
+    process.argv[1] = childPath;
+    process.env.GUILD_RUNNER_CAPTURE_PATH = capturePath;
+    process.env.GUILD_RUNNER_ABORT_MARKER_PATH = markerPath;
+    let runPromise: ReturnType<typeof runGuildRole> | undefined;
+    try {
+      runPromise = runGuildRole({
+        role: "reviewer",
+        profile: "general",
+        task: "Wait for child cleanup",
+        cwd: process.cwd(),
+        projectTrusted: true,
+        signal: controller.signal,
+      });
+      await waitForFile(capturePath);
+      const capture = JSON.parse(readFileSync(capturePath, "utf8")) as Pick<
+        CapturedCanonicalRun,
+        "basePromptPath" | "roleProfilePromptPath"
+      >;
+
+      controller.abort();
+      assert.equal((await runPromise).status, "cancelled");
+
+      assert.equal(readFileSync(markerPath, "utf8"), "child cleanup complete");
+      assert.equal(existsSync(capture.basePromptPath), false);
+      assert.equal(existsSync(capture.roleProfilePromptPath), false);
+    } finally {
+      controller.abort();
+      await runPromise?.catch(() => undefined);
+      if (previousScript === undefined) process.argv.splice(1, 1);
+      else process.argv[1] = previousScript;
+      if (previousCapturePath === undefined) delete process.env.GUILD_RUNNER_CAPTURE_PATH;
+      else process.env.GUILD_RUNNER_CAPTURE_PATH = previousCapturePath;
+      if (previousMarkerPath === undefined) delete process.env.GUILD_RUNNER_ABORT_MARKER_PATH;
+      else process.env.GUILD_RUNNER_ABORT_MARKER_PATH = previousMarkerPath;
+    }
   });
 });
 
-describe("child JSON event aggregation", () => {
+describe("canonical role/profile run results and JSON events", () => {
+  it("exposes only canonical identity in a new run result", () => {
+    const result = createEmptyGuildRoleRunResult("reviewer", "typescript", "Review the runner");
+
+    assert.deepEqual(result, {
+      role: "reviewer",
+      profile: "typescript",
+      task: "Review the runner",
+      output: "",
+      exitCode: 0,
+      stderr: "",
+      activity: "Starting handover",
+      usage: {
+        input: 0,
+        output: 0,
+        cacheRead: 0,
+        cacheWrite: 0,
+        cost: 0,
+        contextTokens: 0,
+        turns: 0,
+      },
+    });
+    assert.equal("member" in result, false);
+    assert.equal("memberSource" in result, false);
+    assert.equal("source" in result, false);
+  });
+
   it("reports truthful live activity from child tool events", () => {
-    const result = createEmptyRunResult(coder, "Inspect repository");
+    const result = createEmptyGuildRoleRunResult("explorer", "general", "Inspect repository");
     assert.equal(result.activity, "Starting handover");
 
     applyJsonEvent(result, { type: "tool_execution_start", toolName: "find" });
@@ -120,7 +344,7 @@ describe("child JSON event aggregation", () => {
   });
 
   it("streams text deltas and records final usage without duplicating final text", () => {
-    const result = createEmptyRunResult(coder, "Do work");
+    const result = createEmptyGuildRoleRunResult("coder", "typescript", "Do work");
     applyJsonEvent(result, { type: "message_update", assistantMessageEvent: { type: "text_delta", delta: "Done" } });
     applyJsonEvent(result, {
       type: "message_end",
@@ -155,7 +379,7 @@ describe("child JSON event aggregation", () => {
   });
 
   it("falls back to finalized assistant text when no deltas were emitted", () => {
-    const result = createEmptyRunResult(coder, "Do work");
+    const result = createEmptyGuildRoleRunResult("architect", "dotnet", "Do work");
     applyJsonEvent(result, {
       type: "message_end",
       message: { role: "assistant", content: [{ type: "text", text: "Final answer" }] },
@@ -165,7 +389,7 @@ describe("child JSON event aggregation", () => {
   });
 
   it("keeps only the latest finalized assistant output across tool-use turns", () => {
-    const result = createEmptyRunResult(coder, "Do work");
+    const result = createEmptyGuildRoleRunResult("coder", "rust", "Do work");
     applyJsonEvent(result, {
       type: "message_end",
       message: { role: "assistant", stopReason: "toolUse", content: [{ type: "text", text: "I will inspect the code." }] },
@@ -182,7 +406,7 @@ describe("child JSON event aggregation", () => {
   });
 
   it("returns useful failure diagnostics for child and model errors", () => {
-    const result = createEmptyRunResult(coder, "Do work");
+    const result = createEmptyGuildRoleRunResult("reviewer", "general", "Do work");
     result.exitCode = 1;
     result.stopReason = "error";
     result.errorMessage = "Provider failed";
@@ -201,4 +425,63 @@ describe("model-visible output truncation", () => {
     assert.match(truncated, /Output truncated/);
     assert.equal(truncated.includes("�"), false);
   });
+});
+
+it("fails closed on prose-only child output rather than reporting success", async () => {
+ const {result} = await captureCanonicalRun({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true}, false);
+ assert.ok(getRunFailure(result));
+ assert.equal(result.status, "failed");
+ assert.equal(result.output, "");
+});
+
+it("marks only finite reported usage fields as known instead of certifying absent zeroes", () => {
+ const result = createEmptyGuildRoleRunResult("coder", "general", "Work");
+ applyJsonEvent(result, {type: "message_end", message: {role: "assistant", content: [], usage: {input: 3, output: "bad", cost: {total: -1}}}});
+ assert.deepEqual(result.usageFields, ["input"]);
+ assert.equal(result.usage.input, 3);
+ assert.equal(result.usage.output, 0);
+ assert.equal(result.usage.cost, 0);
+});
+
+it("does not let a valid submission mask process/provider/extension/transport failure", async () => {
+ for (const tail of [
+  'process.exitCode = 3;',
+  'emit({type: "message_end", message: {role: "assistant", stopReason: "error", errorMessage: "Provider failed", content: []}});',
+  'process.stderr.write("Extension error (child-protocol.ts): hook failed");',
+  'process.stderr.write("x".repeat(65537));',
+  'process.stdout.write("x".repeat(1048577));',
+ ]) {
+  const {result} = await captureCanonicalRun({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true}, true, tail);
+  assert.equal(result.status, "failed", tail);
+  assert.equal(result.output, "");
+  assert.equal(result.usage.input, 3);
+  assert.ok(result.usageFields?.includes("input"));
+  assert.ok(Buffer.byteLength(result.stderr) < 66 * 1024);
+ }
+});
+it("isolates throwing update callbacks and honors reentrant cancellation before terminal publication", async () => {
+ const options = {role: "coder" as const, profile: "general" as const, task: "Work", cwd: process.cwd(), projectTrusted: true};
+ const complete = await captureCanonicalRun({...options, onUpdate() {throw new Error("observer");}});
+ assert.equal(complete.result.status, "completed");
+ const controller = new AbortController();
+ const cancelled = await captureCanonicalRun({...options, signal: controller.signal, onUpdate() {controller.abort();}});
+ assert.equal(cancelled.result.status, "cancelled");
+ assert.equal(cancelled.result.output, "");
+});
+it("waits for cleanup and refuses completion when owned cleanup fails", async () => {
+ const original = fsPromises.rm;
+ fsPromises.rm = async () => {throw new Error("fixture cleanup failure");};
+ try {
+  const {capture, result} = await captureCanonicalRun({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true});
+  temporaryDirectories.push(dirname(capture.basePromptPath));
+  assert.equal(result.status, "failed");
+  assert.match(getRunFailure(result) ?? "", /cleanup failed/);
+  assert.equal(result.usage.input, 3);
+ } finally {fsPromises.rm = original;}
+});
+it("retains host run/task identity on failed terminals without a child report", async () => {
+ const {result} = await captureCanonicalRun({runId: "host-run", role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true}, false);
+ assert.equal(result.runId, "host-run");
+ assert.match(result.taskId ?? "", /^[0-9a-f-]{36}$/);
+ assert.equal(result.report, undefined);
 });

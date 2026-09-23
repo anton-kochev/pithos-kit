@@ -124,7 +124,7 @@ describe("Guild TDD skill", () => {
 
     assert.match(rootReadme, /TDD workflow now ships with Guild/u);
     assert.match(rootReadme, /Coordinate Guild and Atlas releases[\s\S]*Guild 0\.3\.0 owns TDD[\s\S]*Atlas 0\.6\.0/u);
-    assert.match(rootReadme, /publish and verify coordinated Guild 0\.3\.0 and Atlas 0\.6\.0 releases/u);
+    assert.match(rootReadme, /completed Skills retirement baseline is Guild 0\.3\.0 with Atlas 0\.6\.0 or later/u);
     assert.doesNotMatch(rootReadme, /publish and verify Atlas 0\.5\.0 first/u);
     assert.match(planReadme, /Guild 0\.3\.0 for the relocated TDD skill[\s\S]*Atlas 0\.6\.0[\s\S]*no longer bundles it/u);
     assert.match(cutover, /pairs Guild 0\.3\.0 with Atlas 0\.6\.0 so Guild owns TDD[\s\S]*after Atlas stops registering them/u);

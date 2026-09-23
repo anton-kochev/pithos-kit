@@ -1,10 +1,12 @@
 # guild
 
-A standalone Guild of .NET, Angular, TypeScript, Node.js, and Rust architecture and implementation members with repository-aware Clean Architecture, code-review, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, code-review, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
-The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover starts an isolated, ephemeral pi process with a focused system prompt and a hard tool allowlist. The child inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
+The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
 ## Install
+
+Requires Pi **0.87.0 or newer**. The initial provider-free compatibility target is exactly 0.87.0; future releases are not automatically certified.
 
 ```bash
 pi install npm:@pithos-kit/guild
@@ -31,33 +33,41 @@ pi:
     "@pithos-kit/guild": "npm:0.3.0"
 ```
 
-## Guild members
+## Roles and profiles
 
-| Member | Role | Tools |
+Roles own responsibility and the repository tool ceiling. Every child additionally receives only `guild_submit_result`, a child-only reporting tool with no repository or delegation capability:
+
+| Role | Responsibility | Tools |
 |---|---|---|
-| `dotnet-architect` | Read-only .NET architecture, reviews, contracts, test plans, and implementation handoffs | `read`, `grep`, `find`, `ls` |
-| `frontend-architect` | Read-only front-end architecture, state ownership, boundaries, routing, rendering, and API contracts | `read`, `grep`, `find`, `ls` |
-| `typescript-architect` | Read-only TypeScript/Node.js module, package, runtime, async lifecycle, state, compatibility, and Pi extension architecture | `read`, `grep`, `find`, `ls` |
-| `csharp-coder` | Scoped C#/.NET implementation, related tests, builds, and verification | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
-| `angular-coder` | Scoped Angular implementation, related tests, type-checking, linting, and builds | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
-| `typescript-coder` | Scoped TypeScript/JavaScript implementation, migration, tests, type-checking, linting, and builds | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
-| `rust-coder` | Scoped Rust implementation, compiler-error resolution, tests, linting, and builds | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
-| `rust-architect` | Read-only Rust architecture, structural reviews, contracts, refactoring plans, and implementation handoffs | `read`, `grep`, `find`, `ls` |
-| `code-reviewer` | Read-only, language-aware review of repository changes with severity-prioritized findings | `read`, `grep`, `find`, `ls`, `bash` |
+| `explorer` | Inspect repository structure, behavior, versions, conventions, dependencies, and relevant paths | `read`, `grep`, `find`, `ls` |
+| `architect` | Compare designs and define contracts, invariants, test strategy, and an implementation handoff | `read`, `grep`, `find`, `ls` |
+| `coder` | Implement one coherent scope, own relevant tests, and verify it | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
+| `reviewer` | Independently inspect a focused change and return severity-ranked evidence and a verdict | `read`, `grep`, `find`, `ls` |
 
-Architect members cannot edit files or run shell commands. The reviewer cannot edit files and uses shell access only for non-mutating repository inspection. Coder members own related tests and verification and must not report success when relevant checks fail.
+Profiles select package-owned technical guidance and never add tools:
+
+| Profile | Focus |
+|---|---|
+| `general` | Technology-neutral software engineering |
+| `frontend` | Browser UI, components, state, rendering, accessibility, and performance |
+| `angular` | Angular applications, templates, reactivity, forms, and tests |
+| `typescript` | TypeScript, JavaScript, Node.js, modules, runtime boundaries, and async behavior |
+| `dotnet` | .NET, C#, projects, persistence, dependency injection, async behavior, and tests |
+| `rust` | Rust, Cargo, ownership, errors, concurrency, unsafe boundaries, and tests |
+
+All 24 role/profile pairs are valid. Only `coder` can edit, write, or invoke shell commands; explorer, architect, and reviewer are mechanically read-only. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
 
 ## Code-review standards skill
 
-Guild owns the language-neutral `code-review-standards` skill for focused, evidence-based reviews with impact-calibrated severity and deterministic Request changes, Comment, or Approve decisions. When Guild is installed and this resource is enabled, Pi-native model-visible discovery lets the main agent and Guild child processes load it proactively without requiring explicit skill invocation. A temporary parent-only `pi -e` run does not guarantee child discovery unless Guild is also installed and enabled for the child. The skill can also be loaded directly when desired:
+Guild owns the language-neutral `code-review-standards` skill for focused, evidence-based reviews with impact-calibrated severity and deterministic Request changes, Comment, or Approve decisions. When Guild is installed and this resource is enabled, Pi-native discovery lets the main agent load it proactively without requiring explicit invocation. Guild children deliberately start with general skill discovery disabled; exact child skill selection arrives in a later phase. The skill can also be loaded directly in the parent session when desired:
 
 ```text
 /skill:code-review-standards [review scope]
 ```
 
-The methodology honors explicit commits and ranges or inspects staged, unstaged, and relevant untracked changes; detects supported languages, frameworks, and runtimes from repository evidence; and produces the same findings-first report as `code-reviewer`. It never treats an inspected scope as proof of perfect code or claims verification that was not run.
+The methodology honors explicit commits and ranges or inspects staged, unstaged, and relevant untracked changes; detects supported languages, frameworks, and runtimes from repository evidence; and complements the canonical `reviewer` role's findings-first report. It never treats an inspected scope as proof of perfect code or claims verification that was not run.
 
-Use `pi config` or `pi config -l` to disable this resource, then run `/reload`. The `code-reviewer` remains self-contained when the skill is disabled: its built-in prompt retains the hard read-only boundary, severity framework, scope discovery, and deterministic report contract.
+Use `pi config` or `pi config -l` to disable this resource, then run `/reload`. The canonical `reviewer` role remains self-contained without the skill: its package role prompt retains a hard read-only boundary, findings-first evidence, and a deterministic verdict.
 
 ## Test-driven development skill
 
@@ -67,7 +77,7 @@ Guild owns the language-agnostic `tdd` skill used for explicit or proactive test
 /skill:tdd [task context]
 ```
 
-The skill drives behavioral changes through a test list and small red-green-refactor cycles while allowing pragmatic exceptions for spikes, trivial declarations, generated output, and other work that does not benefit from test-first ceremony. Pi exposes the skill to the main agent and to Guild child processes through native skill discovery.
+The skill drives behavioral changes through a test list and small red-green-refactor cycles while allowing pragmatic exceptions for spikes, trivial declarations, generated output, and other work that does not benefit from test-first ceremony. Pi exposes the skill to the main agent through native discovery; Guild children do not receive ambient skills in Phase 2.
 
 Use `pi config` for global settings or `pi config -l` for a project override to toggle Guild's `tdd` resource, then run `/reload` in an active session. The `enableSkillCommands` setting controls native `/skill:tdd` registration and autocomplete; disabling the resource also removes its model-visible description after reload.
 
@@ -100,110 +110,63 @@ The controlled `create_commit` tool shows the final message and staged file set 
 
 ## Usage
 
-Ask the main agent to hand a self-contained task over to a Guild member:
+Ask the main agent to choose a role and profile for one self-contained task:
 
 ```text
-Use dotnet-architect to design the order cancellation workflow.
-Use frontend-architect to define state ownership for checkout.
-Use typescript-architect to design package boundaries and async lifecycle contracts.
-Use csharp-coder to implement the approved cancellation design.
-Use angular-coder to add the checkout loading and error states.
-Use typescript-coder to make the API client errors type-safe.
-Use rust-coder to resolve the parser's ownership errors.
-Use rust-architect to redesign the workspace crate boundaries.
-Use code-reviewer to review the current change for merge-blocking defects.
+Use explorer/typescript to locate the package and runtime contracts involved.
+Use architect/dotnet to design the order cancellation workflow.
+Use architect/frontend to define state ownership for checkout.
+Use coder/angular to add checkout loading and error states.
+Use coder/rust to resolve the parser ownership defect.
+Use reviewer/general to review the focused change for merge-blocking defects.
 ```
 
-The main agent invokes:
+The main agent invokes the canonical API:
 
 ```text
-guild_handover({ member: "csharp-coder", task: "...scope and acceptance criteria..." })
+guild_handover({ role: "coder", profile: "typescript", task: "...scope and acceptance criteria..." })
 ```
 
-Delegate directly from the interactive TUI without asking the main agent to invoke the tool:
+Delegate directly from the interactive TUI:
 
 ```text
 /guild-handover
-/guild-handover csharp-coder
-/guild-handover csharp-coder Implement validation and run the tests
+/guild-handover architect/typescript
+/guild-handover coder/typescript Implement validation and run the tests
+/guild-handover typescript-coder Implement validation and run the tests
 /guild-handover --help
 ```
 
-With no member, the command opens a roster picker. With no task, it opens a multiline task editor. The command waits for the main agent to become idle, applies the same member discovery and project-override approval as the tool, and then runs synchronously in a cancellable live handover card. Direct command execution is intentionally TUI-only.
+With no target, the command opens a role picker followed by a profile picker. With no task, it opens a multiline task editor. The command waits for the main agent to become idle and applies the same Plan-mode gate, inherited trust decision, queue, tools, and child runner as the agent tool. Direct execution is intentionally TUI-only.
 
-List the active roster and definition sources without executing a member:
+List the fixed package roles, profiles, permissions, and aliases without launching a child:
 
 ```text
 /guild
 /guild --help
 ```
 
-Both commands also accept `-h`; help returns before discovery, UI prompts, idle waits, or child execution.
+Both commands also accept `-h`; help returns before idle waits, UI prompts, admission checks, or child execution. Task input remains free-form. New child completions must use the exact result protocol below; prose alone is never a successful completion.
 
 ## Live transparency
 
-While Guild members are executing, the extension shows a compact active-run panel above the editor:
+Accepted handovers are serialized through one process-local FIFO queue. The compact dashboard distinguishes queued and running work without exposing task text, model settings, or tools:
 
 ```text
 Guild · 2 active
- ● dotnet-architect · 5s · 2 turns
- ● angular-coder · 49m 38s
+ ○ reviewer/general · queued · 0s
+ ● coder/typescript · running · 5s · 2 turns
 ```
 
-The panel intentionally keeps only live identity and timing that are useful while a handover runs. Task and output stay in the chat, while static run configuration is omitted from the transient panel. Text colors follow the active Pi theme, while a dedicated light/dark violet background distinguishes the Guild panel from standard pending-tool cards. The summary and each active run have their own truncated line, framed by half-block edges that create balanced half-row padding and a half-row visual gap before the editor. `guild_handover` also has a custom tool-call card and a compact completion card whose full output is available through normal tool expansion.
+Agent-invoked handovers use that aggregate dashboard. A direct `/guild-handover` uses a width-capped cancellable card with canonical identity, package source, permission level, queue state, elapsed time, turns, and real child-tool activity. Completed reports render as Markdown; failures receive diagnostics; cancellations use a compact terminal treatment.
 
-Agent-invoked handovers use the aggregate dashboard shown above. A direct `/guild-handover` instead uses a compact, width-capped live card with a spinner, elapsed time, turns, current child-tool activity, and the configured cancellation hint:
+Each direct handover records one hidden user-initiated `started` event and exactly one correlated `completed`, `failed`, or `cancelled` event with `triggerTurn: false`. Reports and diagnostics are delimited as task data rather than instructions. Picker/editor cancellation creates no lifecycle event. When the final run stops, the dashboard widget, footer status, timers, and tracked state clear.
 
-```text
-╭─ ✦ Guild Relay ───────────────────────────────────────────────────────── [● Running  00:12] ─╮
-│  dotnet-architect · built-in · read-only                                                     │
-│  Request  Explore the repository for .NET artifacts                                          │
-│  ⠋  Scanning repository · find · 2 turns                               escape/ctrl+c cancel  │
-╰──────────────────────────────────────────────────────────────────────────────────────────────╯
-```
+Serialization covers all Guild handovers within one extension runtime. Cancellation of queued work never launches a child; cancellation of active work holds the queue until the child process terminates and cleanup finishes. Separate Pi processes and external tools remain outside this guarantee. Guild remains independent of Pi's native specialist facility and does not observe its lifecycle or messages.
 
-The activity label is derived from actual child tool events rather than an invented progress percentage. Completed reports render as Markdown in a neutral framed card; failed runs receive a diagnostics section, and cancellations use a compact terminal treatment.
+## Package aliases and configuration migration
 
-While agent-invoked work is running, the footer reports the active count and the aggregate panel updates elapsed time and turns. Each stopped Guild member is removed from that live panel immediately. When the final active run stops, the `guild-dashboard` panel and footer status clear. Completed output and metadata remain on the corresponding tool result or direct-handover lifecycle message in the transcript.
-
-A direct handover records a user-initiated `started` event and exactly one correlated terminal event. The started event is hidden visually because the live card already communicates progress, but both events remain available to the main agent on its next turn. They use `triggerTurn: false`, so completion never causes an automatic main-agent response. Member reports and failure diagnostics are explicitly delimited as task data rather than new instructions. Selection/editor cancellation creates no event; cancellation after execution starts records a terminal `cancelled` event.
-
-Guild is independent of Pi's native specialist facility and does not observe its tool lifecycle or messages.
-
-The first release intentionally supports one Guild member per invocation. Parallel tasks, chains, persistent member memory, and dedicated test-writer members are out of scope.
-
-## Guild member overrides
-
-The package always provides its nine built-in definitions. You can override a definition by creating a Markdown agent file in:
-
-- User scope: `~/.pi/agent/agents/*.md`
-- Project scope: `.pi/agents/*.md` in the current directory or an ancestor
-
-Precedence is:
-
-```text
-project → user → built-in
-```
-
-Project definitions are considered only in trusted projects. Handing a task to a selected project override also requires explicit interactive confirmation; it is rejected when no UI is available.
-
-An override uses this format:
-
-```markdown
----
-name: csharp-coder
-description: Project-specific C# Guild member.
-tools: read, grep, find, ls, edit, write, bash
----
-
-Your project-specific Guild member instructions.
-```
-
-Names are limited to the bundled roster. Tool boundaries are hard policy: an override whose tools differ from the corresponding built-in role is ignored. This prevents read-only roles from gaining write access and architects from gaining shell access.
-
-## Approved future Guild migration (not current behavior)
-
-This Phase 0 section is documentation only: current Guild behavior and the `member` API remain unchanged until a later approved phase implements the cutover. The approved clean-break target uses stable role/profile identities, with these package-owned legacy mappings:
+Canonical calls use `role/profile`. The old names remain package-owned compatibility aliases:
 
 ```text
 dotnet-architect → architect/dotnet
@@ -217,22 +180,42 @@ rust-coder → coder/rust
 code-reviewer → reviewer/general
 ```
 
-There is no user/global Guild layer in the target. The future cutover stops reading both `~/.pi/agent/agents` and `.pi/agents`; it does not delete either directory or its files. Arbitrary prompt overrides are not auto-converted. Repository facts move to `AGENTS.md`, while constrained repository profile and skill support arrives in later phases.
+Aliases cannot change prompts, profiles, or role tool ceilings, and no sunset is promised. Direct commands accept aliases visibly; resumed old `{ member, task }` tool calls are normalized before the strict canonical schema is validated.
 
-The aliases above are package-owned compatibility inputs. They do not change tools or authorization, and no alias sunset is promised.
+Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. Trusted constrained repository profiles and skills arrive only in later phases.
 
 ## Isolation and resources
 
-Each Guild member runs with:
+Each Guild target runs with:
 
 - an isolated context window and no saved child session;
-- the parent's current provider/model and thinking level;
-- the Guild member's fixed tool allowlist;
-- the parent's working directory and trust decision;
-- normal trusted project context and skill discovery;
-- extension discovery disabled in the child, preventing recursive delegation and unrelated extension behavior.
+- the parent's current provider/model, thinking level, working directory, and trust decision;
+- an explicit package-controlled base system prompt plus exactly one role prompt and one profile prompt;
+- the exact role-owned repository tool allowlist plus `guild_submit_result`;
+- `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, with one explicit absolute local `--extension` pointing to package-owned `src/child-protocol.ts`;
+- no recursive Guild delegation and no user/project member, system-prompt, append-prompt, skill, extension, template, or context-file discovery.
 
-Cancellation terminates the child process and waits for it to stop before returning control. Model-visible output is capped at 50 KB; full output and run metadata remain in tool-result or lifecycle-message details.
+The tool and direct command both fail closed while Plan mode is active or indeterminate. The inherited trust decision controls `--approve` versus `--no-approve`; it does not expand role tools. Only coder has shell access, so this remains guardrail-oriented delegation rather than a filesystem sandbox. Task input stays free-form; completion is structured.
+
+Cancellation terminates the child process and waits for shutdown and owned cleanup before releasing the serialized queue. Rendering retains up to 50 KiB of UTF-8 report text plus a truncation notice; accepted structured reports remain in tool-result or lifecycle-message details. Transport and diagnostics are separately bounded, not retained without limit.
+
+## Exact completion protocol
+
+One host builder binds `guild/2` version 1 to a run ID, unique task ID, canonical role/profile, and original task text. It does not infer scope, acceptance criteria, or write leases from prose. The same runner and host-owned `completed`, `failed`, or `cancelled` outcome serve agent tools, direct commands, and editor input. Legacy persisted prose reports remain displayable, but cannot complete a new handover.
+
+Children must submit `guild_submit_result` **alone in its tool batch**, once. Common exact fields are `protocol`, `version`, `runId`, `taskId`, `role`, `profile`, `summary`, `blockers`, `limitations`, and `payload`. Role payloads are:
+
+- explorer: referenced `observations` and `unknowns`;
+- architect: `decisions`, `contracts`, and `handoff`;
+- coder: reported `changes` and `verification` commands/outcomes;
+- reviewer: `scope`, severity-ranked `findings`, and `verdict`.
+
+Empty findings and unperformed checks are legitimate when reported honestly. Each string is at most 2048 UTF-8 bytes, each list at most 32 items, and the serialized result at most 48 KiB. Oversized or extra-key results are rejected, never truncated into apparent completion. Parent ingestion permits at most 1 MiB per JSON line, 16 MiB total stdout, and 64 KiB stderr. Exceeding transport bounds fails the run, including unusually large ordinary tool events.
+
+A malformed submission or prose-only completion gets **one shared corrective opportunity in the same child**. The next assistant response must submit the result alone; there is no respawn, queue re-entry, or reset on continued agent runs. Identity mismatch, mixed batches, duplicates, post-submission work, exhausted repair, missing handshake/settlement, process/provider errors, and cleanup failures fail closed. Cancellation and failure override a previously valid submission. Mixed-batch rejection is not a claim that sibling work never happened or was rolled back.
+
+Reports, commands, changes, references, and judgments are **child-reported claims**, not authenticated or host-certified truth. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
+
 
 ## Development
 
@@ -246,4 +229,4 @@ npm pack --dry-run
 
 ## Provenance
 
-Most bundled Guild member prompts are adapted for pi from the MIT-licensed [Grimoire](https://github.com/anton-kochev/grimoire) project. The `typescript-architect` prompt is repository-native guidance informed by Pi's documented extension and runtime contracts. See [`NOTICE.md`](./NOTICE.md).
+The concise role/profile resources retain adapted guidance from the MIT-licensed [Grimoire](https://github.com/anton-kochev/grimoire) project and repository-native TypeScript/Pi guidance. See [`NOTICE.md`](./NOTICE.md).

@@ -197,6 +197,7 @@ conflicts, but arbitrary external OS writes can race the final filesystem calls.
 
 `@pithos-kit/skills` is retired. Remove global and project installs
 (`pi remove npm:@pithos-kit/skills` and
-`pi remove -l npm:@pithos-kit/skills`) and its `.pithos` pin. Historical Skills
-0.4.0 and earlier must not be loaded alongside this package because both handle
-`/plan` and Plan state.
+`pi remove -l npm:@pithos-kit/skills`) and its `.pithos` pin. Use Guild 0.3.0 for the relocated TDD skill;
+Atlas 0.6.0 and later no longer bundles it. Historical
+Skills 0.4.0 and earlier must not be loaded alongside this package because both
+handle `/plan` and Plan state.

@@ -3,44 +3,57 @@ import { describe, it } from "node:test";
 import { GuildRunTracker } from "../src/visibility";
 
 describe("Guild member run visibility", () => {
-  it("shows every concurrent run with only identity, elapsed time, and turns", () => {
+  it("prefers canonical identity and distinguishes queued from running without exposing run internals", () => {
     const tracker = new GuildRunTracker();
-    tracker.start({
+    const queuedRun = {
       id: "run-1",
-      member: "dotnet-architect",
+      role: "architect" as const,
+      profile: "dotnet" as const,
+      phase: "queued" as const,
+      member: "dotnet-architect" as const,
       startedAt: 1_000,
-    });
+      task: "Do not show this task",
+      model: "do-not-show-this-model",
+      tools: ["read"],
+    };
+    tracker.start(queuedRun);
     tracker.start({
       id: "run-2",
-      member: "angular-coder",
+      role: "coder",
+      profile: "angular",
+      phase: "queued",
       startedAt: 2_000,
     });
     tracker.update("run-1", { turns: 2 });
+    tracker.update("run-2", { phase: "running" });
 
     const lines = tracker.formatLines(6_000);
 
     assert.deepEqual(lines, [
       "Guild · 2 active",
-      "⏳ dotnet-architect · 5s · 2 turns",
-      "⏳ angular-coder · 4s",
+      "⏳ architect/dotnet · queued · 5s · 2 turns",
+      "⏳ coder/angular · running · 4s",
     ]);
+    assert.doesNotMatch(lines.join("\n"), /Do not show|do-not-show|\bread\b/);
   });
 
   it("formats long elapsed times as readable units", () => {
     const tracker = new GuildRunTracker();
     tracker.start({
       id: "long-run",
-      member: "angular-coder",
+      role: "coder",
+      profile: "angular",
+      phase: "running",
       startedAt: 2_000,
     });
 
     const text = tracker.formatLines(2_980_000).join("\n");
 
-    assert.match(text, /angular-coder.*49m 38s/);
+    assert.match(text, /coder\/angular.*49m 38s/);
     assert.doesNotMatch(text, /2978s/);
   });
 
-  it("removes finished runs from the active-only display", () => {
+  it("renders legacy member-only inputs and removes finished runs from active-only state", () => {
     const tracker = new GuildRunTracker();
     const base = {
       startedAt: 0,

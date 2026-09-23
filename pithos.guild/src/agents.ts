@@ -1,176 +1,120 @@
-import * as fs from "node:fs";
-import * as path from "node:path";
-import { parseFrontmatter } from "@earendil-works/pi-coding-agent";
+export const GUILD_ROLES = Object.freeze([
+	"explorer",
+	"architect",
+	"coder",
+	"reviewer",
+] as const);
 
-export const GUILD_MEMBER_NAMES = [
-	"dotnet-architect",
-	"frontend-architect",
-	"typescript-architect",
-	"csharp-coder",
-	"angular-coder",
-	"typescript-coder",
-	"rust-coder",
-	"rust-architect",
-	"code-reviewer",
-] as const;
+export type GuildRole = (typeof GUILD_ROLES)[number];
 
-export type GuildMemberName = (typeof GUILD_MEMBER_NAMES)[number];
-export type GuildMemberSource = "builtin" | "user" | "project";
-export type GuildMemberRole = "architect" | "coder" | "reviewer";
+export const GUILD_PROFILES = Object.freeze([
+	"general",
+	"frontend",
+	"angular",
+	"typescript",
+	"dotnet",
+	"rust",
+] as const);
 
-const ARCHITECT_TOOLS = ["read", "grep", "find", "ls"] as const;
-const CODER_TOOLS = ["read", "grep", "find", "ls", "edit", "write", "bash"] as const;
-const REVIEWER_TOOLS = ["read", "grep", "find", "ls", "bash"] as const;
+export type GuildProfile = (typeof GUILD_PROFILES)[number];
+export type GuildTarget = `${GuildRole}/${GuildProfile}`;
 
-export const GUILD_MEMBER_POLICIES: Record<GuildMemberName, { tools: readonly string[]; role: GuildMemberRole }> = {
-	"dotnet-architect": { tools: ARCHITECT_TOOLS, role: "architect" },
-	"frontend-architect": { tools: ARCHITECT_TOOLS, role: "architect" },
-	"typescript-architect": { tools: ARCHITECT_TOOLS, role: "architect" },
-	"csharp-coder": { tools: CODER_TOOLS, role: "coder" },
-	"angular-coder": { tools: CODER_TOOLS, role: "coder" },
-	"typescript-coder": { tools: CODER_TOOLS, role: "coder" },
-	"rust-coder": { tools: CODER_TOOLS, role: "coder" },
-	"rust-architect": { tools: ARCHITECT_TOOLS, role: "architect" },
-	"code-reviewer": { tools: REVIEWER_TOOLS, role: "reviewer" },
-};
-
-export interface GuildMember {
-	name: GuildMemberName;
-	description: string;
-	tools: readonly string[];
-	systemPrompt: string;
-	source: GuildMemberSource;
-	filePath: string;
+export function isGuildRole(value: unknown): value is GuildRole {
+	return typeof value === "string" && (GUILD_ROLES as readonly string[]).includes(value);
 }
 
-export interface GuildDiscoveryOptions {
-	builtInDir: string;
-	userDir?: string;
-	projectDir?: string | null;
-	includeProject?: boolean;
+export function isGuildProfile(value: unknown): value is GuildProfile {
+	return typeof value === "string" && (GUILD_PROFILES as readonly string[]).includes(value);
 }
 
-export interface GuildDiscoveryResult {
-	members: GuildMember[];
-	warnings: string[];
+export function createGuildTarget(role: GuildRole, profile: GuildProfile): GuildTarget {
+	return `${role}/${profile}`;
 }
 
-function isGuildMemberName(value: string): value is GuildMemberName {
-	return (GUILD_MEMBER_NAMES as readonly string[]).includes(value);
+export function isGuildTarget(value: unknown): value is GuildTarget {
+	if (typeof value !== "string") return false;
+	const parts = value.split("/");
+	return parts.length === 2 && isGuildRole(parts[0]) && isGuildProfile(parts[1]);
 }
 
-function normalizedToolSet(tools: readonly string[]): string[] {
-	return [...new Set(tools.map((tool) => tool.trim()).filter(Boolean))].sort();
+export interface GuildRoleDefinition {
+	readonly description: string;
+	readonly tools: readonly string[];
 }
 
-function hasExpectedToolBoundary(name: GuildMemberName, tools: readonly string[]): boolean {
-	const expected = normalizedToolSet(GUILD_MEMBER_POLICIES[name].tools);
-	const actual = normalizedToolSet(tools);
-	return expected.length === actual.length && expected.every((tool, index) => tool === actual[index]);
+export interface GuildProfileDefinition {
+	readonly description: string;
+	readonly expertise: string;
 }
 
-function loadDirectory(directory: string | undefined | null, source: GuildMemberSource, warnings: string[]): Map<GuildMemberName, GuildMember> {
-	const members = new Map<GuildMemberName, GuildMember>();
-	if (!directory || !fs.existsSync(directory)) return members;
+const CANONICAL_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
+const CANONICAL_CODER_TOOLS = Object.freeze(["read", "grep", "find", "ls", "edit", "write", "bash"] as const);
 
-	let entries: fs.Dirent[];
-	try {
-		entries = fs.readdirSync(directory, { withFileTypes: true });
-	} catch (error) {
-		warnings.push(`Could not read ${source} Guild member directory ${directory}: ${error instanceof Error ? error.message : String(error)}`);
-		return members;
-	}
+export const GUILD_ROLE_DEFINITIONS = Object.freeze({
+	explorer: Object.freeze({
+		description: "Investigates repository evidence and reports scoped facts without changing the repository.",
+		tools: CANONICAL_READ_ONLY_TOOLS,
+	}),
+	architect: Object.freeze({
+		description: "Designs repository-grounded contracts, invariants, test plans, and implementation handoffs without changing the repository.",
+		tools: CANONICAL_READ_ONLY_TOOLS,
+	}),
+	coder: Object.freeze({
+		description: "Implements the smallest approved repository change with tests and verification.",
+		tools: CANONICAL_CODER_TOOLS,
+	}),
+	reviewer: Object.freeze({
+		description: "Reviews repository changes with severity-ranked evidence and a clear verdict without changing the repository.",
+		tools: CANONICAL_READ_ONLY_TOOLS,
+	}),
+} satisfies Record<GuildRole, GuildRoleDefinition>);
 
-	for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-		if (!entry.name.endsWith(".md") || (!entry.isFile() && !entry.isSymbolicLink())) continue;
-		const filePath = path.join(directory, entry.name);
+export const GUILD_PROFILE_DEFINITIONS = Object.freeze({
+	general: Object.freeze({
+		description: "Technology-neutral software engineering guidance.",
+		expertise: "Cross-cutting concerns in the languages and platforms evidenced by the repository.",
+	}),
+	frontend: Object.freeze({
+		description: "Browser and user-interface engineering guidance.",
+		expertise: "Components, state, rendering, accessibility, performance, and browser boundaries.",
+	}),
+	angular: Object.freeze({
+		description: "Angular application engineering guidance.",
+		expertise: "Angular components, templates, dependency injection, reactivity, forms, and testing.",
+	}),
+	typescript: Object.freeze({
+		description: "TypeScript and JavaScript engineering guidance.",
+		expertise: "Type modeling, runtime boundaries, modules, packages, asynchronous behavior, and framework integration.",
+	}),
+	dotnet: Object.freeze({
+		description: ".NET and C# engineering guidance.",
+		expertise: "Runtime and project boundaries, dependency injection, persistence, asynchronous behavior, and testing.",
+	}),
+	rust: Object.freeze({
+		description: "Rust engineering guidance.",
+		expertise: "Ownership, APIs, errors, concurrency, Cargo features, unsafe boundaries, and testing.",
+	}),
+} satisfies Record<GuildProfile, GuildProfileDefinition>);
 
-		let content: string;
-		try {
-			content = fs.readFileSync(filePath, "utf8");
-		} catch (error) {
-			warnings.push(`Could not read ${source} Guild member ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-			continue;
-		}
+export const GUILD_MEMBER_ALIASES = Object.freeze({
+	"dotnet-architect": "architect/dotnet",
+	"frontend-architect": "architect/frontend",
+	"typescript-architect": "architect/typescript",
+	"rust-architect": "architect/rust",
+	"csharp-coder": "coder/dotnet",
+	"angular-coder": "coder/angular",
+	"typescript-coder": "coder/typescript",
+	"rust-coder": "coder/rust",
+	"code-reviewer": "reviewer/general",
+} as const satisfies Record<string, GuildTarget>);
 
-		let frontmatter: Record<string, unknown>;
-		let body: string;
-		try {
-			const parsed = parseFrontmatter<Record<string, unknown>>(content);
-			frontmatter = parsed.frontmatter;
-			body = parsed.body.trim();
-		} catch (error) {
-			warnings.push(`Could not parse ${source} Guild member ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
-			continue;
-		}
+export type GuildMemberAlias = keyof typeof GUILD_MEMBER_ALIASES;
 
-		const rawName = typeof frontmatter.name === "string" ? frontmatter.name.trim() : "";
-		if (!isGuildMemberName(rawName)) continue;
-
-		const description = typeof frontmatter.description === "string" ? frontmatter.description.trim() : "";
-		const tools = typeof frontmatter.tools === "string"
-			? frontmatter.tools.split(",").map((tool) => tool.trim()).filter(Boolean)
-			: [];
-
-		if (!description || !body) {
-			warnings.push(`Ignoring ${source} override for ${rawName}: description and prompt body are required.`);
-			continue;
-		}
-		if (!hasExpectedToolBoundary(rawName, tools)) {
-			warnings.push(`Ignoring ${source} override for ${rawName}: it changes the required tool boundary.`);
-			continue;
-		}
-		if (members.has(rawName)) {
-			warnings.push(`Ignoring duplicate ${source} definition for ${rawName}: ${filePath}`);
-			continue;
-		}
-
-		members.set(rawName, {
-			name: rawName,
-			description,
-			tools: [...GUILD_MEMBER_POLICIES[rawName].tools],
-			systemPrompt: body,
-			source,
-			filePath,
-		});
-	}
-
-	return members;
+export function isGuildMemberAlias(value: unknown): value is GuildMemberAlias {
+	return typeof value === "string" && Object.hasOwn(GUILD_MEMBER_ALIASES, value);
 }
 
-export function discoverGuildMembers(options: GuildDiscoveryOptions): GuildDiscoveryResult {
-	const warnings: string[] = [];
-	const selected = loadDirectory(options.builtInDir, "builtin", warnings);
-
-	for (const [name, member] of loadDirectory(options.userDir, "user", warnings)) selected.set(name, member);
-	if (options.includeProject) {
-		for (const [name, member] of loadDirectory(options.projectDir, "project", warnings)) selected.set(name, member);
-	}
-
-	return {
-		members: GUILD_MEMBER_NAMES.flatMap((name) => {
-			const member = selected.get(name);
-			return member ? [member] : [];
-		}),
-		warnings,
-	};
-}
-
-function isDirectory(directory: string): boolean {
-	try {
-		return fs.statSync(directory).isDirectory();
-	} catch {
-		return false;
-	}
-}
-
-export function findNearestProjectAgentsDir(cwd: string, configDirectoryName = ".pi"): string | null {
-	let current = path.resolve(cwd);
-	while (true) {
-		const candidate = path.join(current, configDirectoryName, "agents");
-		if (isDirectory(candidate)) return candidate;
-		const parent = path.dirname(current);
-		if (parent === current) return null;
-		current = parent;
-	}
+export function resolveGuildTarget(value: unknown): GuildTarget | undefined {
+	if (isGuildTarget(value)) return value;
+	return isGuildMemberAlias(value) ? GUILD_MEMBER_ALIASES[value] : undefined;
 }

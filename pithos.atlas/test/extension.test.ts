@@ -498,7 +498,7 @@ describe("Atlas extension", () => {
 		assert.doesNotMatch(notifications[0] ?? "", /srs-generator/);
 		assert.match(notifications[0] ?? "", /skills: conventional-commit, tdd/);
 		assert.match(notifications[0] ?? "", /themes: plan/);
-		assert.match(notifications[0] ?? "", /agents: dotnet-architect/);
+		assert.match(notifications[0] ?? "", /agents: explorer, architect, coder, reviewer/);
 		assert.match(notifications[0] ?? "", /configuration: file \.pi\/aegis\.json/);
 		assert.match(notifications[0] ?? "", /environment PITHOS_ATLAS_PI_PACKAGE_DIR/);
 	});

@@ -3,26 +3,39 @@ import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import { describe, it } from "node:test";
 
+const guildRoot = resolve(import.meta.dirname, "..");
+
+function packageMetadata() {
+  return JSON.parse(readFileSync(resolve(guildRoot, "package.json"), "utf8"));
+}
+
 describe("Guild package metadata", () => {
-  it("publishes under the Guild package identity", () => {
-    const packageJson = JSON.parse(readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"));
+  it("publishes the canonical role/profile identity without override configuration", () => {
+    const packageJson = packageMetadata();
 
     assert.equal(packageJson.name, "@pithos-kit/guild");
     assert.equal(packageJson.repository.directory, "pithos.guild");
-    assert.match(packageJson.description, /Guild members/);
-    assert.match(packageJson.description, /TypeScript/i);
-    assert.match(packageJson.description, /Rust/i);
-    assert.match(packageJson.description, /review/i);
-    assert.ok(packageJson.pithosKit.agents.some(({ name }: { name: string }) => name === "typescript-architect"));
-    assert.ok(packageJson.pithosKit.agents.some(({ name }: { name: string }) => name === "typescript-coder"));
-    assert.ok(packageJson.pithosKit.agents.some(({ name }: { name: string }) => name === "rust-coder"));
-    assert.ok(packageJson.pithosKit.agents.some(({ name }: { name: string }) => name === "rust-architect"));
-    assert.ok(packageJson.pithosKit.agents.some(({ name }: { name: string }) => name === "code-reviewer"));
+    assert.match(packageJson.pithosKit.summary, /role\/profile/i);
+    assert.deepEqual(
+      packageJson.pithosKit.agents.map(({ name }: { name: string }) => name),
+      ["explorer", "architect", "coder", "reviewer"],
+    );
+    assert.deepEqual(packageJson.pithosKit.configuration, []);
+
+    const handover = packageJson.pithosKit.commands.find(
+      ({ name }: { name: string }) => name === "guild-handover",
+    );
+    assert.match(handover?.usage ?? "", /role\/profile/);
+    assert.match(
+      packageJson.pithosKit.tools.find(({ name }: { name: string }) => name === "guild_handover")?.summary ?? "",
+      /role\/profile/i,
+    );
+    assert.ok(packageJson.files.includes("agents"));
   });
 
-  it("documents the approved clean-break migration as future behavior", () => {
-    const readme = readFileSync(resolve(import.meta.dirname, "../README.md"), "utf8");
-    const heading = "## Approved future Guild migration (not current behavior)";
+  it("documents the completed clean-break migration and exact Phase 1 isolation", () => {
+    const readme = readFileSync(resolve(guildRoot, "README.md"), "utf8");
+    const heading = "## Package aliases and configuration migration";
     const start = readme.indexOf(heading);
 
     assert.notEqual(start, -1, `README must contain ${heading}`);
@@ -44,13 +57,16 @@ describe("Guild package metadata", () => {
       assert.ok(migration.includes(mapping), `Missing migration mapping: ${mapping}`);
     }
 
-    assert.match(migration, /no user\/global Guild layer/i);
-    assert.match(migration, /stops reading[\s\S]*`~\/\.pi\/agent\/agents`[\s\S]*`\.pi\/agents`[\s\S]*does not delete/i);
-    assert.match(migration, /arbitrary prompt overrides are not auto-converted/i);
-    assert.match(migration, /repository facts[\s\S]*`AGENTS\.md`/i);
-    assert.match(migration, /repository profile and skill support[\s\S]*later phases/i);
-    assert.match(migration, /package-owned compatibility inputs[\s\S]*do not change tools or authorization/i);
-    assert.match(migration, /no alias sunset is promised/i);
-    assert.match(migration, /documentation only[\s\S]*current Guild behavior/i);
+    assert.match(readme, /guild_handover\(\{ role: "coder", profile: "typescript", task:/);
+    assert.match(readme, /only `coder` can edit, write, or invoke shell commands/i);
+    assert.match(readme, /researcher.*intentionally unavailable/i);
+    assert.match(migration, /no user\/global configuration layer/i);
+    assert.match(migration, /no longer reads[\s\S]*`~\/\.pi\/agent\/agents`[\s\S]*`\.pi\/agents`/i);
+    assert.match(migration, /does not delete those directories or their files/i);
+    assert.match(migration, /arbitrary prompt overrides are not converted/i);
+    assert.match(migration, /aliases cannot change prompts, profiles, or role tool ceilings/i);
+    assert.match(readme, /`--no-extensions`[\s\S]*`--no-skills`[\s\S]*`--no-prompt-templates`[\s\S]*`--no-context-files`/i);
+    assert.match(readme, /accepted handovers are serialized[\s\S]*FIFO/i);
+    assert.doesNotMatch(readme, /Approved future Guild migration \(not current behavior\)/);
   });
 });

@@ -202,8 +202,8 @@
       },
       "pithosKit": {
         "displayName": "Guild",
-        "summary": "Delegate focused software work and apply repository-aware development guidance.",
-        "minimumPi": ">=0.83.0",
+        "summary": "Delegate focused software work through bounded role/profile handovers and repository-aware development guidance.",
+        "minimumPi": ">=0.87.0",
         "commands": [
           {
             "name": "guild",
@@ -213,7 +213,7 @@
           {
             "name": "guild-handover",
             "summary": "Delegate directly from the interactive TUI.",
-            "usage": "/guild-handover [member] [task]"
+            "usage": "/guild-handover [role/profile | legacy-alias] [task]"
           },
           {
             "name": "commit",
@@ -244,7 +244,7 @@
         "tools": [
           {
             "name": "guild_handover",
-            "summary": "Hand focused work to an isolated Guild member."
+            "summary": "Hand focused work to an isolated Guild role/profile target."
           },
           {
             "name": "create_commit",
@@ -274,54 +274,23 @@
         "themes": [],
         "agents": [
           {
-            "name": "dotnet-architect",
-            "summary": "Read-only .NET architecture and review."
+            "name": "explorer",
+            "summary": "Read-only repository evidence gathering."
           },
           {
-            "name": "frontend-architect",
-            "summary": "Read-only front-end architecture and review."
+            "name": "architect",
+            "summary": "Read-only architecture, contracts, test plans, and implementation handoffs."
           },
           {
-            "name": "typescript-architect",
-            "summary": "Read-only TypeScript and Node.js architecture and review."
+            "name": "coder",
+            "summary": "Scoped implementation, tests, and verification."
           },
           {
-            "name": "csharp-coder",
-            "summary": "Scoped C# and .NET implementation."
-          },
-          {
-            "name": "angular-coder",
-            "summary": "Scoped Angular implementation."
-          },
-          {
-            "name": "typescript-coder",
-            "summary": "Scoped TypeScript and JavaScript implementation."
-          },
-          {
-            "name": "rust-coder",
-            "summary": "Scoped Rust implementation."
-          },
-          {
-            "name": "rust-architect",
-            "summary": "Read-only Rust architecture and structural review."
-          },
-          {
-            "name": "code-reviewer",
-            "summary": "Read-only language-agnostic code review."
+            "name": "reviewer",
+            "summary": "Read-only findings-first review."
           }
         ],
-        "configuration": [
-          {
-            "kind": "directory",
-            "key": ".pi/agents",
-            "summary": "Trusted project Guild member overrides."
-          },
-          {
-            "kind": "directory",
-            "key": "~/.pi/agent/agents",
-            "summary": "User Guild member overrides."
-          }
-        ]
+        "configuration": []
       }
     },
     {
