@@ -1,5 +1,6 @@
 import { spawn } from "node:child_process";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
+import { channel } from "node:diagnostics_channel";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -46,8 +47,16 @@ export interface GuildRoleRunResult extends GuildRunState {
 	usageFields?: Array<keyof RunUsage>;
 }
 
+// Internal, opt-in transport observation. No subscriber is installed in normal use.
+// Subscribers must not throw or mutate messages; no observations enter model context.
+const childChannel = channel("pithos.guild.child");
+type ChildObservationPayload =
+	| { type: "start" }
+	| { type: "stdout" | "stderr"; base64: string }
+	| { type: "end"; exitCode: number | null; aborted: boolean };
+
 export interface RunGuildRoleOptions {
-	/** Parent tool-call or direct-command ID for protocol correlation. */
+	/** Parent tool-call or direct-command ID, used only for observation correlation. */
 	runId?: string;
 	role: GuildRole;
 	profile: GuildProfile;
@@ -296,6 +305,8 @@ async function writeGuildRoleSystemPrompts(
 }
 
 interface GuildChildProcessOptions {
+	observe?: (event: ChildObservationPayload) => void;
+	nativeBinding?: Record<string, string>;
 	taskFile: string;
 	stream: ResultStream;
 	cwd: string;
@@ -320,13 +331,14 @@ async function runGuildChild(
 			cwd: options.cwd,
 			shell: false,
 			stdio: ["ignore", "pipe", "pipe"],
-			env: { ...process.env, PI_SKIP_VERSION_CHECK: "1", GUILD_TASK_FILE: options.taskFile },
+			env: { ...process.env, PI_SKIP_VERSION_CHECK: "1", ...options.nativeBinding, GUILD_TASK_FILE: options.taskFile },
 		});
 		let closed = false;
 		let stopping = false;
 		let killTimer: NodeJS.Timeout | undefined;
 		let lastUpdate = 0;
 		let stderrBytes = 0;
+		const safeObserve = (event: ChildObservationPayload) => { try { options.observe?.(event); } catch {} };
 		const emitUpdate = (force = false) => {
 			const now = Date.now();
 			if (!force && now - lastUpdate < 100) return;
@@ -344,11 +356,13 @@ async function runGuildChild(
 		const event = (value: unknown) => { applyJsonEvent(result, value); emitUpdate(); };
 		child.stdout.on("data", (chunk: Buffer) => {
 			if (closed) return;
+			safeObserve({ type: "stdout", base64: chunk.toString("base64") });
 			options.stream.push(chunk, event);
 			if (options.stream.failure) stop();
 		});
 		child.stderr.on("data", (chunk: Buffer) => {
 			if (closed) return;
+			safeObserve({ type: "stderr", base64: chunk.toString("base64") });
 			stderrBytes += chunk.length;
 			result.stderr = truncateUtf8(result.stderr + chunk.toString(), LIMITS.stderr);
 			if (stderrBytes > LIMITS.stderr) options.stream.fail("Guild stderr byte limit exceeded");
@@ -382,12 +396,27 @@ export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildR
 	result.usageFields = [];
 	let stream: ResultStream | undefined;
 	result.model = options.model;
-	const runId = options.runId ?? randomUUID();
+	const childId = childChannel.hasSubscribers ? randomUUID() : undefined;
+	const runId = options.runId ?? childId ?? randomUUID();
 	result.runId = runId;
 	result.taskId = randomUUID();
+	const taskDigest = createHash("sha256").update(JSON.stringify(options.task)).digest("hex");
+	const candidate = process.env.GUILD_EVAL_NATIVE_CONFIG !== undefined && childId !== undefined && runId !== undefined;
+	const nativeBinding = candidate ? {
+		GUILD_EVAL_CHILD_ID: childId, GUILD_EVAL_CHILD_RUN_ID: runId,
+		GUILD_EVAL_CHILD_ROLE: options.role, GUILD_EVAL_CHILD_PROFILE: options.profile,
+		GUILD_EVAL_CHILD_TASK_DIGEST: taskDigest,
+	} : undefined;
+	let sequence = 0;
+	const observe = childId ? (event: ChildObservationPayload) => childChannel.publish({
+		version: 1, childId, runId,
+		role: options.role, profile: options.profile, ...(candidate ? { taskDigest } : {}), sequence: sequence++, ...event,
+	}) : undefined;
 	let prompts: GuildRolePromptFiles | undefined;
 	let wasAborted = false;
+	let settled = false;
 
+	observe?.({ type: "start" });
 	try {
 		const task = buildTask({ ...options, runId, taskId: result.taskId });
 		stream = new ResultStream(task);
@@ -400,7 +429,8 @@ export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildR
 			prompts.baseSystemPromptFile,
 			prompts.roleProfileSystemPromptFile,
 		);
-		wasAborted = await runGuildChild(result, args, { ...options, stream, taskFile });
+		wasAborted = await runGuildChild(result, args, { ...options, observe, nativeBinding, stream, taskFile });
+		settled = true;
 	} catch (error) {
 		result.errorMessage = error instanceof Error ? error.message : String(error);
 		stream?.fail(result.errorMessage);
@@ -409,6 +439,7 @@ export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildR
 			result.errorMessage = `Guild cleanup failed: ${String(error).slice(0, 1024)}`;
 			stream?.fail(result.errorMessage);
 		});
+		observe?.({ type: "end", exitCode: settled ? result.exitCode : null, aborted: wasAborted });
 	}
 
 	const terminal = stream?.finish(result.exitCode, wasAborted || options.signal?.aborted === true) ?? {status: options.signal?.aborted ? "cancelled" : "failed", diagnostic: result.errorMessage} as const;

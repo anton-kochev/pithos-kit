@@ -1,5 +1,7 @@
 # Guild Phase 0 baseline
 
+> E1 classification: historical characterization and single-run pilot evidence, not an end-to-end benchmark. A01/R01 are development/regression cases, never held-out promotion evidence. Original measurements below are unchanged. See [evaluation methodology](methodology.md).
+
 ## Scope and measurement policy
 
 This artifact records the current implementation before the approved role/profile clean break. Phase 0 changes no Guild runtime code. Evidence comes from the checked-in source, deterministic temporary-directory fixtures, and local test/type-check commands run on Node.js 24.19.0, npm 11.17.0, and TypeScript 5.9.3.

@@ -239,6 +239,28 @@ npm run typecheck
 npm pack --dry-run
 ```
 
+## Evaluation and benchmarking
+
+Guild is evaluated as a complete workflow: the same user request goes to either the main agent alone or the main agent with Guild available, through final verification and synthesis. Delegation is optional; choosing not to delegate can be the right outcome. Forced role/profile calls are useful diagnostic experiments, not a substitute for this end-to-end comparison.
+
+The evaluation approach separates deterministic boundary tests, known-task regressions, single-variable experiments, and repeated product comparisons. Correctness and preservation of user work come first. Reports show reliability, total parent-plus-child usage/cost, latency, and context burden separately rather than combining them into one score. Failed, cancelled, and timed-out attempts remain visible; missing usage is unknown, not zero. Single-run pilot results do not establish superiority, and development fixtures are not held-out promotion evidence.
+
+Evaluation tooling is **repository-only**, not part of the installed npm package or the normal handover workflow. From a source checkout:
+
+```bash
+cd pithos.guild
+npm run eval -- validate
+npm run eval -- schedule e1-development-1 1
+npm run eval:test
+npm run eval:typecheck
+```
+
+These commands are offline: validation and scheduling do not launch models. Live campaigns require explicit task-bank, model, budget, and readiness approval. Raw traces stay in ignored local storage; credentials must not enter recorded artifacts. Raw child observation, scoped Codex authentication, and a persistent campaign-admission ledger are implemented and offline-tested. An offline-tested execution bridge now links ledger admissions to retained trials, deadline cancellation, and evidence-derived settlements. A provider-free native CLI check now covers production Guild registration and ordinary child startup through authentication preflight. Newly frozen base-pricing policies are audited per parent/child turn at settlement and resume. Raw response adapters have also been checked against the installed SDK with synthetic SSE/WebSocket responses, but are not yet bound to campaign execution. Native runtime/context/request-policy/metering binding, remaining child accounting verification, and independent review are still required before model trials.
+
+After a native CLI probe escaped synthetic transport overrides, the old probe and native campaign mode remain disabled. Initial host checks of the separate [network-disabled Docker harness](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-docker.md) passed. The explicit [synthetic main-only CLI mode](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-synthetic.md) also passed its host checkpoint. The separate [synthetic Guild-child mode](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-guild.md) passed an isolated host run and retained-evidence revalidation after an operator-approved PID/thread-limit adjustment. Earlier failures remain preserved. A [general native-evidence audit](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-evidence.md) and [mandatory native-policy contract](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-policy.md) are implemented. [Trial identity and parent invocation input checks](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-trial-binding.md) are also implemented. [Scoped-auth file identity](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-scoped-auth-identity.md) is now observed and rechecked before driver launch. [Bounded selected-file observations](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-file-observation.md) now support [runtime requirement, executable and package-identity checks](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-runtime-observation.md), tested with inert filesystem fixtures. They are not yet connected to native producers. Native admission remains disabled: actual launch/producer/runtime/auth correlation and campaign receipt/resume are still incomplete. These checkpoints do not authorize live model calls.
+
+See the repository's [evaluation methodology](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/methodology.md), [E1 foundation record](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-foundation.md), and [E1 smoke campaign decisions](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-smoke-campaign.md). Campaign-specific models and spending limits are recorded there, not prescribed as permanent Guild defaults.
+
 ## Provenance
 
 The concise role/profile resources retain adapted guidance from the MIT-licensed [Grimoire](https://github.com/anton-kochev/grimoire) project and repository-native TypeScript/Pi guidance. See [`NOTICE.md`](./NOTICE.md).

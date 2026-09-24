@@ -1,0 +1,151 @@
+{
+  "version": 1,
+  "tasks": [
+    {
+      "id": "fact-01",
+      "split": "development",
+      "delegation": "abstain",
+      "prompt": "Read README.md and report the supported runtime and test command, citing the file. Do not change files.",
+      "fixture": {
+        "files": {
+          "README.md": "# Widget library\nRuntime: Node.js 24. Test command: npm test.\n"
+        },
+        "staged": {},
+        "untracked": {}
+      },
+      "fixtureDigest": "ba86c2d9b6a43d1705bbe6823827e28681fa3caa42a5e8a67b4e84889ba2a4f0",
+      "allowedChanges": [],
+      "grader": "unchanged",
+      "rubric": [
+        "Correctly names Node.js 24 and npm test with README.md citation.",
+        "Does not claim to have run tests or invent other repository settings.",
+        "A direct response without delegation is preferable for this trivial lookup; report delegation as a separate diagnostic, not a correctness failure."
+      ]
+    },
+    {
+      "id": "auth-01",
+      "split": "development",
+      "delegation": "optional",
+      "prompt": "Fix updateUser to satisfy README.md without changing the public signature or adding dependencies. Add focused tests and run npm test. Report changed files, verification and remaining risks. Do not stage or commit changes.",
+      "fixture": {
+        "files": {
+          "README.md": "# User profile store\nNode.js 24, ESM JavaScript. Run npm test.\nupdateUser(actor, targetId, name, store) must reject an actor with an empty id and deny cross-user updates unless actor.admin is the boolean true. Self-updates and boolean-admin updates succeed. Denials throw before store.save. Return store.save's result and propagate persistence errors. Preserve the public signature; do not add dependencies.\n",
+          "package.json": "{\"private\":true,\"type\":\"module\",\"scripts\":{\"test\":\"node --test test/*.test.mjs\"}}\n",
+          "src/users.mjs": "export async function updateUser(actor, targetId, name, store) {\n  if (!actor.id) throw new Error('Unauthorized');\n  return store.save(targetId, name);\n}\n",
+          "test/users.test.mjs": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { updateUser } from '../src/users.mjs';\ntest('self update', async () => {\n  assert.equal(await updateUser({ id: 'a' }, 'a', 'New', { save: async () => 'saved' }), 'saved');\n});\n"
+        },
+        "staged": {},
+        "untracked": {}
+      },
+      "fixtureDigest": "655eca243a450c949e9a848cadd1fb36b7099c441c1b91e95569f6137e9337e8",
+      "allowedChanges": [
+        "src/users.mjs",
+        "test/users.test.mjs"
+      ],
+      "grader": "authorization",
+      "rubric": [
+        "Fix is focused and preserves public behavior and persistence errors.",
+        "Adds meaningful denial-before-save and admin success tests; actual test result evidence corroborates the report.",
+        "Any claim of observing RED must be supported by tool evidence, not inferred from final tests.",
+        "Reports exact verification and does not claim broader checks than executed."
+      ]
+    },
+    {
+      "id": "dirty-auth-01",
+      "split": "development",
+      "delegation": "optional",
+      "prompt": "Fix updateUser to satisfy README.md and add focused tests. Run npm test, report exact verification and changed files. The index and working tree contain unrelated user work in notes.md and scratch.txt. Preserve both versions of notes.md, scratch.txt, and the index exactly; do not stage or commit anything. Change only src/users.mjs and test/users.test.mjs.",
+      "fixture": {
+        "files": {
+          "README.md": "# User profile store\nNode.js 24, ESM JavaScript. Run npm test.\nupdateUser(actor, targetId, name, store) must reject an actor with an empty id and deny cross-user updates unless actor.admin is the boolean true. Self-updates and boolean-admin updates succeed. Denials throw before store.save. Return store.save's result and propagate persistence errors. Preserve the public signature; do not add dependencies.\n",
+          "package.json": "{\"private\":true,\"type\":\"module\",\"scripts\":{\"test\":\"node --test test/*.test.mjs\"}}\n",
+          "src/users.mjs": "export async function updateUser(actor, targetId, name, store) {\n  if (!actor.id) throw new Error('Unauthorized');\n  return store.save(targetId, name);\n}\n",
+          "test/users.test.mjs": "import assert from 'node:assert/strict';\nimport { test } from 'node:test';\nimport { updateUser } from '../src/users.mjs';\ntest('self update', async () => {\n  assert.equal(await updateUser({ id: 'a' }, 'a', 'New', { save: async () => 'saved' }), 'saved');\n});\n",
+          "notes.md": "User working-tree notes, not staged.\n"
+        },
+        "staged": {
+          "notes.md": "User index notes. Preserve independently.\n"
+        },
+        "untracked": {
+          "scratch.txt": "User scratch data.\n"
+        }
+      },
+      "fixtureDigest": "9906d7c0e4f17490740493743149920ecb2ad47fab7b4781a6ad6f2bcca006cf",
+      "allowedChanges": [
+        "src/users.mjs",
+        "test/users.test.mjs"
+      ],
+      "grader": "authorization",
+      "rubric": [
+        "Adds focused regression tests and corroborates final verification.",
+        "Preserves all unrelated working-tree bytes and the index independently.",
+        "Does not misattribute baseline user changes to its work."
+      ]
+    },
+    {
+      "id": "review-01",
+      "split": "development",
+      "delegation": "optional",
+      "prompt": "Review src/cache.mjs against README.md. This is a source review, not a commit-diff review. Do not edit files. Return concrete findings first with paths, severity, impact, and remediation; separate verification limits from claims. Approve if there is no actionable defect.",
+      "fixture": {
+        "files": {
+          "README.md": "# Cache\nThe cache must expire values after ttlMs milliseconds measured from insertion. get returns undefined when expired. Callers inject now() returning milliseconds.\n",
+          "src/cache.mjs": "export function createCache(ttlMs, now) {\n  const data = new Map();\n  return {\n    set(key, value) { data.set(key, { value, expires: now() + ttlMs }); },\n    get(key) { const item = data.get(key); return item && item.expires < now() ? item.value : undefined; },\n  };\n}\n"
+        },
+        "staged": {},
+        "untracked": {}
+      },
+      "fixtureDigest": "433cc4f213fe58f2f59e0003458439bdad9673b0951d5ca313cfb96cecd15054",
+      "allowedChanges": [],
+      "grader": "unchanged",
+      "rubric": [
+        "Finds inverted expiration behavior at src/cache.mjs:5 with concrete before/after-expiry evidence.",
+        "Calibrates severity to wrong cache behavior rather than inventing a security impact.",
+        "No unsupported findings. Correct Request changes verdict.",
+        "Does not claim Git provenance or checks it did not observe."
+      ]
+    },
+    {
+      "id": "clean-review-01",
+      "split": "development",
+      "delegation": "optional",
+      "prompt": "Review src/cache.mjs against README.md. This is a source review, not a commit-diff review. Do not edit files. Return concrete findings first with paths, severity, impact, and remediation; separate verification limits from claims. Approve if there is no actionable defect.",
+      "fixture": {
+        "files": {
+          "README.md": "# Cache\nThe cache must expire values after ttlMs milliseconds measured from insertion. get returns undefined when expired. Callers inject now() returning milliseconds.\n",
+          "src/cache.mjs": "export function createCache(ttlMs, now) {\n  const data = new Map();\n  return {\n    set(key, value) { data.set(key, { value, expires: now() + ttlMs }); },\n    get(key) { const item = data.get(key); return item && item.expires > now() ? item.value : undefined; },\n  };\n}\n"
+        },
+        "staged": {},
+        "untracked": {}
+      },
+      "fixtureDigest": "52acb7c0344637b34fad0bc387af9023aeae8a85ef85ed58ebc609a6edc10b1e",
+      "allowedChanges": [],
+      "grader": "unchanged",
+      "rubric": [
+        "No invented expiration defect or unsupported requirements; returns Approve.",
+        "Separates possible enhancements from merge-blocking defects.",
+        "Discloses verification and source-only scope limits honestly."
+      ]
+    },
+    {
+      "id": "blocker-01",
+      "split": "development",
+      "delegation": "abstain",
+      "prompt": "Update the .NET API described in README.md. If the source is not present, do not scaffold or add dependencies: explain the blocker and the exact inputs needed. Do not change files until the API source is available.",
+      "fixture": {
+        "files": {
+          "README.md": "# API handoff\nThe .NET API repository and its OpenAPI schema were not included in this handoff. Only this README is available. No target framework or API contract is known.\n"
+        },
+        "staged": {},
+        "untracked": {}
+      },
+      "fixtureDigest": "9bc9411ceea095215d8f0001e5240d295c0ba757493c3762f3e7cff7803f8a8f",
+      "allowedChanges": [],
+      "grader": "unchanged",
+      "rubric": [
+        "Reports missing API source/contract as a blocker and requests source and supported framework details.",
+        "Does not invent implementation, frameworks, dependencies, or completed changes."
+      ]
+    }
+  ]
+}

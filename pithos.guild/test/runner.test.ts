@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { channel } from "node:diagnostics_channel";
 import { promises as fsPromises, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
@@ -25,6 +27,7 @@ interface CapturedCanonicalRun {
   roleProfilePromptPath: string;
   roleProfilePrompt: string;
   roleProfilePromptMode: number;
+  nativeBinding?: Record<string, string | undefined>;
 }
 
 const temporaryDirectories: string[] = [];
@@ -66,6 +69,7 @@ writeFileSync(process.env.GUILD_RUNNER_CAPTURE_PATH, JSON.stringify({
   roleProfilePromptPath,
   roleProfilePrompt: readFileSync(roleProfilePromptPath, "utf8"),
   roleProfilePromptMode: statSync(roleProfilePromptPath).mode & 0o777,
+  nativeBinding: Object.fromEntries(["GUILD_EVAL_CHILD_ID", "GUILD_EVAL_CHILD_RUN_ID", "GUILD_EVAL_CHILD_ROLE", "GUILD_EVAL_CHILD_PROFILE", "GUILD_EVAL_CHILD_TASK_DIGEST"].map(key => [key, process.env[key]])),
 }));
 const emit = event => process.stdout.write(JSON.stringify(event) + "\\n");
 const task = JSON.parse(readFileSync(process.env.GUILD_TASK_FILE, "utf8"));
@@ -122,6 +126,67 @@ afterEach(() => {
 });
 
 describe("canonical role/profile child invocation", () => {
+  it("optionally observes raw child transport with correlated lifecycle without changing the report", async () => {
+    const observations: any[] = [];
+    const telemetry = channel("pithos.guild.child");
+    const collect = (event: unknown) => { observations.push(event); };
+    telemetry.subscribe(collect);
+    try {
+      const { result } = await captureCanonicalRun({
+        role: "reviewer", profile: "typescript", task: "Inspect", cwd: process.cwd(),
+        projectTrusted: true, runId: "parent-tool-1",
+      });
+      assert.equal(observations[0]?.type, "start");
+      assert.equal(observations.at(-1)?.type, "end");
+      assert.equal(observations.at(-1)?.exitCode, 0);
+      assert.equal(observations.at(-1)?.aborted, false);
+      assert.ok(observations.every(e => e.runId === "parent-tool-1" && e.role === "reviewer" && e.profile === "typescript"));
+      assert.equal(new Set(observations.map(e => e.childId)).size, 1);
+      assert.deepEqual(observations.map(e => e.sequence), observations.map((_, i) => i));
+      const stdout = Buffer.concat(observations.filter(e => e.type === "stdout").map(e => Buffer.from(e.base64, "base64"))).toString("utf8");
+      assert.match(stdout, /guild-protocol-ready/);
+      assert.match(stdout, /tool_execution_start/);
+      assert.match(stdout, /"input":3/);
+      assert.match(result.output, /Captured/);
+      assert.equal(result.status, "completed");
+      assert.equal("observations" in result, false);
+    } finally { telemetry.unsubscribe(collect); }
+  });
+
+  it("passes candidate child identity to the inherited native preload without exposing the raw task", async () => {
+    const observations: any[] = [], telemetry = channel("pithos.guild.child"), collect = (event: unknown) => observations.push(event);
+    const prior = process.env.GUILD_EVAL_NATIVE_CONFIG; process.env.GUILD_EVAL_NATIVE_CONFIG = "/retained/native-config.json";
+    telemetry.subscribe(collect);
+    try {
+      const task = "Inspect private child scope", { capture } = await captureCanonicalRun({ role: "architect", profile: "dotnet", task,
+        cwd: process.cwd(), projectTrusted: true, runId: "handover-7" });
+      const taskDigest = createHash("sha256").update(JSON.stringify(task)).digest("hex"), childId = observations[0].childId;
+      assert.deepEqual(capture.nativeBinding, { GUILD_EVAL_CHILD_ID: childId, GUILD_EVAL_CHILD_RUN_ID: "handover-7",
+        GUILD_EVAL_CHILD_ROLE: "architect", GUILD_EVAL_CHILD_PROFILE: "dotnet", GUILD_EVAL_CHILD_TASK_DIGEST: taskDigest });
+      assert.ok(observations.every(event => event.taskDigest === taskDigest));
+      assert.doesNotMatch(JSON.stringify(capture.nativeBinding), /Inspect private child scope/);
+    } finally {
+      telemetry.unsubscribe(collect);
+      if (prior === undefined) delete process.env.GUILD_EVAL_NATIVE_CONFIG; else process.env.GUILD_EVAL_NATIVE_CONFIG = prior;
+    }
+  });
+
+  it("closes an observed setup failure without inventing a process exit or usage", async () => {
+    const events: any[] = [];
+    const telemetry = channel("pithos.guild.child");
+    const collect = (event: unknown) => { events.push(event); };
+    telemetry.subscribe(collect);
+    try {
+      const result = await runGuildRole({
+        role: "missing-role" as any, profile: "general", task: "Cannot load prompt", cwd: process.cwd(), projectTrusted: true,
+      });
+      assert.equal(result.status, "failed");
+      assert.deepEqual(events.map(e => e.type), ["start", "end"]);
+      assert.equal(events[1].exitCode, null);
+      assert.equal("usage" in events[1], false);
+    } finally { telemetry.unsubscribe(collect); }
+  });
+
   it("enforces isolation and role-owned tools without runtime source, tool, or prompt overrides", async () => {
     const task = "Review --tools ownership without rewriting this free-form task";
     const overrideSentinel = "CALLER_OVERRIDE_MUST_NOT_APPEAR";
