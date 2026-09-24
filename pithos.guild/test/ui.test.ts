@@ -349,6 +349,16 @@ describe("Guild visual presentation", () => {
   });
 });
 
+it("shows blocked warning and only selected skill IDs, preserving historical v1 display", () => {
+ const details = {status: "completed", taskOutcome: "blocked", role: "coder", profile: "general", output: "Missing red", selectedSkills: [{id: "tdd", source: "package", path: "secret/path", bytes: 42, sha256: "privatehash"}]};
+ const tool = renderGuildResult({details}, {expanded: true}, theme).render(100).join("\n");
+ const direct = renderGuildLifecycleMessage({details}, {expanded: true}, theme).render(100).join("\n");
+ for (const text of [tool, direct]) {assert.match(text, /Blocked/); assert.match(text, /tdd/); assert.doesNotMatch(text, /secret\/path|privatehash|✓ Completed/);}
+ const historical = renderGuildResult({details: {status: "completed", member: "dotnet-architect", memberSource: "builtin", output: "Legacy"}}, {}, theme).render(100).join("\n");
+ assert.match(historical, /✓ Completed.*dotnet-architect/);
+ assert.doesNotMatch(historical, /Blocked|tdd/);
+});
+
 it("renders cancelled tool results distinctly even when Pi marks the tool result as an error", () => {
  const rendered = renderGuildResult({content: [{type: "text", text: "Stopped"}], details: {status: "cancelled", role: "coder", profile: "general", usageKnown: false}}, {}, theme, {isError: true}).render(100).join("\n");
  assert.match(rendered, /■ Cancelled/);

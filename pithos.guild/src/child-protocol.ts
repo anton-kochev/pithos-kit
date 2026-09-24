@@ -1,7 +1,7 @@
 // Explicit child entry only. Never add this file to normal extension discovery.
-import { readFileSync } from "node:fs";
+import { openSync, fstatSync, readSync, closeSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
-import { buildTask, childTools, PROTOCOL, resultSchema, SUBMIT_TOOL, validateResult, type GuildTask } from "./protocol.ts";
+import { validateTask, LIMITS, childTools, hasIdentityMismatch, PROTOCOL, resultSchema, SUBMIT_TOOL, validateResult, type GuildTask } from "./protocol.ts";
 
 export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
  let accepted = false;
@@ -22,15 +22,16 @@ export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
  pi.on("before_agent_start", (event, ctx) => {
   if (violation) { fail(violation, ctx); throw new Error(violation); }
   return {
-   systemPrompt: `${event.systemPrompt}\n\nComplete only by calling ${SUBMIT_TOOL} as the sole tool call in its batch. Report honest limitations and unperformed checks. Never submit twice. Result strings are limited to 2048 UTF-8 bytes, lists to 32 items, total result to 48 KiB.\nHost task envelope: ${JSON.stringify(task)}`,
+   systemPrompt: `${event.systemPrompt}\n\nComplete only by calling ${SUBMIT_TOOL} as the sole tool call in its batch. Report honest limitations and unperformed checks. Never submit twice. Result strings are limited to 2048 UTF-8 bytes, lists to 32 items, total result to 48 KiB.\nReport taskOutcome succeeded only with no blockers and all requested compliance satisfied; otherwise report blocked with at least one nonblank blocker. A completed review requesting changes is not itself blocked. Include compliance: [] when no practices were requested, otherwise exactly one matching record per request. Required TDD has no waiver or not-applicable: unavailable execution or missing meaningful preimplementation red means blocked, with a nonblank reason. Satisfied requires empty reason and 1..8 completed cycles; blocked permits 0..8. Each cycle identifies behavior and test, red expected-failure/nonzero exit and green passed/zero exit using the same exact command, observed diagnostics, and 1..4 nonblank evidence references per observation. Report incomplete attempts in reason/limitations/verification, never as completed cycles. Include explicit limitations. Claims are not host-certified execution; stream order cannot prove test-before-code inside bash. Host role/tools/protocol takes precedence over required practice, which takes precedence over general skill exceptions.\nHost task envelope: ${JSON.stringify(task)}`,
    message: {customType: "guild-protocol-ready", content: "Guild exact-completion protocol active.", display: false,
-    details: {protocol: PROTOCOL, version: 1, runId: task.runId, taskId: task.taskId, tools: childTools(task.role)}},
+    details: {protocol: PROTOCOL, version: 2, runId: task.runId, taskId: task.taskId, tools: childTools(task.role)}},
   };
  });
  pi.on("message_end", (event, ctx) => {
   if (event.message.role !== "assistant") return;
   const calls = event.message.content.filter(part => part.type === "toolCall");
   soleCall = calls.length === 1 && calls[0].name === SUBMIT_TOOL ? calls[0].id : undefined;
+  if (calls.some(call => call.name === SUBMIT_TOOL && hasIdentityMismatch(call.arguments, task))) fail("Guild result identity mismatch", ctx);
   if ((repairUsed && !soleCall) || accepted || (calls.some(call => call.name === SUBMIT_TOOL) && !soleCall)) fail("Duplicate, mixed, or post-submission work", ctx);
  });
  pi.on("tool_call", (_event, ctx) => {
@@ -51,7 +52,7 @@ export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
     throw new Error(violation);
    }
    // Identity mismatch is not a repairable formatting error.
-   if (params.runId !== task.runId || params.taskId !== task.taskId || params.role !== task.role || params.profile !== task.profile) {
+   if (params.protocol !== task.protocol || params.version !== task.version || params.runId !== task.runId || params.taskId !== task.taskId || params.role !== task.role || params.profile !== task.profile) {
     fail("Guild result identity mismatch", ctx);
     throw new Error(violation);
    }
@@ -66,7 +67,7 @@ export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
   if (event.toolName !== SUBMIT_TOOL) return;
   if (event.toolCallId !== soleCall) { fail("Submission must be sole batch call", ctx); return; }
   const args = event.args;
-  if (args && typeof args === "object" && ["runId", "taskId", "role", "profile"].some(key => key in args && args[key] !== task[key as keyof GuildTask])) fail("Guild result identity mismatch", ctx);
+  if (hasIdentityMismatch(args, task)) fail("Guild result identity mismatch", ctx);
  });
  pi.on("tool_execution_end", (event, ctx) => {
   if (event.toolName !== SUBMIT_TOOL || !event.isError || violation || invalidCalls.has(event.toolCallId)) return;
@@ -86,9 +87,20 @@ export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
 export default function childProtocol(pi: ExtensionAPI): void {
  const file = process.env.GUILD_TASK_FILE;
  if (!file) throw new Error("Missing host Guild task file");
- const task = JSON.parse(readFileSync(file, "utf8")) as GuildTask;
- // Validate the host envelope without deriving scope from its text.
- buildTask(task);
- if (task.protocol !== PROTOCOL || task.version !== 1 || typeof task.taskId !== "string" || !task.taskId || task.taskId.length > 128) throw new Error("Invalid host Guild envelope");
+ const fd = openSync(file, "r");
+ let task: GuildTask;
+ try {
+  const stat = fstatSync(fd);
+  if (!stat.isFile() || stat.size > LIMITS.envelope) throw new Error("Guild task file byte limit or file type invalid");
+  const bytes = Buffer.alloc(LIMITS.envelope + 1);
+  let length = 0;
+  while (length < bytes.length) {
+   const count = readSync(fd, bytes, length, bytes.length - length, null);
+   if (!count) break;
+   length += count;
+  }
+  if (length > LIMITS.envelope) throw new Error("Guild task file byte limit exceeded");
+  task = validateTask(JSON.parse(new TextDecoder("utf-8", {fatal: true}).decode(bytes.subarray(0, length))));
+ } finally { closeSync(fd); }
  registerChildProtocol(pi, task);
 }

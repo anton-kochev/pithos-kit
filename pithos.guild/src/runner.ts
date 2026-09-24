@@ -5,8 +5,9 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
-import { buildTask, childTools, LIMITS, renderReport, type GuildReport } from "./protocol.ts";
+import { buildTask, childTools, LIMITS, renderReport, type GuildPractice, type GuildReport } from "./protocol.ts";
 import { ResultStream } from "./result-stream.ts";
+import { loadGuildSkillCores, type GuildSkillCore, type GuildSkillReceipt } from "./resources.ts";
 import {
 	type GuildProfile,
 	type GuildRole,
@@ -42,6 +43,8 @@ export interface GuildRoleRunResult extends GuildRunState {
 	taskId?: string;
 	status?: "completed" | "failed" | "cancelled";
 	report?: GuildReport;
+	/** Host-selected package cores, never a child claim or proof of attention. */
+	selectedSkills?: GuildSkillReceipt[];
 	usageKnown?: boolean;
 	/** Fields with at least one finite child observation; totals may be partial. */
 	usageFields?: Array<keyof RunUsage>;
@@ -53,7 +56,7 @@ const childChannel = channel("pithos.guild.child");
 type ChildObservationPayload =
 	| { type: "start" }
 	| { type: "stdout" | "stderr"; base64: string }
-	| { type: "end"; exitCode: number | null; aborted: boolean };
+	| { type: "end"; exitCode: number | null; aborted: boolean; selectedSkills: GuildSkillReceipt[] };
 
 export interface RunGuildRoleOptions {
 	/** Parent tool-call or direct-command ID, used only for observation correlation. */
@@ -61,6 +64,7 @@ export interface RunGuildRoleOptions {
 	role: GuildRole;
 	profile: GuildProfile;
 	task: string;
+	practices?: GuildPractice[];
 	cwd: string;
 	model?: string;
 	thinkingLevel?: string;
@@ -277,6 +281,7 @@ function guildRoleBaseSystemPrompt(role: GuildRole, profile: GuildProfile): stri
 async function writeGuildRoleSystemPrompts(
 	role: GuildRole,
 	profile: GuildProfile,
+	cores: readonly GuildSkillCore[],
 ): Promise<GuildRolePromptFiles> {
 	const directory = await fs.promises.mkdtemp(path.join(os.tmpdir(), "pi-guild-"));
 	const baseSystemPromptFile = path.join(directory, "base.md");
@@ -292,9 +297,16 @@ async function writeGuildRoleSystemPrompts(
 			guildRoleBaseSystemPrompt(role, profile),
 			{ encoding: "utf8", mode: 0o600 },
 		);
+		const skillGuidance = cores.map(({receipt, sourcePath, content}) => [
+			`# Package skill core: ${receipt.id}`,
+			`Source: ${sourcePath}`,
+			`References: ${path.dirname(sourcePath)}/references/`,
+			"",
+			content,
+		].join("\n")).join("\n\n");
 		await fs.promises.writeFile(
 			roleProfileSystemPromptFile,
-			`${rolePrompt.trimEnd()}\n\n${profilePrompt.trimEnd()}`,
+			`${rolePrompt.trimEnd()}\n\n${profilePrompt.trimEnd()}${cores.length ? `\n\nHost role/tools/protocol instructions override required practices; required practices override general skill exceptions. Selected package cores are guidance, not extra tools.\n\n${skillGuidance}` : ""}`,
 			{ encoding: "utf8", mode: 0o600 },
 		);
 		return { directory, baseSystemPromptFile, roleProfileSystemPromptFile };
@@ -315,7 +327,7 @@ interface GuildChildProcessOptions {
 }
 
 function snapshotRunResult(result: GuildRoleRunResult): GuildRoleRunResult {
-	return { ...result, usage: { ...result.usage }, usageFields: result.usageFields?.slice() };
+	return { ...result, usage: { ...result.usage }, usageFields: result.usageFields?.slice(), selectedSkills: result.selectedSkills?.map(receipt => ({...receipt})) };
 }
 
 async function runGuildChild(
@@ -390,10 +402,20 @@ async function runGuildChild(
 	return wasAborted;
 }
 
-export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildRoleRunResult> {
+export function runGuildRole(options: RunGuildRoleOptions): Promise<GuildRoleRunResult> {
+	return runGuildRoleFromPackage(options, fileURLToPath(new URL("../", import.meta.url)));
+}
+
+/** Offline fixture seam only; the production handover always selects this package's root. */
+export function runGuildRoleWithPackageRootForTest(options: RunGuildRoleOptions, fixtureRoot: string): Promise<GuildRoleRunResult> {
+	return runGuildRoleFromPackage(options, fixtureRoot);
+}
+
+async function runGuildRoleFromPackage(options: RunGuildRoleOptions, packageRoot: string): Promise<GuildRoleRunResult> {
 	const result = createEmptyGuildRoleRunResult(options.role, options.profile, options.task);
 	result.usageKnown = false;
 	result.usageFields = [];
+	result.selectedSkills = [];
 	let stream: ResultStream | undefined;
 	result.model = options.model;
 	const childId = childChannel.hasSubscribers ? randomUUID() : undefined;
@@ -418,10 +440,12 @@ export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildR
 
 	observe?.({ type: "start" });
 	try {
-		const task = buildTask({ ...options, runId, taskId: result.taskId });
+		const task = buildTask({ role: options.role, profile: options.profile, task: options.task, ...(options.practices === undefined ? {} : { practices: options.practices }), runId, taskId: result.taskId });
 		stream = new ResultStream(task);
 		if (options.signal?.aborted) throw new Error("Guild handover cancelled before setup");
-		prompts = await writeGuildRoleSystemPrompts(options.role, options.profile);
+		const cores = await loadGuildSkillCores(packageRoot, task.role, task.practices);
+		result.selectedSkills = cores.map(core => core.receipt);
+		prompts = await writeGuildRoleSystemPrompts(options.role, options.profile, cores);
 		const taskFile = path.join(prompts.directory, "task.json");
 		await fs.promises.writeFile(taskFile, JSON.stringify(task), {encoding: "utf8", mode: 0o600});
 		const args = buildGuildRoleChildArguments(
@@ -439,7 +463,7 @@ export async function runGuildRole(options: RunGuildRoleOptions): Promise<GuildR
 			result.errorMessage = `Guild cleanup failed: ${String(error).slice(0, 1024)}`;
 			stream?.fail(result.errorMessage);
 		});
-		observe?.({ type: "end", exitCode: settled ? result.exitCode : null, aborted: wasAborted });
+		observe?.({ type: "end", exitCode: settled ? result.exitCode : null, aborted: wasAborted, selectedSkills: result.selectedSkills.map(receipt => ({...receipt})) });
 	}
 
 	const terminal = stream?.finish(result.exitCode, wasAborted || options.signal?.aborted === true) ?? {status: options.signal?.aborted ? "cancelled" : "failed", diagnostic: result.errorMessage} as const;

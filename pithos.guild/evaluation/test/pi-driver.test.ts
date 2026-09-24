@@ -221,7 +221,8 @@ if (process.argv.includes('--system-prompt')) {
   emit({type:'tool_execution_end',toolName:'read',toolCallId:'read-1',result:{content:[{type:'text',text:'Scripted result'}]}});
   process.stderr.write('scripted child diagnostic\\n');
   if (outcome === 'success') {
-    const report = {...header,summary:'Offline fixture report',blockers:[],limitations:[],payload:{changes:[],verification:[]}};
+    const { practices: _practices, ...identity } = header;
+    const report = {...identity,taskOutcome:'succeeded',compliance:[],summary:'Offline fixture report',blockers:[],limitations:[],payload:{changes:[],verification:[]}};
     const submission = message('toolUse');
     submission.message.content = [{type:'toolCall',name:'guild_submit_result',id:'submit-1',arguments:report}];
     emit(submission);

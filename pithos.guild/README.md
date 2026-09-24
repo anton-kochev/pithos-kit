@@ -59,7 +59,7 @@ All 24 role/profile pairs are valid. Only `coder` can edit, write, or invoke she
 
 ## Code-review standards skill
 
-Guild owns the language-neutral `code-review-standards` skill for focused, evidence-based reviews with impact-calibrated severity and deterministic Request changes, Comment, or Approve decisions. When Guild is installed and this resource is enabled, Pi-native discovery lets the main agent load it proactively without requiring explicit invocation. Guild children deliberately start with general skill discovery disabled; exact child skill selection arrives in a later phase. The skill can also be loaded directly in the parent session when desired:
+Guild owns the language-neutral `code-review-standards` skill for focused, evidence-based reviews with impact-calibrated severity and deterministic Request changes, Comment, or Approve decisions. When Guild is installed and this resource is enabled, Pi-native discovery lets the main agent load it proactively without requiring explicit invocation. Guild children start with general skill discovery disabled. Every reviewer child receives the fixed package-owned review core in its prompt, independent of profile or parent discovery toggle; this does not add tools or grant shell access. The skill can also be loaded directly in the parent session when desired:
 
 ```text
 /skill:code-review-standards [review scope]
@@ -77,7 +77,7 @@ Guild owns the language-agnostic `tdd` skill used for explicit or proactive test
 /skill:tdd [task context]
 ```
 
-The skill drives behavioral changes through a test list and small red-green-refactor cycles while allowing pragmatic exceptions for spikes, trivial declarations, generated output, and other work that does not benefit from test-first ceremony. Pi exposes the skill to the main agent through native discovery; Guild children do not receive ambient skills in Phase 2.
+The skill drives behavioral changes through a test list and small red-green-refactor cycles while allowing pragmatic exceptions for spikes, trivial declarations, generated output, and other work that does not benefit from test-first ceremony. Pi exposes the skill to the main agent through native discovery; Guild children do not receive ambient skills. A coder child receives the fixed package-owned TDD core only when the caller explicitly requests required TDD, independent of parent discovery toggles.
 
 Use `pi config` for global settings or `pi config -l` for a project override to toggle Guild's `tdd` resource, then run `/reload` in an active session. The `enableSkillCommands` setting controls native `/skill:tdd` registration and autocomplete; disabling the resource also removes its model-visible description after reload.
 
@@ -136,7 +136,7 @@ Use reviewer/general to review the focused change for merge-blocking defects.
 The main agent invokes the canonical API:
 
 ```text
-guild_handover({ role: "coder", profile: "typescript", task: "...scope and acceptance criteria..." })
+guild_handover({ role: "coder", profile: "typescript", task: "...scope and acceptance criteria...", practices: [{ id: "tdd", policy: "required" }] })
 ```
 
 Delegate directly from the interactive TUI:
@@ -146,10 +146,11 @@ Delegate directly from the interactive TUI:
 /guild-handover architect/typescript
 /guild-handover coder/typescript Implement validation and run the tests
 /guild-handover typescript-coder Implement validation and run the tests
+/guild-handover --json {"role":"coder","profile":"typescript","task":"Implement validation","practices":[{"id":"tdd","policy":"required"}]}
 /guild-handover --help
 ```
 
-With no target, the command opens a role picker followed by a profile picker. With no task, it opens a multiline task editor. The command waits for the main agent to become idle and applies the same Plan-mode gate, inherited trust decision, queue, tools, and child runner as the agent tool. Direct execution is intentionally TUI-only.
+With no target, the command opens a role picker followed by a profile picker. With no task for a coder, it asks **No requirement** or **TDD required** before opening the multiline editor; other roles open the editor directly. Selection/editor cancellation creates no handover. `--json` must be the leading standalone option followed by one complete canonical JSON object, with no trailing data. Other command tasks (including embedded `--json` or TDD text) remain literal and never select practices. Only coder can request required TDD; omission and `[]` mean no requirement. Tool arguments, direct JSON and editor input share strict validation: exact keys, nonblank/NUL-free task, task <=32 KiB UTF-8, canonical input <=40 KiB, host envelope <=48 KiB. Accepted practices are copied before queue admission. The command waits for the main agent to become idle and applies the same Plan-mode gate, inherited trust decision, queue, tools, and child runner as the agent tool. Direct execution is intentionally TUI-only.
 
 List the fixed package roles, profiles, permissions, and aliases without launching a child:
 
@@ -170,9 +171,9 @@ Guild · 2 active
  ● coder/typescript · running · 5s · 2 turns
 ```
 
-Agent-invoked handovers use that aggregate dashboard. A direct `/guild-handover` uses a width-capped cancellable card with canonical identity, package source, permission level, queue state, elapsed time, turns, and real child-tool activity. Completed reports render as Markdown; failures receive diagnostics; cancellations use a compact terminal treatment.
+Agent-invoked handovers use that aggregate dashboard. A direct `/guild-handover` uses a width-capped cancellable card with canonical identity, package source, permission level, queue state, elapsed time, turns, and real child-tool activity. Completed reports render as Markdown; a valid blocked task is transport-completed with a warning **Blocked** treatment and retained report (not a tool error). Failures receive diagnostics; cancellations use a compact terminal treatment. Details include requested practices, task outcome and host-selected skill receipts; ordinary rendering shows only selected skill IDs.
 
-Each direct handover records one hidden user-initiated `started` event and exactly one correlated `completed`, `failed`, or `cancelled` event with `triggerTurn: false`. Reports and diagnostics are delimited as task data rather than instructions. Picker/editor cancellation creates no lifecycle event. When the final run stops, the dashboard widget, footer status, timers, and tracked state clear.
+Each direct handover records one hidden user-initiated `started` event and exactly one correlated `completed`, `failed`, or `cancelled` event with `triggerTurn: false`. A blocked task remains `completed` with explicit `taskOutcome: blocked`. Reports and diagnostics are delimited as task data rather than instructions. Picker/editor cancellation creates no lifecycle event. When the final run stops, the dashboard widget, footer status, timers, and tracked state clear.
 
 Serialization covers all Guild handovers within one extension runtime. Cancellation of queued work never launches a child; cancellation of active work holds the queue until the child process terminates and cleanup finishes. Separate Pi processes and external tools remain outside this guarantee. Guild remains independent of Pi's native specialist facility and does not observe its lifecycle or messages.
 
@@ -194,7 +195,7 @@ code-reviewer → reviewer/general
 
 Aliases cannot change prompts, profiles, or role tool ceilings, and no sunset is promised. Direct commands accept aliases visibly; resumed old `{ member, task }` tool calls are normalized before the strict canonical schema is validated.
 
-Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. Trusted constrained repository profiles and skills arrive only in later phases.
+Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. Only the fixed reviewer core and explicitly required coder TDD core are injected into child prompts; other ambient skills and profile-selected resources remain unavailable.
 
 ## Isolation and resources
 
@@ -202,7 +203,7 @@ Each Guild target runs with:
 
 - an isolated context window and no saved child session;
 - the parent's current provider/model, thinking level, working directory, and trust decision;
-- an explicit package-controlled base system prompt plus exactly one role prompt and one profile prompt;
+- an explicit package-controlled base system prompt plus exactly one role prompt and one profile prompt, with selected fixed package skill cores embedded after role/profile guidance;
 - the exact role-owned repository tool allowlist plus `guild_submit_result`;
 - `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, with one explicit absolute local `--extension` pointing to package-owned `src/child-protocol.ts`;
 - no recursive Guild delegation and no user/project member, system-prompt, append-prompt, skill, extension, template, or context-file discovery.
@@ -213,9 +214,9 @@ Cancellation terminates the child process and waits for shutdown and owned clean
 
 ## Exact completion protocol
 
-One host builder binds `guild/2` version 1 to a run ID, unique task ID, canonical role/profile, and original task text. It does not infer scope, acceptance criteria, or write leases from prose. The same runner and host-owned `completed`, `failed`, or `cancelled` outcome serve agent tools, direct commands, and editor input. Legacy persisted prose reports remain displayable, but cannot complete a new handover.
+One host builder binds `guild/2` version 2 to a run ID, unique task ID, canonical role/profile, and original task text. It does not infer scope, acceptance criteria, or write leases from prose. The same runner and host-owned `completed`, `failed`, or `cancelled` outcome serve agent tools, direct commands, and editor input. Legacy persisted prose reports remain displayable, but cannot complete a new handover.
 
-Children must submit `guild_submit_result` **alone in its tool batch**, once. Common exact fields are `protocol`, `version`, `runId`, `taskId`, `role`, `profile`, `summary`, `blockers`, `limitations`, and `payload`. Role payloads are:
+Children must submit `guild_submit_result` **alone in its tool batch**, once. Common exact fields are `protocol`, `version`, `runId`, `taskId`, `role`, `profile`, `taskOutcome`, `compliance`, `summary`, `blockers`, `limitations`, and `payload`. `taskOutcome` is `succeeded` only with no blockers and all requested compliance satisfied; `blocked` requires a nonblank blocker. `compliance` is empty unless coder required TDD was selected. Required TDD needs one exact record with status `satisfied` (at least one same-command red nonzero/green zero claimed cycle) or `blocked` (nonblank reason, blocked task outcome). Missing execution or meaningful preimplementation red is blocked, not waived. Up to eight completed cycles are reportable; diagnostics and 1–4 evidence references per red/green observation remain child claims. Role payloads are:
 
 - explorer: referenced `observations` and `unknowns`;
 - architect: `decisions`, `contracts`, and `handoff`;
@@ -226,7 +227,7 @@ Empty findings and unperformed checks are legitimate when reported honestly. Eac
 
 A malformed submission or prose-only completion gets **one shared corrective opportunity in the same child**. The next assistant response must submit the result alone; there is no respawn, queue re-entry, or reset on continued agent runs. Identity mismatch, mixed batches, duplicates, post-submission work, exhausted repair, missing handshake/settlement, process/provider errors, and cleanup failures fail closed. Cancellation and failure override a previously valid submission. Mixed-batch rejection is not a claim that sibling work never happened or was rolled back.
 
-Reports, commands, changes, references, and judgments are **child-reported claims**, not authenticated or host-certified truth. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
+Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: required-TDD coder selects `skills/tdd/SKILL.md`, reviewer always selects `skills/code-review-standards/SKILL.md`, all other cases select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
 
 
 ## Development

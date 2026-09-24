@@ -145,7 +145,8 @@ interface LifecyclePresentation {
 	background: "toolSuccessBg" | "toolErrorBg" | "customMessageBg" | "toolPendingBg";
 }
 
-function lifecyclePresentation(status: string, phase: GuildRunPhase | undefined): LifecyclePresentation {
+function lifecyclePresentation(status: string, phase: GuildRunPhase | undefined, taskOutcome?: string): LifecyclePresentation {
+	if (status === "completed" && taskOutcome === "blocked") return {icon: "!", label: "Blocked", color: "warning", background: "toolPendingBg"};
 	if (status === "completed") return { icon: "✓", label: "Completed", color: "success", background: "toolSuccessBg" };
 	if (status === "failed") return { icon: "✗", label: "Failed", color: "error", background: "toolErrorBg" };
 	if (status === "cancelled") return { icon: "■", label: "Cancelled", color: "muted", background: "customMessageBg" };
@@ -400,7 +401,7 @@ class GuildLifecycleCard implements Component {
 		const innerWidth = Math.max(1, cardWidth - 2);
 		const contentWidth = Math.max(1, innerWidth - 4);
 		const status = stringField(this.details, "status") ?? "started";
-		const presentation = lifecyclePresentation(status, presentationPhase(this.details));
+		const presentation = lifecyclePresentation(status, presentationPhase(this.details), stringField(this.details, "taskOutcome"));
 		const border = (value: string) => this.theme.fg("borderAccent", value);
 		const frame = (value = "") => `${border("│")}${padAnsi(value, innerWidth)}${border("│")}`;
 		const section = (label: string) => {
@@ -442,6 +443,8 @@ class GuildLifecycleCard implements Component {
 			}
 		}
 
+		const skills = selectedSkillIds(this.details);
+		if (skills.length) lines.push(frame(this.theme.fg("dim", `  Selected skills: ${skills.join(", ")}`)));
 		if (this.expanded) {
 			const inheritedModel = stringField(this.details, "inheritedModel");
 			const thinkingLevel = stringField(this.details, "thinkingLevel");
@@ -470,6 +473,14 @@ export function renderGuildLifecycleMessage(
 	return new GuildLifecycleCard(message.details, options.expanded ?? false, theme);
 }
 
+function selectedSkillIds(details: unknown): string[] {
+	const skills = recordOf(details)?.selectedSkills;
+	return Array.isArray(skills) ? skills.flatMap(skill => {
+		const id = stringField(skill, "id");
+		return id === "tdd" || id === "code-review-standards" ? [id] : [];
+	}) : [];
+}
+
 export function renderGuildResult(
 	result: ToolResultLike,
 	options: { expanded?: boolean; isPartial?: boolean },
@@ -482,12 +493,13 @@ export function renderGuildResult(
 	const phase = presentationPhase(details);
 	const cancelled = status === "cancelled";
 	const failed = !cancelled && (context?.isError || status === "failed");
+	const blocked = !failed && status === "completed" && stringField(details, "taskOutcome") === "blocked";
 	const terminal = failed || status === "completed" || status === "cancelled";
 	const queued = !terminal && phase === "queued";
 	const running = !terminal && !queued && (options.isPartial || phase === "running");
-	const icon = cancelled ? "■" : queued ? "○" : running ? "●" : failed ? "✗" : "✓";
-	const label = cancelled ? "Cancelled" : queued ? "Queued" : running ? "Running" : failed ? "Failed" : "Completed";
-	const color = cancelled ? "muted" : queued ? "muted" : running ? "warning" : failed ? "error" : "success";
+	const icon = cancelled ? "■" : queued ? "○" : running ? "●" : failed ? "✗" : blocked ? "!" : "✓";
+	const label = cancelled ? "Cancelled" : queued ? "Queued" : running ? "Running" : failed ? "Failed" : blocked ? "Blocked" : "Completed";
+	const color = cancelled ? "muted" : queued ? "muted" : running || blocked ? "warning" : failed ? "error" : "success";
 	const identity = presentationIdentity(details);
 
 	const container = new Container();
@@ -501,6 +513,7 @@ export function renderGuildResult(
 		sourceLabel(identity.source),
 		permissionLabel(identity.role)?.toUpperCase(),
 		usageText(details),
+		...(selectedSkillIds(details).length ? [`skills: ${selectedSkillIds(details).join(", ")}`] : []),
 	].filter(Boolean).join(" · ");
 	if (metadata) container.addChild(new Text(theme.fg("dim", metadata), 0, 0));
 

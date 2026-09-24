@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
+import {readFileSync} from "node:fs";
 import { describe, it } from "node:test";
 import { initTheme } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
+import { Check } from "typebox/value";
 import {
   GUILD_MEMBER_ALIASES,
   GUILD_PROFILES,
@@ -12,10 +14,22 @@ import {
 import { registerGuild, type GuildDependencies } from "../src/guild";
 import type { GuildRoleRunResult, RunGuildRoleOptions } from "../src/runner";
 
-import { validateResult } from "../src/protocol.ts";
+import { renderReport, validateResult } from "../src/protocol.ts";
 import { buildTask, report } from "./protocol-fixtures.ts";
 
 initTheme();
+
+it("exposes a provider-compatible strict practices schema", () => {
+ const pi = fakePi();
+ registerGuild(pi.api as any);
+ const schema = pi.tool.parameters;
+ assert.doesNotMatch(JSON.stringify(schema), /"(?:anyOf|oneOf|const)"\s*:/);
+ const valid = {role: "coder", profile: "general", task: "Work", practices: [{id: "tdd", policy: "required"}]};
+ assert.equal(Check(schema, valid), true);
+ for (const practices of [[{id: "other", policy: "required"}], [{id: "tdd", policy: "optional"}], [{id: "tdd", policy: "required", extra: true}]]) {
+  assert.equal(Check(schema, {...valid, practices}), false);
+ }
+});
 
 async function assertTerminal(run: Promise<any>, status: string, diagnostic?: RegExp) {
  const result = await run;
@@ -181,7 +195,7 @@ describe("guild extension", () => {
     registerGuild(pi.api as never, { run: successfulRunner });
 
     const schema = pi.tool.parameters;
-    assert.deepEqual(Object.keys(schema.properties), ["role", "profile", "task"]);
+    assert.deepEqual(Object.keys(schema.properties), ["role", "profile", "task", "practices"]);
     assert.deepEqual(schema.required, ["role", "profile", "task"]);
     assert.equal(schema.additionalProperties, false);
     assert.deepEqual(schema.properties.role.enum, GUILD_ROLES);
@@ -207,12 +221,12 @@ describe("guild extension", () => {
     assert.equal(typeof prepare, "function");
 
     const canonical = { role: "coder", profile: "dotnet", task: "Implement validation" };
-    assert.equal(prepare(canonical), canonical);
+    assert.deepEqual(prepare(canonical), {...canonical, practices: []});
 
     for (const [member, target] of Object.entries(GUILD_MEMBER_ALIASES)) {
       const [role, profile] = target.split("/");
       const migrated = prepare({ member, task: `Run ${member}` });
-      assert.deepEqual(migrated, { role, profile, task: `Run ${member}` });
+      assert.deepEqual(migrated, { role, profile, task: `Run ${member}`, practices: [] });
       assert.equal(Object.hasOwn(migrated, "member"), false);
       assert.equal(Value.Check(pi.tool.parameters, migrated), true);
     }
@@ -224,8 +238,7 @@ describe("guild extension", () => {
       { member: "csharp-coder", task: "Extra input", extra: true },
       { member: "csharp-coder" },
     ]) {
-      assert.equal(prepare(invalid), invalid);
-      assert.equal(Value.Check(pi.tool.parameters, prepare(invalid)), false);
+      assert.throws(() => prepare(invalid));
     }
   });
 
@@ -817,7 +830,7 @@ describe("guild extension", () => {
     ctx.ui.select = async (title: string, choices: string[]) => {
       pickerTitles.push(title);
       pickerChoices.push(choices);
-      return pickerTitles.length === 1 ? choices[2] : choices[3];
+      return pickerTitles.length === 1 ? choices[2] : pickerTitles.length === 2 ? choices[3] : choices[0];
     };
     ctx.ui.editor = async (title: string) => {
       editorTitle = title;
@@ -826,7 +839,7 @@ describe("guild extension", () => {
 
     await pi.commands.get("guild-handover").handler("", ctx);
 
-    assert.deepEqual(pickerTitles, ["Choose a Guild role", "Choose a Guild profile"]);
+    assert.deepEqual(pickerTitles, ["Choose a Guild role", "Choose a Guild profile", "Choose coder practice"]);
     assert.equal(pickerChoices[0].length, 4);
     assert.equal(pickerChoices[1].length, 6);
     assert.match(pickerChoices[0][0], /^explorer \[read-only\]/);
@@ -834,7 +847,7 @@ describe("guild extension", () => {
     assert.match(editorTitle, /coder\/typescript/);
     assert.equal(received?.role, "coder");
     assert.equal(received?.profile, "typescript");
-    assert.equal(received?.task, "Implement typed boundaries");
+    assert.equal(received?.task, "  Implement typed boundaries  ");
   });
 
   it("rejects unknown and researcher direct targets before opening the editor or running", async () => {
@@ -1191,6 +1204,91 @@ describe("guild extension", () => {
       assert.match(notifications[0] ?? "", /commit.*unavailable.*Plan mode/i);
     }
   });
+});
+
+it("documents reviewer evidence classifications without imposing coder TDD or shell access", () => {
+ const guidance = readFileSync(new URL("../agents/roles/reviewer.md", import.meta.url), "utf8");
+ for (const label of ["corroborated", "contradicted", "unverified"]) assert.match(guidance, new RegExp(label));
+ assert.match(guidance, /original requirement/i);
+ assert.match(guidance, /no automatic pipeline/i);
+ assert.doesNotMatch(guidance, /reviewer must run tests/i);
+});
+
+it("validates and copies canonical and legacy tool inputs before queue admission", async () => {
+ const pi = fakePi(); const seen: RunGuildRoleOptions[] = [];
+ registerGuild(pi.api as never, {run: async options => { seen.push(options); return resultFor(options); }});
+ const input = {role: "coder", profile: "typescript", task: "  Work  ", practices: [{id: "tdd", policy: "required"}]};
+ assert.deepEqual(pi.tool.prepareArguments(input), input);
+ assert.equal(Value.Check(pi.tool.parameters, input), true);
+ const pending = pi.tool.execute("copy", input, undefined, undefined, context());
+ input.practices[0]!.id = "changed";
+ await pending;
+ assert.deepEqual(seen[0]?.practices, [{id: "tdd", policy: "required"}]);
+ assert.equal(seen[0]?.task, "  Work  ");
+ for (const invalid of [
+  {role: "reviewer", profile: "general", task: "Review", practices: [{id: "tdd", policy: "required"}]},
+  {role: "coder", profile: "general", task: "bad\0task"},
+  {role: "coder", profile: "general", task: "é".repeat(17000)},
+  {role: "coder", profile: "general", task: "Work", practices: [{id: "tdd", policy: "optional"}]},
+ ]) {
+  await assert.rejects(() => pi.tool.execute("invalid", invalid, undefined, undefined, context()));
+ }
+ assert.equal(seen.length, 1);
+ assert.deepEqual(pi.tool.prepareArguments({member: "typescript-coder", task: "Legacy"}), {role: "coder", profile: "typescript", task: "Legacy", practices: []});
+});
+
+it("accepts only complete leading JSON and keeps default command tasks literal", async () => {
+ const pi = fakePi(); const seen: RunGuildRoleOptions[] = []; const notifications: string[] = [];
+ registerGuild(pi.api as never, {run: async options => { seen.push(options); return resultFor(options); }});
+ const ctx: any = context(); ctx.ui.notify = (text: string) => notifications.push(text);
+ const handler = pi.commands.get("guild-handover").handler;
+ await handler('--json {"role":"coder","profile":"typescript","task":"  exact  ","practices":[{"id":"tdd","policy":"required"}]}', ctx);
+ assert.deepEqual(seen[0]?.practices, [{id: "tdd", policy: "required"}]);
+ assert.equal(seen[0]?.task, "  exact  ");
+ for (const invalid of ['--json {"role":"coder","profile":"general","task":"Work"} garbage', '--json [1]', '--json {"role":"reviewer","profile":"general","task":"Review","practices":[{"id":"tdd","policy":"required"}]}']) await handler(invalid, ctx);
+ assert.equal(seen.length, 1);
+ assert.equal(pi.messages.length, 2);
+ assert.equal(notifications.length, 3);
+ await handler('coder/typescript Implement --json {"practices":"tdd"}', ctx);
+ assert.equal(seen[1]?.task, 'Implement --json {"practices":"tdd"}');
+ assert.deepEqual(seen[1]?.practices, []);
+});
+
+it("selects coder editor practice before preserving multiline task; cancellation creates no lifecycle", async () => {
+ for (const pick of ["No requirement", "TDD required", undefined]) {
+  const pi = fakePi(); const seen: RunGuildRoleOptions[] = []; const order: string[] = [];
+  registerGuild(pi.api as never, {run: async options => {seen.push(options); return resultFor(options);}});
+  const ctx: any = context();
+  ctx.ui.select = async (title: string, choices: string[]) => { order.push(title); assert.deepEqual(choices, ["No requirement", "TDD required"]); return pick; };
+  ctx.ui.editor = async () => { order.push("editor"); return "  first\nsecond  "; };
+  await pi.commands.get("guild-handover").handler("coder/general", ctx);
+  assert.deepEqual(order, pick ? ["Choose coder practice", "editor"] : ["Choose coder practice"]);
+  assert.equal(seen[0]?.task, pick ? "  first\nsecond  " : undefined);
+  assert.deepEqual(seen[0]?.practices, pick === "TDD required" ? [{id: "tdd", policy: "required"}] : pick ? [] : undefined);
+  assert.equal(pi.messages.length, pick ? 2 : 0);
+ }
+});
+
+it("carries blocked outcome, selected receipts and practices through tool and direct completion without error", async () => {
+ const pi = fakePi(); const receipt = {id: "tdd", source: "package", path: "skills/tdd/SKILL.md", bytes: 42, sha256: "abc"};
+ registerGuild(pi.api as never, {run: async options => {
+  const task = buildTask({role: options.role, profile: options.profile, task: options.task, practices: options.practices});
+  const submitted = validateResult({...report(task), taskOutcome: "blocked", blockers: ["Missing red"], compliance: [{id: "tdd", policy: "required", status: "blocked", reason: "No preimplementation red", cycles: [], limitations: []}]}, task);
+  return resultFor(options, {selectedSkills: [receipt] as any, report: submitted, output: renderReport(submitted)});
+ }});
+ const input = {role: "coder", profile: "general", task: "Work", practices: [{id: "tdd", policy: "required"}]};
+ const result = await pi.tool.execute("blocked", input, undefined, undefined, context());
+ assert.equal(result.details.status, "completed");
+ assert.equal(result.details.taskOutcome, "blocked");
+ assert.match(result.content[0].text, /## compliance\n[\s\S]*No preimplementation red/);
+ assert.deepEqual(result.details.selectedSkills, [receipt]);
+ assert.deepEqual(result.details.practices, input.practices);
+ assert.equal(pi.handlers.get("tool_result")({toolName: "guild_handover", details: result.details})?.isError, undefined);
+ await pi.commands.get("guild-handover").handler('--json '+JSON.stringify(input), context());
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "completed"]);
+ assert.equal(pi.messages[1].message.details.taskOutcome, "blocked");
+ assert.match(pi.messages[1].message.content, /Task outcome: blocked/);
+ assert.match(pi.messages[1].message.content, /## compliance\n[\s\S]*No preimplementation red/);
 });
 
 it("returns the same failed terminal details and partial usage to tool and direct paths", async () => {

@@ -18,7 +18,7 @@ it("builds one original-text task and validates all 24 role/profile result contr
 it("rejects wrong identity, unknown nested keys and UTF-8/list/total overflow", () => {
  const task = buildTask({ role: "coder", profile: "general", task: "Do work", runId: "run", taskId: "task" });
  const base = report(task);
- for (const patch of [{protocol: "guild/1"}, {version: 2}, {runId: "other"}, {taskId: "other"}, {role: "reviewer"}, {profile: "rust"}, {extra: true}, {payload: {changes: [], verification: [], extra: true}}, {summary: "🙂".repeat(513)}, {blockers: Array(33).fill("x")}, {blockers: Array(32).fill("x".repeat(2048))}]) {
+ for (const patch of [{protocol: "guild/1"}, {version: 1}, {runId: "other"}, {taskId: "other"}, {role: "reviewer"}, {profile: "rust"}, {extra: true}, {payload: {changes: [], verification: [], extra: true}}, {summary: "🙂".repeat(513)}, {blockers: Array(33).fill("x")}, {blockers: Array(32).fill("x".repeat(2048))}]) {
   assert.throws(() => validateResult({...base, ...patch}, task));
  }
  assert.equal(validateResult({...base, summary: "🙂".repeat(512)}, task).summary.length, 1024);

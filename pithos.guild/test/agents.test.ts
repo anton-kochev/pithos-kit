@@ -106,7 +106,9 @@ describe("canonical Guild role/profile registry", () => {
       assert.doesNotMatch(prompt, /^---/);
       assert.match(prompt, /repository evidence/i);
       assert.match(prompt, /package resource is guidance[\s\S]*role owns (?:its )?capability/i);
-      assert.doesNotMatch(prompt, /\b(?:skills?|practices?|protocols?|routing)\b/i);
+    }
+    for (const role of ["explorer", "architect"] as const) {
+      assert.doesNotMatch(prompts[role], /\b(?:skills?|practices?|protocols?|routing)\b/i);
     }
 
     for (const role of ["explorer", "architect", "reviewer"] as const) {

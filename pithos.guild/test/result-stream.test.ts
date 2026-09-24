@@ -6,7 +6,7 @@ import { buildTask, report } from "./protocol-fixtures.ts";
 export function streamFixture() {
  const task = buildTask({role: "coder", profile: "general", task: "Work"});
  const stream = new ResultStream(task);
- const ready = {type: "message_end", message: {role: "custom", customType: "guild-protocol-ready", details: {protocol: task.protocol, version: 1, runId: task.runId, taskId: task.taskId, tools: childTools(task.role)}}};
+ const ready = {type: "message_end", message: {role: "custom", customType: "guild-protocol-ready", details: {protocol: task.protocol, version: 2, runId: task.runId, taskId: task.taskId, tools: childTools(task.role)}}};
  const batch = {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", name: SUBMIT_TOOL, id: "call", arguments: report(task)}]}};
  const start = {type: "tool_execution_start", toolName: SUBMIT_TOOL, toolCallId: "call", args: report(task)};
  const end = {type: "tool_execution_end", toolName: SUBMIT_TOOL, toolCallId: "call", isError: false, result: {details: report(task)}};
@@ -55,4 +55,17 @@ it("does not ignore late finalized sibling tool events after submission", () => 
  const h = streamFixture();
  for (const event of [h.ready, h.batch, h.start, h.end, {type: "tool_execution_end", toolName: "read", toolCallId: "late", isError: false, result: {}}, {type: "agent_settled"}]) h.stream.event(event);
  assert.equal(h.stream.finish(0, false).status, "failed");
+});
+it("rejects wrong version already present in assistant submission even if execution args differ", () => {
+ const h = streamFixture();
+ h.stream.event(h.ready);
+ h.stream.event({...h.batch, message: {...h.batch.message, content: [{type: "toolCall", name: SUBMIT_TOOL, id: "call", arguments: {...report(h.task), version: 1}}]}});
+ assert.match(h.stream.failure ?? "", /identity/);
+});
+it("never repairs a present wrong protocol or version in submission arguments", () => {
+ for (const patch of [{protocol: "guild/1"}, {version: 1}, {version: "2"}]) {
+  const h = streamFixture();
+  for (const event of [h.ready, h.batch, {...h.start, args: {...report(h.task), ...patch}}]) h.stream.event(event);
+  assert.match(h.stream.failure ?? "", /identity/);
+ }
 });
