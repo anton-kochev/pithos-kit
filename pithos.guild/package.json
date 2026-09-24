@@ -1,7 +1,7 @@
 {
   "name": "@pithos-kit/guild",
   "version": "0.3.0",
-  "description": "Software-development Guild members, .NET Clean Architecture, code-review standards, confirmed Conventional Commits, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
+  "description": "Software-development Guild members plus repository-aware .NET Clean Architecture, CQRS, code-review, Conventional Commit, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -20,6 +20,9 @@
     "clean-architecture",
     "domain-driven-design",
     "vertical-slice",
+    "cqrs",
+    "event-sourcing",
+    "outbox",
     "git",
     "conventional-commits"
   ],
@@ -86,6 +89,11 @@
         "name": "skill:dotnet-clean-architecture",
         "usage": "/skill:dotnet-clean-architecture [task context]",
         "summary": "Load repository-aware .NET Clean Architecture guidance explicitly."
+      },
+      {
+        "name": "skill:dotnet-cqrs",
+        "usage": "/skill:dotnet-cqrs [task context]",
+        "summary": "Load repository-aware .NET CQRS guidance explicitly."
       }
     ],
     "tools": [
@@ -116,6 +124,10 @@
       {
         "name": "dotnet-clean-architecture",
         "summary": "Repository-aware .NET architecture boundaries and proportional design."
+      },
+      {
+        "name": "dotnet-cqrs",
+        "summary": "Repository-aware CQRS adoption, consistency, projections, and event-sourcing decisions."
       }
     ],
     "themes": [],

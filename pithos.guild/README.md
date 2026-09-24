@@ -1,6 +1,6 @@
 # guild
 
-A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, code-review, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, CQRS, code-review, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
@@ -92,6 +92,18 @@ Guild's `dotnet-clean-architecture` skill helps inspect and evolve repository-co
 ```
 
 The skill first verifies substantive .NET relevance and detects solution, project, framework, language, package, persistence, hosting, test, and deployment capabilities. It then selects the smallest justified clean, layered, vertical-slice, or hybrid structure; preserves healthy existing boundaries; and makes dependency direction, domain invariants, consistency, security, migration, and verification explicit. Its examples are conditional guidance rather than migration authority, and architect and coder tool boundaries continue to apply.
+
+## .NET CQRS skill
+
+Guild's `dotnet-cqrs` skill complements the Clean Architecture baseline with focused guidance for deciding whether CQRS earns its cost and for designing command/query contracts, read models, projections, asynchronous consistency, and optional event sourcing. Load it directly with optional task context:
+
+```text
+/skill:dotnet-cqrs [task context]
+```
+
+The skill verifies substantive repository-connected .NET relevance and inspects the actual framework, language, provider, package, messaging, deployment, test, and operational capabilities before recommending a shape. It treats direct CRUD, in-process command/query paths, separate read shapes, asynchronous read stores, and event sourcing as bounded-context options rather than a maturity contest. Authorization and tenancy, transaction boundaries, outbox/inbox and idempotency behavior, ordering, compatibility, lag UX, observability, rebuilds, rollout, and recovery stay explicit.
+
+EF Core, Dapper, mediators, brokers, Wolverine, Marten, and other package APIs are conditional examples only. Existing versions and repository usage must support them, time-sensitive license or support decisions require current authoritative verification, and adding or changing dependencies still requires authorization. Pi-native discovery exposes the skill to the main agent when the Guild resource is enabled; Guild children do not receive ambient skills. `dotnet-clean-architecture` remains the broader source for solution and domain boundaries.
 
 Conventional Commit support also moved from Atlas to Guild. Guild 0.3.0 must be paired with Atlas 0.6.0 so exactly one active package owns `/commit`, `create_commit`, and the `conventional-commit` skill. Do not load Guild 0.3.0 beside an older Atlas release that still registers them.
 
