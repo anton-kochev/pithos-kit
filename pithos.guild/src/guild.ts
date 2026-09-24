@@ -39,6 +39,7 @@ import {
 	renderGuildResult,
 } from "./ui";
 import { GuildRunTracker, type GuildRunPhase } from "./visibility";
+import { createPithosLogger, errorMetadata, usageMetadata } from "./logging";
 import registerCommitWorkflow from "./commit";
 
 const MAX_MODEL_OUTPUT_BYTES = 50 * 1024;
@@ -314,6 +315,8 @@ function errorText(error: unknown): string {
 }
 
 export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies = defaultDependencies): void {
+	const log = createPithosLogger();
+	log.info("extension.register");
 	registerCommitWorkflow(pi);
 
 	const runQueue = new RunQueue();
@@ -367,6 +370,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		shuttingDown = true;
+		log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), activeRuns: activeRuns.size });
 		const previousUiContext = activeUiContext;
 		activeRuns.clear();
 		if (ticker) clearInterval(ticker);
@@ -394,6 +398,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let phase: GuildRunPhase = "queued";
 		let latest: GuildRoleRunResult | undefined;
 		let cancelled = false;
+		log.info("handover.start", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: prepared.role, profile: prepared.profile, model, thinkingLevel });
 
 		if (visibility === "dashboard") {
 			activeRuns.start({
@@ -452,6 +457,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				const failure = getRunFailure(result);
 				if (failure) throw new Error(`${target} failed: ${failure}`);
 				if (result.status !== "completed" || !result.report || !result.output.trim()) throw new Error(`${target} completed without a validated protocol result.`);
+				log.info("handover.complete", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: result.role, profile: result.profile, model: result.model ?? inheritedModel, stopReason: result.stopReason, exitCode: result.exitCode, durationMs: Date.now() - startedAt, usage: usageMetadata(result.usage) });
 
 				return {
 					content: [{ type: "text", text: truncateUtf8(result.output.trim(), MAX_MODEL_OUTPUT_BYTES) }],
@@ -478,6 +484,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				},
 			});
 		} catch (error) {
+			log.error("handover.error", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: prepared.role, profile: prepared.profile, durationMs: Date.now() - startedAt, error: errorMetadata(error) });
 			const status = shuttingDown || cancelled || signal?.aborted || latest?.status === "cancelled" ? "cancelled" : "failed";
 			const details = latest
 				? resultDetails(latest, prepared, status, phase, inheritedModel, thinkingLevel, startedAt)
@@ -555,6 +562,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			return matches.length > 0 ? matches : null;
 		},
 		handler: async (args, ctx) => {
+			log.info("command.guild-handover", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), hasArgs: args.trim().length > 0 });
 			if (isHelpRequest(args)) return emitCommandText(ctx, GUILD_HANDOVER_HELP);
 
 			if (!ctx.hasUI || ctx.mode !== "tui") {
