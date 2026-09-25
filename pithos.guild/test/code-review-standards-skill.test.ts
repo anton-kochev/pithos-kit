@@ -15,7 +15,7 @@ type GuildManifest = {
   pi: { skills: string[] };
   pithosKit: CapabilityMetadata;
 };
-type Catalog = { packages: Array<{ name: string; pithosKit: CapabilityMetadata }> };
+type Catalog = { packages: Array<{ name: string; version: string; pithosKit: CapabilityMetadata }> };
 
 function readJson<T>(path: string): T {
   return JSON.parse(readFileSync(path, "utf8")) as T;
@@ -36,7 +36,7 @@ describe("Guild code-review-standards skill", () => {
     assert.ok(catalogGuild);
     assert.ok(catalogGuild.pithosKit.commands.some(({ name }) => name === "skill:code-review-standards"));
     assert.ok(catalogGuild.pithosKit.skills.some(({ name }) => name === "code-review-standards"));
-    assert.equal(guild.version, "0.3.0");
+    assert.equal(guild.version, catalogGuild.version);
     assert.doesNotMatch(skill, /Grimoire|Claude|CLAUDE\.md|WebSearch|WebFetch|TaskCreate|TaskUpdate|context7/u);
   });
 

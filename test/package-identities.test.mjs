@@ -11,7 +11,7 @@ const packages = [
   { directory: "pithos.answer", shortName: "answer", version: "0.3.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.telos", shortName: "telos", version: "0.3.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.guild", shortName: "guild", version: "0.3.0", minimumPi: ">=0.87.0" },
+  { directory: "pithos.guild", shortName: "guild", version: "0.4.0-beta.0", minimumPi: ">=0.87.0" },
   { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0", minimumPi: ">=0.84.1" },
   { directory: "pithos.plan", shortName: "plan", version: "0.5.0", minimumPi: ">=0.83.0" },
   { directory: "pithos.themes", shortName: "themes", version: "0.1.0", minimumPi: ">=0.84.1" },
@@ -77,6 +77,10 @@ describe("pithos-kit package identities", () => {
       assert.match(workflow, /npm test/);
       assert.match(workflow, /npm pack --dry-run/);
       assert.match(workflow, /npm publish --provenance --access public/);
+      if (shortName === "guild") {
+        assert.match(workflow, /\*-beta\.\*\) npm publish --provenance --access public --tag beta/u);
+        assert.match(workflow, /\*-\*\) echo "Unsupported Guild prerelease channel: \$VERSION" >&2; exit 1/u);
+      }
       assert.match(readme, new RegExp(`@pithos-kit/${shortName}`));
 
       const packageReadme = readFileSync(resolve(root, directory, "README.md"), "utf8");

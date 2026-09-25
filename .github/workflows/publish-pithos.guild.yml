@@ -50,4 +50,10 @@ jobs:
         run: npm pack --dry-run
 
       - name: Publish
-        run: npm publish --provenance --access public
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          case "$VERSION" in
+            *-beta.*) npm publish --provenance --access public --tag beta ;;
+            *-*) echo "Unsupported Guild prerelease channel: $VERSION" >&2; exit 1 ;;
+            *) npm publish --provenance --access public ;;
+          esac
