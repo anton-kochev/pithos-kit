@@ -190,7 +190,7 @@
     },
     {
       "name": "@pithos-kit/guild",
-      "version": "0.4.0-beta.0",
+      "version": "0.4.0",
       "description": "Software-development Guild members plus repository-aware .NET Clean Architecture, CQRS, code-review, Conventional Commit, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
       "pi": {
         "extensions": [

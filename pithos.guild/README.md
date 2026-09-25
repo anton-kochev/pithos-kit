@@ -8,10 +8,10 @@ The extension adds agent-callable `guild_handover` and controlled `create_commit
 
 Requires Pi **0.87.0 or newer**. The initial provider-free compatibility target is exactly 0.87.0; future releases are not automatically certified.
 
-Install this beta explicitly (an unqualified install uses npm's `latest`, not `beta`):
+Install the current release:
 
 ```bash
-pi install npm:@pithos-kit/guild@0.4.0-beta.0
+pi install npm:@pithos-kit/guild@0.4.0
 ```
 
 For local development from this repository:
@@ -32,7 +32,7 @@ pi -e ./pithos.guild
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/guild": "npm:0.4.0-beta.0"
+    "@pithos-kit/guild": "npm:0.4.0"
 ```
 
 ## Roles and profiles
@@ -107,7 +107,7 @@ The skill verifies substantive repository-connected .NET relevance and inspects 
 
 EF Core, Dapper, mediators, brokers, Wolverine, Marten, and other package APIs are conditional examples only. Existing versions and repository usage must support them, time-sensitive license or support decisions require current authoritative verification, and adding or changing dependencies still requires authorization. Pi-native discovery exposes the skill to the main agent when the Guild resource is enabled; Guild children do not receive ambient skills. `dotnet-clean-architecture` remains the broader source for solution and domain boundaries.
 
-Conventional Commit support also moved from Atlas to Guild. Guild 0.3.0 and later, including this beta, must be paired with Atlas 0.6.0 or later so exactly one active package owns `/commit`, `create_commit`, and the `conventional-commit` skill. Do not load them beside an older Atlas release that still registers these resources.
+Conventional Commit support also moved from Atlas to Guild. Guild 0.3.0 and later must be paired with Atlas 0.6.0 or later so exactly one active package owns `/commit`, `create_commit`, and the `conventional-commit` skill. Do not load them beside an older Atlas release that still registers these resources.
 
 ## Confirmed commits
 
