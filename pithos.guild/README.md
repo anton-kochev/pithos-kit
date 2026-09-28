@@ -4,6 +4,18 @@ A standalone bounded Guild with stable exploration, architecture, implementation
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
+## At a glance
+
+Guild hands **one focused task** to an isolated child: choose a role for its permissions and a profile for its technical guidance. Explorer and architect investigate or plan, coder can edit and run tests, and reviewer inspects changes without writing. Guild queues handovers, returns a bounded structured report, and leaves verification and final decisions to the main agent. It does not run an automatic multi-agent pipeline or prove a child's claims.
+
+For example, in Pi's interactive TUI:
+
+```text
+/guild-handover explorer/typescript Find where user input is validated and cite relevant files.
+```
+
+Or ask the main agent, “Use explorer/typescript to find the validation path and report the evidence.” The child can inspect but not edit; for an implementation, delegate a separate coder task with scope and acceptance criteria. See [Usage](#usage) for coder, reviewer, and required-TDD examples.
+
 ## Install
 
 Requires Pi **0.87.0 or newer**. The initial provider-free compatibility target is exactly 0.87.0; future releases are not automatically certified.
@@ -135,9 +147,10 @@ Use coder/rust to resolve the parser ownership defect.
 Use reviewer/general to review the focused change for merge-blocking defects.
 ```
 
-The main agent invokes the canonical API:
+The main agent invokes the canonical API. Most tasks need no practice option; required TDD is an explicit coder-only choice:
 
 ```text
+guild_handover({ role: "explorer", profile: "typescript", task: "Locate input validation and cite relevant files" })
 guild_handover({ role: "coder", profile: "typescript", task: "...scope and acceptance criteria...", practices: [{ id: "tdd", policy: "required" }] })
 ```
 
@@ -236,7 +249,7 @@ Reports, commands, changes, references, TDD cycles, and judgments are **child-re
 
 ```bash
 cd pithos.guild
-npm install
+npm ci
 npm test
 npm run typecheck
 npm pack --dry-run
@@ -244,9 +257,9 @@ npm pack --dry-run
 
 ## Evaluation and benchmarking
 
-Guild is evaluated as a complete workflow: the same user request goes to either the main agent alone or the main agent with Guild available, through final verification and synthesis. Delegation is optional; choosing not to delegate can be the right outcome. Forced role/profile calls are useful diagnostic experiments, not a substitute for this end-to-end comparison.
+Guild's evaluation methodology compares the complete workflow: the same user request goes to either the main agent alone or the main agent with Guild available, through final verification and synthesis. Delegation is optional; choosing not to delegate can be the right outcome. Forced role/profile calls are useful diagnostic experiments, not a substitute for this end-to-end comparison.
 
-The evaluation approach separates deterministic boundary tests, known-task regressions, single-variable experiments, and repeated product comparisons. Correctness and preservation of user work come first. Reports show reliability, total parent-plus-child usage/cost, latency, and context burden separately rather than combining them into one score. Failed, cancelled, and timed-out attempts remain visible; missing usage is unknown, not zero. Single-run pilot results do not establish superiority, and development fixtures are not held-out promotion evidence.
+The methodology separates deterministic boundary tests, known-task regressions, single-variable experiments, and repeated product comparisons. Correctness and preservation of user work come first. Any future report should show reliability, total parent-plus-child usage/cost, latency, and context burden separately rather than combining them into one score. Failed, cancelled, and timed-out attempts must remain visible; missing usage is unknown, not zero. Single-run pilot results do not establish superiority, and development fixtures are not held-out promotion evidence.
 
 Evaluation tooling is **repository-only**, not part of the installed npm package or the normal handover workflow. From a source checkout:
 
@@ -258,11 +271,9 @@ npm run eval:test
 npm run eval:typecheck
 ```
 
-These commands are offline: validation and scheduling do not launch models. Live campaigns require explicit task-bank, model, budget, and readiness approval. Raw traces stay in ignored local storage; credentials must not enter recorded artifacts. Raw child observation, scoped Codex authentication, and a persistent campaign-admission ledger are implemented and offline-tested. An offline-tested execution bridge now links ledger admissions to retained trials, deadline cancellation, and evidence-derived settlements. A provider-free native CLI check now covers production Guild registration and ordinary child startup through authentication preflight. Newly frozen base-pricing policies are audited per parent/child turn at settlement and resume. Raw response adapters have also been checked against the installed SDK with synthetic SSE/WebSocket responses, but are not yet bound to campaign execution. Native runtime/context/request-policy/metering binding, remaining child accounting verification, and independent review are still required before model trials.
+These commands are offline: validation and scheduling do not launch models. **E1 is closed with an inconclusive outcome**, not an accepted comparative benchmark. Native campaign admission, provider trials, and settlement/history gates remain closed. Provider-free and scripted Pi integration checks exercise specific runtime paths, not real-provider behavior, task quality, or genuine TDD adherence. Live campaigns require separate task-bank, model, budget, readiness, and operational approval; this README does not authorize them.
 
-After a native CLI probe escaped synthetic transport overrides, the old probe and native campaign mode remain disabled. Initial host checks of the separate [network-disabled Docker harness](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-docker.md) passed. The explicit [synthetic main-only CLI mode](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-synthetic.md) also passed its host checkpoint. The separate [synthetic Guild-child mode](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-offline-guild.md) passed an isolated host run and retained-evidence revalidation after an operator-approved PID/thread-limit adjustment. Earlier failures remain preserved. A [general native-evidence audit](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-evidence.md) and [mandatory native-policy contract](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-policy.md) are implemented. [Trial identity and parent invocation input checks](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-trial-binding.md) are also implemented. [Scoped-auth file identity](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-scoped-auth-identity.md) is now observed and rechecked before driver launch. [Bounded selected-file observations](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-file-observation.md) now support [runtime requirement, executable and package-identity checks](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-native-runtime-observation.md), tested with inert filesystem fixtures. They are not yet connected to native producers. Native admission remains disabled: actual launch/producer/runtime/auth correlation and campaign receipt/resume are still incomplete. These checkpoints do not authorize live model calls.
-
-See the repository's [evaluation methodology](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/methodology.md), [E1 foundation record](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-foundation.md), and [E1 smoke campaign decisions](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-smoke-campaign.md). Campaign-specific models and spending limits are recorded there, not prescribed as permanent Guild defaults.
+For methods, historical checkpoints, and the current gate status, see the repository's [evaluation methodology](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/methodology.md), [Phase 2 assessment](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/phase-2-assessment.md), and [E1 completion status](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/e1-completion-status.md). Evaluation evidence and raw traces are repository-local, not bundled in the published package; credentials must not enter recorded artifacts.
 
 ## Provenance
 
