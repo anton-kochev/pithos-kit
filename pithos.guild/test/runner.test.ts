@@ -561,6 +561,36 @@ it("fails closed on prose-only child output rather than reporting success", asyn
  assert.equal(result.output, "");
 });
 
+it("sums complete provider usage across finalized child turns", () => {
+ const result = createEmptyGuildRoleRunResult("coder", "general", "Work");
+ const turn = (input: number, reasoning?: number) => ({type: "message_end", message: {role: "assistant", content: [], usage: {
+  input, output: 5, cacheRead: 2, cacheWrite: 1, totalTokens: input + 8, ...(reasoning === undefined ? {} : {reasoning}),
+  cost: {input: 0.1, output: 0.2, cacheRead: 0.01, cacheWrite: 0.02, total: 0.33},
+ }}});
+ applyJsonEvent(result, turn(10, 3));
+ applyJsonEvent(result, turn(20, 4));
+ assert.deepEqual(result.providerUsage, {
+  input: 30, output: 10, cacheRead: 4, cacheWrite: 2, totalTokens: 46, reasoning: 7,
+  cost: {input: 0.2, output: 0.4, cacheRead: 0.02, cacheWrite: 0.04, total: 0.66},
+ });
+ applyJsonEvent(result, turn(1));
+ assert.equal("reasoning" in result.providerUsage!, false);
+});
+
+it("marks provider usage unknown when any finalized child turn lacks a complete breakdown", () => {
+ const result = createEmptyGuildRoleRunResult("coder", "general", "Work");
+ assert.equal(result.providerUsage, undefined);
+ applyJsonEvent(result, {type: "message_end", message: {role: "assistant", content: [], usage: {input: 3, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 4, cost: {total: 0.1}}}});
+ assert.equal(result.providerUsage, null);
+ applyJsonEvent(result, {type: "message_end", message: {role: "assistant", content: [], usage: {
+  input: 1, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 2, cost: {input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0},
+ }}});
+ assert.equal(result.providerUsage, null);
+ const missing = createEmptyGuildRoleRunResult("coder", "general", "Work");
+ applyJsonEvent(missing, {type: "message_end", message: {role: "assistant", content: []}});
+ assert.equal(missing.providerUsage, null);
+});
+
 it("marks only finite reported usage fields as known instead of certifying absent zeroes", () => {
  const result = createEmptyGuildRoleRunResult("coder", "general", "Work");
  applyJsonEvent(result, {type: "message_end", message: {role: "assistant", content: [], usage: {input: 3, output: "bad", cost: {total: -1}}}});

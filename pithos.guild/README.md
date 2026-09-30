@@ -192,6 +192,10 @@ Each direct handover records one hidden user-initiated `started` event and exact
 
 Serialization covers all Guild handovers within one extension runtime. Cancellation of queued work never launches a child; cancellation of active work holds the queue until the child process terminates and cleanup finishes. Separate Pi processes and external tools remain outside this guarantee. Guild remains independent of Pi's native specialist facility and does not observe its lifecycle or messages.
 
+### Child usage
+
+Agent-invoked handovers return the child's token usage and cost to Pi, so they count in the footer, `/session`, and session totals. Usage is omitted when any child turn lacks a complete breakdown. Direct `/guild-handover` runs keep usage in their lifecycle details only, because Pi does not let extensions add usage to custom messages.
+
 ## Package aliases and configuration migration
 
 Canonical calls use `role/profile`. The old names remain package-owned compatibility aliases:

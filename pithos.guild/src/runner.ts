@@ -1,3 +1,4 @@
+import type { Usage } from "@earendil-works/pi-ai";
 import { spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { channel } from "node:diagnostics_channel";
@@ -34,6 +35,8 @@ interface GuildRunState {
 	activity: string;
 	activityTool?: string;
 	usage: RunUsage;
+	/** Summed child provider usage for Pi totals; null once any finalized turn lacks a complete breakdown. */
+	providerUsage?: Usage | null;
 }
 
 export interface GuildRoleRunResult extends GuildRunState {
@@ -132,6 +135,38 @@ export function createEmptyGuildRoleRunResult(
 	return { role, profile, ...createEmptyRunState(task) };
 }
 
+const PROVIDER_TOKEN_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"] as const;
+const PROVIDER_COST_FIELDS = ["input", "output", "cacheRead", "cacheWrite", "total"] as const;
+const PROVIDER_OPTIONAL_FIELDS = ["cacheWrite1h", "reasoning"] as const;
+
+function isUsageCount(value: unknown): value is number {
+	return typeof value === "number" && Number.isFinite(value) && value >= 0;
+}
+
+/** Adds one finalized turn; optional counters survive only while every turn reports them. */
+function addProviderUsage(total: Usage | undefined, usage: any): Usage | null {
+	if (!PROVIDER_TOKEN_FIELDS.every(key => isUsageCount(usage?.[key]))) return null;
+	if (!PROVIDER_COST_FIELDS.every(key => isUsageCount(usage.cost?.[key]))) return null;
+	const next: Usage = {
+		input: (total?.input ?? 0) + usage.input,
+		output: (total?.output ?? 0) + usage.output,
+		cacheRead: (total?.cacheRead ?? 0) + usage.cacheRead,
+		cacheWrite: (total?.cacheWrite ?? 0) + usage.cacheWrite,
+		totalTokens: (total?.totalTokens ?? 0) + usage.totalTokens,
+		cost: {
+			input: (total?.cost.input ?? 0) + usage.cost.input,
+			output: (total?.cost.output ?? 0) + usage.cost.output,
+			cacheRead: (total?.cost.cacheRead ?? 0) + usage.cost.cacheRead,
+			cacheWrite: (total?.cost.cacheWrite ?? 0) + usage.cost.cacheWrite,
+			total: (total?.cost.total ?? 0) + usage.cost.total,
+		},
+	};
+	for (const key of PROVIDER_OPTIONAL_FIELDS) {
+		if (isUsageCount(usage[key]) && (!total || total[key] !== undefined)) next[key] = (total?.[key] ?? 0) + usage[key];
+	}
+	return next;
+}
+
 function finalizedText(message: any): string {
 	if (!Array.isArray(message?.content)) return "";
 	return message.content
@@ -187,6 +222,7 @@ export function applyJsonEvent(result: GuildRoleRunResult, event: any): void {
 		if (text) result.output = truncateUtf8(text, LIMITS.result);
 
 		const usage = event.message.usage;
+		result.providerUsage = result.providerUsage === null ? null : addProviderUsage(result.providerUsage, usage);
 		if (usage) {
 			const observed: Partial<RunUsage> = {...usage, cost: usage.cost?.total, contextTokens: usage.totalTokens};
 			const fields = new Set(result.usageFields);
@@ -326,8 +362,12 @@ interface GuildChildProcessOptions {
 	onUpdate?: (result: GuildRoleRunResult) => void;
 }
 
+export function cloneProviderUsage(usage: Usage | null | undefined): Usage | null | undefined {
+	return usage ? { ...usage, cost: { ...usage.cost } } : usage;
+}
+
 function snapshotRunResult(result: GuildRoleRunResult): GuildRoleRunResult {
-	return { ...result, usage: { ...result.usage }, usageFields: result.usageFields?.slice(), selectedSkills: result.selectedSkills?.map(receipt => ({...receipt})) };
+	return { ...result, usage: { ...result.usage }, ...(result.providerUsage ? { providerUsage: cloneProviderUsage(result.providerUsage) } : {}), usageFields: result.usageFields?.slice(), selectedSkills: result.selectedSkills?.map(receipt => ({...receipt})) };
 }
 
 async function runGuildChild(

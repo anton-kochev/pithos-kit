@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { StringEnum } from "@earendil-works/pi-ai";
+import { StringEnum, type Usage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
 	ExtensionContext,
@@ -22,6 +22,7 @@ import {
 	type GuildTarget,
 } from "./agents";
 import {
+	cloneProviderUsage,
 	getRunFailure,
 	runGuildRole,
 	truncateUtf8,
@@ -136,6 +137,8 @@ interface GuildHandoverDetails {
 interface HandoverExecutionResult {
 	content: Array<{ type: "text"; text: string }>;
 	details: GuildHandoverDetails;
+	/** Complete child provider usage, persisted by Pi on tool results and counted in session totals. */
+	usage?: Usage;
 }
 
 interface ExecuteHandoverOptions {
@@ -288,6 +291,12 @@ function formatRoster(): string {
 		lines.push(`- ${alias} → ${target}`);
 	}
 	return lines.join("\n");
+}
+
+/** Omits unknown child usage instead of reporting partial totals to Pi. */
+function providerUsage(result: GuildRoleRunResult | undefined): { usage?: Usage } {
+	const usage = cloneProviderUsage(result?.providerUsage);
+	return usage ? { usage } : {};
 }
 
 function errorText(error: unknown): string {
@@ -451,6 +460,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 						thinkingLevel,
 						startedAt,
 					),
+					...providerUsage(result),
 				};
 			}, {
 				signal,
@@ -472,7 +482,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				: baseDetails(prepared, status, phase, inheritedModel, thinkingLevel, startedAt);
 			details.runId = runId;
 			details.error = truncateUtf8(errorText(error), 4096);
-			return {content: [{type: "text", text: `Guild handover ${status}: ${details.error}`}], details};
+			return {content: [{type: "text", text: `Guild handover ${status}: ${details.error}`}], details, ...providerUsage(latest)};
 		} finally {
 			if (visibility === "dashboard") finishVisibleRun(runId, ctx);
 		}

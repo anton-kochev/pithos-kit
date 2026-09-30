@@ -1306,6 +1306,22 @@ it("returns the same failed terminal details and partial usage to tool and direc
  assert.equal(terminal.usage.input, 1);
  assert.equal(terminal.usageKnown, true);
 });
+it("reports complete child provider usage to Pi on completed and failed tool results only", async () => {
+ const providerUsage = {input: 4, output: 2, cacheRead: 1, cacheWrite: 0, totalTokens: 7, cost: {input: 0.04, output: 0.02, cacheRead: 0.001, cacheWrite: 0, total: 0.061}};
+ for (const [overrides, expected] of [
+  [{providerUsage}, providerUsage],
+  [{providerUsage, status: "failed", errorMessage: "protocol missing", output: ""}, providerUsage],
+  [{providerUsage: null}, undefined],
+  [{}, undefined],
+ ] as const) {
+  const pi = fakePi();
+  registerGuild(pi.api as never, {run: async options => resultFor(options, overrides as Partial<GuildRoleRunResult>)});
+  const result = await pi.tool.execute("usage", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context());
+  assert.deepEqual(result.usage, expected);
+  if (expected) assert.notEqual(result.usage, providerUsage);
+  assert.equal("providerUsage" in result.details, false);
+ }
+});
 it("does not accept legacy prose as a new completed handover", async () => {
  const pi = fakePi();
  registerGuild(pi.api as never, {run: async options => resultFor(options, {status: undefined})});
