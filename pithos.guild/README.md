@@ -198,6 +198,8 @@ Agent-invoked handovers return the child's token usage and cost to Pi, so they c
 
 Children run without their own session files. Set `PITHOS_GUILD_TRACE=1` to record each child transcript locally as `<session dir>/guild/<session id>/<child id>.jsonl`: a header with run, role/profile and parent-session correlation, finalized child events (streaming `message_update` events are dropped), stderr, and an end record. Files are private (`0600`, directories `0700`) and capped at 16 MiB each; overflow writes a `truncated` marker and keeps the end record. Traces contain raw repository content and tool output. Recording failures are logged and never affect the handover.
 
+From a source checkout, `npm run report -- [session files or directories] [--since YYYY-MM-DD] [--json]` summarizes real sessions (default `~/.pi/agent/sessions`, or `$PI_CODING_AGENT_DIR/sessions`). It counts handovers by target, entry path, status, task outcome and child-reported TDD compliance; reports duration and the child share of cost over sessions whose costs are all known; flags possible rework when the parent edits a path a coder reported changing before the next user message; and joins traces for rejected result submissions. Older Guild session formats are read as well. The report is observational: it does not show whether main-only work would have done better. The tool is repository-only and not part of the published package.
+
 ## Package aliases and configuration migration
 
 Canonical calls use `role/profile`. The old names remain package-owned compatibility aliases:

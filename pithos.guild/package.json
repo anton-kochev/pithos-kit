@@ -171,6 +171,7 @@
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "report": "node --import tsx tools/session-report.ts",
     "eval": "node --import tsx evaluation/src/cli.ts",
     "eval:test": "node --import tsx --test evaluation/test/*.test.ts",
     "eval:typecheck": "tsc --noEmit -p evaluation/tsconfig.json"
