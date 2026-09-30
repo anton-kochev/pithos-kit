@@ -23,7 +23,7 @@ Requires Pi **0.87.0 or newer**. Provider-free tests run against exactly 0.99.0 
 Install the current release:
 
 ```bash
-pi install npm:@pithos-kit/guild@0.4.0
+pi install npm:@pithos-kit/guild@0.5.0
 ```
 
 For local development from this repository:
@@ -44,7 +44,7 @@ pi -e ./pithos.guild
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/guild": "npm:0.4.0"
+    "@pithos-kit/guild": "npm:0.5.0"
 ```
 
 ## Roles and profiles
