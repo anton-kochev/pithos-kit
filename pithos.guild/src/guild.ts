@@ -30,6 +30,7 @@ import {
 	type RunGuildRoleOptions,
 } from "./runner";
 import { childTools, validateInput, type GuildInput } from "./protocol.ts";
+import { createGuildTraceRecorder, type GuildTraceBinding, type GuildTraceRecorder } from "./trace-recorder.ts";
 import type { GuildSkillReceipt } from "./resources.ts";
 import { RunQueue } from "./run-queue";
 import { admitGuildHandover } from "./safety";
@@ -86,6 +87,8 @@ type GuildHandoverStatus = "queued" | "running" | "started" | "completed" | "fai
 
 export interface GuildDependencies {
 	run: (options: RunGuildRoleOptions) => Promise<GuildRoleRunResult>;
+	/** Per-session child trace recorder; the default is enabled only by PITHOS_GUILD_TRACE=1. */
+	createTraceRecorder?: () => GuildTraceRecorder | undefined;
 }
 
 const defaultDependencies: GuildDependencies = {
@@ -299,6 +302,15 @@ function providerUsage(result: GuildRoleRunResult | undefined): { usage?: Usage 
 	return usage ? { usage } : {};
 }
 
+function traceBinding(ctx: ExtensionContext, model: string | undefined, thinkingLevel: string): GuildTraceBinding | undefined {
+	const sessionManager = ctx.sessionManager as { getSessionDir?: () => string; getSessionId?: () => string; getSessionFile?: () => string | undefined } | undefined;
+	const sessionDir = sessionManager?.getSessionDir?.();
+	const sessionId = sessionManager?.getSessionId?.();
+	if (!sessionDir || !sessionId) return undefined;
+	const sessionFile = sessionManager?.getSessionFile?.();
+	return { sessionDir, sessionId, ...(sessionFile ? { sessionFile } : {}), ...(model ? { model } : {}), thinkingLevel };
+}
+
 function errorText(error: unknown): string {
 	return error instanceof Error ? error.message : String(error);
 }
@@ -306,6 +318,8 @@ function errorText(error: unknown): string {
 export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies = defaultDependencies): void {
 	const log = createPithosLogger();
 	log.info("extension.register");
+	const createTraceRecorder = dependencies.createTraceRecorder ?? (() => createGuildTraceRecorder({ log }));
+	let traceRecorder: GuildTraceRecorder | undefined;
 	registerCommitWorkflow(pi);
 
 	const runQueue = new RunQueue();
@@ -357,8 +371,14 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		refreshVisibility(ctx);
 	};
 
+	pi.on("session_start", () => {
+		traceRecorder ??= createTraceRecorder();
+	});
+
 	pi.on("session_shutdown", async (event, ctx) => {
 		shuttingDown = true;
+		traceRecorder?.dispose();
+		traceRecorder = undefined;
 		log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), activeRuns: activeRuns.size });
 		const previousUiContext = activeUiContext;
 		activeRuns.clear();
@@ -388,6 +408,9 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let latest: GuildRoleRunResult | undefined;
 		let cancelled = false;
 		log.info("handover.start", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: prepared.role, profile: prepared.profile, model, thinkingLevel });
+
+		const binding = traceBinding(ctx, model, thinkingLevel);
+		const unbindTrace = binding ? traceRecorder?.bind(runId, binding) : undefined;
 
 		if (visibility === "dashboard") {
 			activeRuns.start({
@@ -484,6 +507,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			details.error = truncateUtf8(errorText(error), 4096);
 			return {content: [{type: "text", text: `Guild handover ${status}: ${details.error}`}], details, ...providerUsage(latest)};
 		} finally {
+			unbindTrace?.();
 			if (visibility === "dashboard") finishVisibleRun(runId, ctx);
 		}
 	};

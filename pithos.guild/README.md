@@ -192,9 +192,11 @@ Each direct handover records one hidden user-initiated `started` event and exact
 
 Serialization covers all Guild handovers within one extension runtime. Cancellation of queued work never launches a child; cancellation of active work holds the queue until the child process terminates and cleanup finishes. Separate Pi processes and external tools remain outside this guarantee. Guild remains independent of Pi's native specialist facility and does not observe its lifecycle or messages.
 
-### Child usage
+### Child usage and traces
 
 Agent-invoked handovers return the child's token usage and cost to Pi, so they count in the footer, `/session`, and session totals. Usage is omitted when any child turn lacks a complete breakdown. Direct `/guild-handover` runs keep usage in their lifecycle details only, because Pi does not let extensions add usage to custom messages.
+
+Children run without their own session files. Set `PITHOS_GUILD_TRACE=1` to record each child transcript locally as `<session dir>/guild/<session id>/<child id>.jsonl`: a header with run, role/profile and parent-session correlation, finalized child events (streaming `message_update` events are dropped), stderr, and an end record. Files are private (`0600`, directories `0700`) and capped at 16 MiB each; overflow writes a `truncated` marker and keeps the end record. Traces contain raw repository content and tool output. Recording failures are logged and never affect the handover.
 
 ## Package aliases and configuration migration
 

@@ -19,6 +19,7 @@ import {
   runGuildRoleWithPackageRootForTest,
   truncateUtf8,
 } from "../src/runner";
+import { createGuildTraceRecorder } from "../src/trace-recorder.ts";
 
 interface CapturedCanonicalRun {
   args: string[];
@@ -165,6 +166,31 @@ describe("canonical role/profile child invocation", () => {
       assert.equal(result.status, "completed");
       assert.equal("observations" in result, false);
     } finally { telemetry.unsubscribe(collect); }
+  });
+
+  it("records the real runner's child transport as a session trace when enabled", async () => {
+    const root = mkdtempSync(join(tmpdir(), "guild-runner-trace-"));
+    const recorder = createGuildTraceRecorder({ env: { PITHOS_GUILD_TRACE: "1" } })!;
+    recorder.bind("parent-tool-trace", { sessionDir: root, sessionId: "session-trace" });
+    try {
+      const { result } = await captureCanonicalRun({
+        role: "reviewer", profile: "typescript", task: "Inspect", cwd: process.cwd(),
+        projectTrusted: true, runId: "parent-tool-trace",
+      });
+      assert.equal(result.status, "completed");
+      const [file] = (await fsPromises.readdir(join(root, "guild", "session-trace"))).map(name => join(root, "guild", "session-trace", name));
+      const records = readFileSync(file, "utf8").trim().split("\n").map(line => JSON.parse(line));
+      assert.equal(records[0].kind, "header");
+      assert.equal(records[0].runId, "parent-tool-trace");
+      assert.equal(records.at(-1).kind, "end");
+      assert.equal(records.at(-1).exitCode, 0);
+      const types = records.filter(record => record.kind === "event").map(record => record.event.type);
+      assert.ok(types.includes("tool_execution_start"));
+      assert.ok(types.includes("message_end"));
+      assert.ok(!types.includes("message_update"));
+    } finally {
+      recorder.dispose();
+    }
   });
 
   it("passes candidate child identity to the inherited native preload without exposing the raw task", async () => {

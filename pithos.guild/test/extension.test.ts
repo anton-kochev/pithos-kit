@@ -1322,6 +1322,44 @@ it("reports complete child provider usage to Pi on completed and failed tool res
   assert.equal("providerUsage" in result.details, false);
  }
 });
+it("binds each tool and direct handover to its parent session for trace recording", async () => {
+ const events: string[] = [];
+ let created = 0;
+ const bindings: any[] = [];
+ const traceRecorder = {
+  bind(runId: string, binding: unknown) {
+   bindings.push({runId, binding});
+   events.push(`bind:${runId}`);
+   return () => events.push(`unbind:${runId}`);
+  },
+  dispose: () => events.push("dispose"),
+ };
+ const pi = fakePi();
+ registerGuild(pi.api as never, {run: async options => { events.push(`run:${options.runId}`); return resultFor(options); }, createTraceRecorder: () => { created++; return traceRecorder; }});
+ const sessionManager = {getBranch: () => [], getSessionDir: () => "/sessions/project", getSessionId: () => "session-7", getSessionFile: () => "/sessions/project/s.jsonl"};
+ assert.equal(created, 0);
+ await pi.handlers.get("session_start")({reason: "startup"}, context({sessionManager}));
+ await pi.handlers.get("session_start")({reason: "reload"}, context({sessionManager}));
+ assert.equal(created, 1);
+ await pi.tool.execute("tool-call-1", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context({sessionManager}));
+ assert.deepEqual(events, ["bind:tool-call-1", "run:tool-call-1", "unbind:tool-call-1"]);
+ assert.deepEqual(bindings[0].binding, {sessionDir: "/sessions/project", sessionId: "session-7", sessionFile: "/sessions/project/s.jsonl", model: "openai-codex/gpt-5.6-sol", thinkingLevel: "xhigh"});
+ await pi.commands.get("guild-handover").handler("coder/general Work", context({sessionManager}));
+ assert.equal(bindings.length, 2);
+ assert.equal(bindings[1].binding.sessionId, "session-7");
+ await pi.handlers.get("session_shutdown")({reason: "quit"}, context({sessionManager}));
+ assert.equal(events.at(-1), "dispose");
+ await pi.handlers.get("session_start")({reason: "new"}, context({sessionManager}));
+ assert.equal(created, 2);
+});
+it("skips trace binding when the parent session has no directory or id", async () => {
+ const bindings: string[] = [];
+ const pi = fakePi();
+ registerGuild(pi.api as never, {run: async options => resultFor(options), createTraceRecorder: () => ({bind: runId => { bindings.push(runId); return () => undefined; }, dispose: () => undefined})});
+ await pi.handlers.get("session_start")({reason: "startup"}, context());
+ await pi.tool.execute("no-session", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context());
+ assert.deepEqual(bindings, []);
+});
 it("does not accept legacy prose as a new completed handover", async () => {
  const pi = fakePi();
  registerGuild(pi.api as never, {run: async options => resultFor(options, {status: undefined})});
