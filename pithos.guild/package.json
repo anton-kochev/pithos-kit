@@ -37,9 +37,9 @@
     "access": "public"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "0.87.0",
-    "@earendil-works/pi-coding-agent": "0.87.0",
-    "@earendil-works/pi-tui": "0.87.0",
+    "@earendil-works/pi-ai": "0.99.0",
+    "@earendil-works/pi-coding-agent": "0.99.0",
+    "@earendil-works/pi-tui": "0.99.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.4",
     "typescript": "^5.9.0"

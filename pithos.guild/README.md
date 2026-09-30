@@ -18,7 +18,7 @@ Or ask the main agent, “Use explorer/typescript to find the validation path an
 
 ## Install
 
-Requires Pi **0.87.0 or newer**. The initial provider-free compatibility target is exactly 0.87.0; future releases are not automatically certified.
+Requires Pi **0.87.0 or newer**. Provider-free tests run against exactly 0.99.0 and were last also checked against 0.87.0; other releases are not automatically certified.
 
 Install the current release:
 
