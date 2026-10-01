@@ -31,7 +31,7 @@ it("records a bound child as header, finalized events, stderr and end in private
  const root = mkdtempSync(join(tmpdir(), "guild-trace-"));
  const recorder = createGuildTraceRecorder({env: enabled, now: () => 1000})!;
  try {
-  recorder.bind("run-1", {sessionDir: root, sessionId: "session-1", sessionFile: join(root, "s.jsonl"), model: "provider/model", thinkingLevel: "high"});
+  recorder.bind("run-1", {sessionDir: root, sessionId: "session-1", sessionFile: join(root, "s.jsonl"), model: "provider/model", thinkingLevel: "high", repoState: {state: "run-1.state", head: "abc", dirty: true, complete: true}});
   const publish = publisher("run-1");
   publish({type: "start"});
   publish(chunk('{"type":"message_start"}\n{"type":"message_upd'));
@@ -40,7 +40,7 @@ it("records a bound child as header, finalized events, stderr and end in private
   publish({type: "end", exitCode: 0, aborted: false, selectedSkills: [{id: "tdd"}]});
   const file = join(root, "guild", "session-1", "run-1-child.jsonl");
   assert.deepEqual(lines(file), [
-   {kind: "header", version: 1, runId: "run-1", childId: "run-1-child", role: "coder", profile: "general", parentSessionId: "session-1", parentSessionFile: join(root, "s.jsonl"), parentModel: "provider/model", thinkingLevel: "high", startedAt: 1000},
+   {kind: "header", version: 1, runId: "run-1", childId: "run-1-child", role: "coder", profile: "general", parentSessionId: "session-1", parentSessionFile: join(root, "s.jsonl"), parentModel: "provider/model", thinkingLevel: "high", repoState: {state: "run-1.state", head: "abc", dirty: true, complete: true}, startedAt: 1000},
    {kind: "event", event: {type: "message_start"}},
    {kind: "stdout", text: "not json"},
    {kind: "event", event: {type: "message_end", message: {role: "assistant"}}},

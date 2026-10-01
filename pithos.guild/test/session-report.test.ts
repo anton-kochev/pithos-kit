@@ -42,7 +42,7 @@ it("reports a current tool handover with Pi usage, TDD, trace submissions and po
 		assistant([["edit-1", "edit", { path: "/project/src/a.ts" }]], 0.3),
 	]);
 	writeSession(join(root, "guild", "s1"), "child-1.jsonl", [
-		{ kind: "header", version: 1, runId: "call-1", childId: "child-1" },
+		{ kind: "header", version: 1, runId: "call-1", childId: "child-1", repoState: { state: "call-1.state", head: "abc", dirty: true, complete: true } },
 		{ kind: "event", event: { type: "tool_execution_end", toolName: "guild_submit_result", isError: true } },
 		{ kind: "event", event: { type: "tool_execution_end", toolName: "guild_submit_result", isError: false } },
 		{ kind: "end", exitCode: 0, aborted: false },
@@ -53,7 +53,7 @@ it("reports a current tool handover with Pi usage, TDD, trace submissions and po
 	assert.deepEqual(handovers[0], {
 		sessionId: "s1", file, startedAt: "2026-10-01T10:00:00.000Z", entry: "tool", runId: "call-1", target: "coder/general",
 		status: "completed", taskOutcome: "succeeded", tdd: "satisfied", durationMs: 5000, turns: 3, childCost: 0.6,
-		outputBytes: 6, rework: true, trace: { file: join(root, "guild", "s1", "child-1.jsonl"), rejectedSubmissions: 1, exitCode: 0, truncated: false },
+		outputBytes: 6, rework: true, trace: { file: join(root, "guild", "s1", "child-1.jsonl"), rejectedSubmissions: 1, exitCode: 0, truncated: false, repoState: { state: "call-1.state", head: "abc", dirty: true, complete: true } },
 	});
 	assert.equal(summary.sessions, 1);
 	assert.equal(summary.sessionsWithHandovers, 1);
@@ -62,6 +62,7 @@ it("reports a current tool handover with Pi usage, TDD, trace submissions and po
 	assert.equal(summary.cost.excludedSessions, 0);
 	assert.equal(summary.rework.flagged, 1);
 	assert.equal(summary.rework.eligible, 1);
+	assert.equal(summary.traces.replayable, 1);
 });
 
 it("counts a direct handover once from its terminal lifecycle message", () => {

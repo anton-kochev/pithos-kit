@@ -1335,15 +1335,18 @@ it("binds each tool and direct handover to its parent session for trace recordin
   dispose: () => events.push("dispose"),
  };
  const pi = fakePi();
- registerGuild(pi.api as never, {run: async options => { events.push(`run:${options.runId}`); return resultFor(options); }, createTraceRecorder: () => { created++; return traceRecorder; }});
+ const captures: any[] = [];
+ const captureRepoState = async (options: any) => { captures.push(options); events.push(`capture:${options.directory}`); return {state: "x.state", head: "abc", dirty: false, complete: true}; };
+ registerGuild(pi.api as never, {run: async options => { events.push(`run:${options.runId}`); return resultFor(options); }, createTraceRecorder: () => { created++; return traceRecorder; }, captureRepoState});
  const sessionManager = {getBranch: () => [], getSessionDir: () => "/sessions/project", getSessionId: () => "session-7", getSessionFile: () => "/sessions/project/s.jsonl"};
  assert.equal(created, 0);
  await pi.handlers.get("session_start")({reason: "startup"}, context({sessionManager}));
  await pi.handlers.get("session_start")({reason: "reload"}, context({sessionManager}));
  assert.equal(created, 1);
  await pi.tool.execute("tool-call-1", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context({sessionManager}));
- assert.deepEqual(events, ["bind:tool-call-1", "run:tool-call-1", "unbind:tool-call-1"]);
- assert.deepEqual(bindings[0].binding, {sessionDir: "/sessions/project", sessionId: "session-7", sessionFile: "/sessions/project/s.jsonl", model: "openai-codex/gpt-5.6-sol", thinkingLevel: "xhigh"});
+ assert.deepEqual(events, ["capture:/sessions/project/guild/session-7/tool-call-1.state", "bind:tool-call-1", "run:tool-call-1", "unbind:tool-call-1"]);
+ assert.equal(captures[0].cwd, "/project");
+ assert.deepEqual(bindings[0].binding, {sessionDir: "/sessions/project", sessionId: "session-7", sessionFile: "/sessions/project/s.jsonl", model: "openai-codex/gpt-5.6-sol", thinkingLevel: "xhigh", repoState: {state: "x.state", head: "abc", dirty: false, complete: true}});
  await pi.commands.get("guild-handover").handler("coder/general Work", context({sessionManager}));
  assert.equal(bindings.length, 2);
  assert.equal(bindings[1].binding.sessionId, "session-7");
@@ -1351,6 +1354,24 @@ it("binds each tool and direct handover to its parent session for trace recordin
  assert.equal(events.at(-1), "dispose");
  await pi.handlers.get("session_start")({reason: "new"}, context({sessionManager}));
  assert.equal(created, 2);
+});
+it("captures repository state only for traced runs and uses filesystem-safe run names", async () => {
+ const directories: string[] = [];
+ const captureRepoState = async (options: any) => { directories.push(options.directory); return {error: "not a git repository"}; };
+ const sessionManager = {getBranch: () => [], getSessionDir: () => "/sessions/project", getSessionId: () => "session-7"};
+ const untraced = fakePi();
+ registerGuild(untraced.api as never, {run: async options => resultFor(options), createTraceRecorder: () => undefined, captureRepoState});
+ await untraced.handlers.get("session_start")({reason: "startup"}, context({sessionManager}));
+ await untraced.tool.execute("plain", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context({sessionManager}));
+ assert.deepEqual(directories, []);
+ const bindings: any[] = [];
+ const traced = fakePi();
+ registerGuild(traced.api as never, {run: async options => resultFor(options), createTraceRecorder: () => ({bind: (_runId: string, binding: unknown) => { bindings.push(binding); return () => undefined; }, dispose: () => undefined}), captureRepoState});
+ await traced.handlers.get("session_start")({reason: "startup"}, context({sessionManager}));
+ const result = await traced.tool.execute("call_1|fc/../x", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, context({sessionManager}));
+ assert.equal(result.details.status, "completed");
+ assert.deepEqual(directories, ["/sessions/project/guild/session-7/call_1_fc_.._x.state"]);
+ assert.deepEqual(bindings[0].repoState, {error: "not a git repository"});
 });
 it("skips trace binding when the parent session has no directory or id", async () => {
  const bindings: string[] = [];

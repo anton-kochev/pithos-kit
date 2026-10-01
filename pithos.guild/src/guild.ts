@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import * as path from "node:path";
 import { StringEnum, type Usage } from "@earendil-works/pi-ai";
 import type {
 	ExtensionAPI,
@@ -30,6 +31,7 @@ import {
 	type RunGuildRoleOptions,
 } from "./runner";
 import { childTools, validateInput, type GuildInput } from "./protocol.ts";
+import { captureRepoState, repoStateName, type CaptureRepoStateOptions, type RepoStateSummary } from "./repo-state.ts";
 import { createGuildTraceRecorder, type GuildTraceBinding, type GuildTraceRecorder } from "./trace-recorder.ts";
 import type { GuildSkillReceipt } from "./resources.ts";
 import { RunQueue } from "./run-queue";
@@ -89,6 +91,8 @@ export interface GuildDependencies {
 	run: (options: RunGuildRoleOptions) => Promise<GuildRoleRunResult>;
 	/** Per-session child trace recorder; the default is enabled only by PITHOS_GUILD_TRACE=1. */
 	createTraceRecorder?: () => GuildTraceRecorder | undefined;
+	/** Snapshot of the starting repository state for traced runs. */
+	captureRepoState?: (options: CaptureRepoStateOptions) => Promise<RepoStateSummary>;
 }
 
 const defaultDependencies: GuildDependencies = {
@@ -410,7 +414,8 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		log.info("handover.start", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: prepared.role, profile: prepared.profile, model, thinkingLevel });
 
 		const binding = traceBinding(ctx, model, thinkingLevel);
-		const unbindTrace = binding ? traceRecorder?.bind(runId, binding) : undefined;
+		const recorder = binding ? traceRecorder : undefined;
+		let unbindTrace: (() => void) | undefined;
 
 		if (visibility === "dashboard") {
 			activeRuns.start({
@@ -425,6 +430,15 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 		try {
 			return await runQueue.enqueue(async (queueSignal) => {
+				if (recorder && binding) {
+					// Captured after queueing so earlier handovers' edits are part of the starting state.
+					const repoState = await (dependencies.captureRepoState ?? captureRepoState)({
+						cwd,
+						directory: path.join(binding.sessionDir, "guild", binding.sessionId, repoStateName(runId)),
+					});
+					queueSignal.throwIfAborted();
+					unbindTrace = recorder.bind(runId, { ...binding, repoState });
+				}
 				const result = await dependencies.run({
 					runId,
 					role: prepared.role,

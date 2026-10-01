@@ -15,6 +15,8 @@ export interface HandoverTrace {
 	rejectedSubmissions: number;
 	exitCode?: number | null;
 	truncated: boolean;
+	/** Starting repository snapshot summary; complete snapshots can be replayed. */
+	repoState?: { state?: string; head?: string; dirty?: boolean; complete?: boolean; error?: string };
 }
 
 export interface HandoverRecord {
@@ -49,7 +51,7 @@ export interface ReportSummary {
 	/** Over sessions with handovers whose parent and child costs are all known. */
 	cost: { parent?: number; child?: number; childShare?: number; includedSessions: number; excludedSessions: number };
 	rework: { flagged: number; eligible: number };
-	traces: { matched: number; rejectedSubmissions: number };
+	traces: { matched: number; rejectedSubmissions: number; replayable: number };
 }
 
 export interface SessionReport {
@@ -137,7 +139,11 @@ export function analyzeSessions(files: string[], options: AnalyzeOptions = {}): 
 				excludedSessions,
 			},
 			rework: { flagged: eligible.filter(handover => handover.rework).length, eligible: eligible.length },
-			traces: { matched: traced.length, rejectedSubmissions: traced.reduce((sum, handover) => sum + (handover.trace?.rejectedSubmissions ?? 0), 0) },
+			traces: {
+				matched: traced.length,
+				rejectedSubmissions: traced.reduce((sum, handover) => sum + (handover.trace?.rejectedSubmissions ?? 0), 0),
+				replayable: traced.filter(handover => handover.trace?.repoState?.complete === true && handover.trace.repoState.head).length,
+			},
 		},
 	};
 }
@@ -266,12 +272,14 @@ function readTraces(directory: string): Map<string, HandoverTrace> {
 		const runId = records[0]?.kind === "header" ? records[0].runId : undefined;
 		if (typeof runId !== "string") continue;
 		const end = records.find(item => item.kind === "end");
+		const repoState = isRecord(records[0].repoState) ? records[0].repoState : undefined;
 		traces.set(runId, {
 			file,
 			rejectedSubmissions: records.filter(item => item.kind === "event" && item.event?.type === "tool_execution_end"
 				&& item.event.toolName === "guild_submit_result" && item.event.isError === true).length,
 			...(end ? { exitCode: end.exitCode ?? null } : {}),
 			truncated: records.some(item => item.kind === "truncated"),
+			...(repoState ? { repoState } : {}),
 		});
 	}
 	return traces;
@@ -308,6 +316,7 @@ export function formatReport(report: SessionReport): string {
 	row("Possible rework", `${summary.rework.flagged} of ${summary.rework.eligible} coder reports with changes`);
 	row("Traces matched", summary.traces.matched);
 	row("Rejected submissions", `${summary.traces.rejectedSubmissions} (traced runs only)`);
+	row("Replayable", `${summary.traces.replayable} (complete starting snapshot)`);
 	return `${lines.join("\n")}\n`;
 }
 

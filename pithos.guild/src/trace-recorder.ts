@@ -2,6 +2,7 @@ import { channel } from "node:diagnostics_channel";
 import * as fs from "node:fs";
 import * as path from "node:path";
 import { errorMetadata } from "./logging.ts";
+import type { RepoStateSummary } from "./repo-state.ts";
 
 // Opt-in local recorder for child Pi transcripts, which children otherwise never persist.
 // Files hold raw repository content and stay private to the user; nothing leaves the machine.
@@ -15,6 +16,7 @@ export interface GuildTraceBinding {
 	sessionFile?: string;
 	model?: string;
 	thinkingLevel?: string;
+	repoState?: RepoStateSummary;
 }
 
 export interface GuildTraceRecorder {
@@ -109,6 +111,7 @@ export function createGuildTraceRecorder(options: GuildTraceRecorderOptions = {}
 				...(binding.sessionFile ? { parentSessionFile: binding.sessionFile } : {}),
 				...(binding.model ? { parentModel: binding.model } : {}),
 				...(binding.thinkingLevel ? { thinkingLevel: binding.thinkingLevel } : {}),
+				...(binding.repoState ? { repoState: binding.repoState } : {}),
 				startedAt: now(),
 			});
 			return;
