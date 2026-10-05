@@ -42,6 +42,12 @@ The grammar is explicit. `/plan <task>`, `/plan pause`, `/plan cancel`, and othe
 unknown arguments are rejected with help. Enter Plan mode first, then provide the
 task and refinements as normal prompts.
 
+`/plan` is a registered Pi command, routed before input middleware. Save/exit
+finalization prompts are sent as extension-source user messages, so middleware
+such as Squiggle and Translate that skips extension input leaves them unchanged.
+Publication authorization also requires the originating lifecycle dispatch; copying
+its prompt in another user or extension message does not authorize publication.
+
 - **`/plan`** enters Plan mode. The first use creates one plan identity and a
   collision-resistant candidate path for the physical Pi session. Later uses
   restore that same plan. Repeating it while active is a no-op.
@@ -66,7 +72,10 @@ task and refinements as normal prompts.
 - **`/plan help`**, **`--help`**, and **`-h`** show usage without changing state.
 
 Autocomplete offers `save`, `preview`, `exit`, `status`, and `help`, followed by
-the retained `--help` and `-h` aliases.
+the retained `--help` and `-h` aliases. The package registers no prompt templates,
+so `/plan` appears only as a command. Bundled `prompts/plan.md` remains reference
+guidance, not a registered prompt; `pi.prompts: []` explicitly disables default
+prompt discovery even when package resource filters are used.
 
 ## Exact session checkpoints
 

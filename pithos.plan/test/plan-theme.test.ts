@@ -6,6 +6,7 @@ import { dirname, join } from "node:path";
 import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import planTheme from "../extensions/plan-theme.ts";
+import { commandHarness } from "./command-harness.ts";
 
 const PLAN_THEME_PATH = fileURLToPath(new URL("../extensions/plan-theme.ts", import.meta.url));
 const WEB_EXTENSION_PATH = fileURLToPath(new URL("../../pithos.web/extensions/index.ts", import.meta.url));
@@ -23,6 +24,7 @@ function builtin(name: string) {
 
 async function createHarness(options: {
 	hasUI?: boolean;
+	sendUserMessageError?: Error;
 	persisted?: boolean;
 	isIdle?: boolean;
 	themeSwitchSucceeds?: boolean;
@@ -60,9 +62,15 @@ async function createHarness(options: {
 	}
 	let activeTools = allTools.map((tool) => tool.name);
 	let sessionName = "named-session";
+	const routing = commandHarness(handlers);
 	const pi = {
+		registerCommand: routing.registerCommand,
+		sendUserMessage(text: string) {
+			if (options.sendUserMessageError) throw options.sendUserMessageError;
+			routing.sendUserMessage(text);
+		},
 		on(name: string, handler: (event: any, ctx: any) => Promise<any>) {
-			handlers.set(name, handler);
+			handlers.set(name, name === "before_agent_start" ? routing.wrapStart(handler) : handler);
 		},
 		appendEntry(customType: string, data: unknown) {
 			entries.push({ type: "custom", customType, data });
@@ -141,6 +149,7 @@ async function createHarness(options: {
 	};
 	planTheme(pi as never);
 	return {
+		routing,
 		cwd,
 		handlers,
 		ctx,
@@ -158,10 +167,7 @@ async function createHarness(options: {
 }
 
 async function command(harness: Awaited<ReturnType<typeof createHarness>>, text: string, streamingBehavior?: string) {
-	return harness.handlers.get("input")?.(
-		{ type: "input", source: "interactive", text, streamingBehavior },
-		harness.ctx,
-	);
+	return harness.routing.route(harness.ctx, text, streamingBehavior);
 }
 
 async function enter(harness: Awaited<ReturnType<typeof createHarness>>) {
@@ -188,7 +194,7 @@ async function startPlanCommand(
 	text: "/plan save" | "/plan exit",
 ) {
 	const result = await command(harness, text);
-	assert.equal(result?.action, "transform");
+	assert.equal(result?.action, "dispatched");
 	await beforeAgentStart(harness, result.text);
 	return result;
 }
@@ -488,7 +494,7 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 			await enter(harness);
 			await checkpoint(harness);
 			const queued = await command(harness, "/plan save");
-			assert.equal(queued?.action, "transform");
+			assert.equal(queued?.action, "dispatched");
 
 			// No before_agent_start or agent_settled follows a model/auth preflight failure.
 			assert.deepEqual(await command(harness, "A new ordinary prompt"), { action: "continue" });
@@ -506,13 +512,53 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 		}
 	});
 
-	it("activates queued authorization only for the exact transformed prompt", async () => {
+	it("clears exact exit approval and stays active when lifecycle dispatch throws", async () => {
+		const harness = await createHarness({
+			select: async () => "Create plan",
+			confirm: async () => true,
+			sendUserMessageError: new Error("Dispatch unavailable"),
+		});
+		try {
+			await enter(harness);
+			await checkpoint(harness);
+			assert.deepEqual(await command(harness, "/plan exit"), { action: "handled" });
+			assert.equal(latestState(harness).approval, undefined);
+			assert.equal(latestState(harness).active, true);
+			assert.match(harness.notifications.at(-1)?.message ?? "", /could not be dispatched.*Dispatch unavailable/i);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	for (const timing of ["before startup", "during run"] as const) it(`revokes lifecycle authorization for an unrelated extension copying the exact prompt ${timing}`, async () => {
+		const harness = await createHarness({ confirm: async () => true });
+		try {
+			await enter(harness);
+			await checkpoint(harness);
+			const dispatch = await command(harness, "/plan save");
+			if (timing === "during run") await beforeAgentStart(harness, dispatch.text);
+			assert.deepEqual(await harness.handlers.get("input")?.(
+				{ type: "input", source: "extension", text: dispatch.text }, harness.ctx,
+			), { action: "continue" });
+			if (timing === "before startup") await beforeAgentStart(harness, dispatch.text);
+			const blocked = await harness.handlers.get("tool_call")?.(
+				{ type: "tool_call", toolCallId: "extension-spoof", toolName: "create_plan", input: { revision: 1 } }, harness.ctx,
+			);
+			assert.equal(blocked?.block, true);
+			assert.match(blocked?.reason ?? "", /Use \/plan save or \/plan exit/i);
+			assert.equal(latestState(harness).active, true);
+		} finally {
+			await harness.cleanup();
+		}
+	});
+
+	it("activates queued authorization only for the exact dispatched prompt", async () => {
 		const harness = await createHarness();
 		try {
 			await enter(harness);
 			await checkpoint(harness);
 			const queued = await command(harness, "/plan save");
-			assert.equal(queued?.action, "transform");
+			assert.equal(queued?.action, "dispatched");
 			await beforeAgentStart(harness, `${queued.text}\nChanged by a later transform.`);
 
 			const mismatched = await harness.handlers.get("tool_call")?.(
@@ -716,7 +762,7 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 		}
 	});
 
-	it("clears stale persisted approval when the transformed agent run settles", async () => {
+	it("clears stale persisted approval when the dispatched agent run settles", async () => {
 		const harness = await createHarness({ confirm: async () => true });
 		try {
 			await enter(harness);

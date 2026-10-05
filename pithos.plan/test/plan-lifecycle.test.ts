@@ -11,6 +11,7 @@ import {
 	verifyPlanFileDigest,
 } from "../extensions/plan-files.ts";
 import planTheme from "../extensions/plan-theme.ts";
+import { commandHarness } from "./command-harness.ts";
 
 const PLAN_EXTENSION_PATH = fileURLToPath(new URL("../extensions/plan-theme.ts", import.meta.url));
 
@@ -85,9 +86,12 @@ function createHarness(options: {
 		const leaf = branchEntries.at(-1);
 		return typeof leaf?.id === "string" ? leaf.id : null;
 	};
+	const routing = commandHarness(handlers);
 	const pi = {
+		registerCommand: routing.registerCommand,
+		sendUserMessage: routing.sendUserMessage,
 		on(name: string, handler: (event: any, ctx: any) => Promise<any>) {
-			handlers.set(name, handler);
+			handlers.set(name, name === "before_agent_start" ? routing.wrapStart(handler) : handler);
 		},
 		appendEntry(customType: string, data: unknown) {
 			const entry = {
@@ -172,6 +176,7 @@ function createHarness(options: {
 		generatePlanPath: options.generatePlanPath,
 	} as never);
 	return {
+		routing,
 		handlers,
 		ctx,
 		allEntries,
@@ -270,10 +275,7 @@ async function inputWithContext(
 	text: string,
 	streamingBehavior?: "steer" | "followUp",
 ) {
-	return harness.handlers.get("input")?.(
-		{ type: "input", source: "interactive", text, streamingBehavior },
-		ctx,
-	);
+	return harness.routing.route(ctx, text, streamingBehavior);
 }
 
 function createReplacementContext(
@@ -337,7 +339,7 @@ async function startLifecycleCommand(
 	command: "/plan save" | "/plan exit",
 ) {
 	const commandResult = await input(harness, command);
-	assert.equal(commandResult.action, "transform");
+	assert.equal(commandResult.action, "dispatched");
 	await harness.handlers.get("before_agent_start")?.(
 		{
 			type: "before_agent_start",
@@ -1527,7 +1529,7 @@ describe("Plan session lifecycle", () => {
 			try {
 				await input(harness, "/plan");
 				const lifecycle = await input(harness, "/plan exit");
-				assert.equal(lifecycle.action, "transform");
+				assert.equal(lifecycle.action, "dispatched");
 				assert.equal(harness.appended.at(-1)?.data.approval, undefined);
 				await harness.handlers.get("before_agent_start")?.(
 					{
@@ -1582,7 +1584,7 @@ describe("Plan session lifecycle", () => {
 
 			const lifecycle = await input(harness, "/plan exit");
 
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			const approved = harness.appended.at(-1)?.data.approval;
 			assert.deepEqual(approved, {
 				action: "exit",
@@ -1650,7 +1652,7 @@ describe("Plan session lifecycle", () => {
 
 			const lifecycle = await input(harness, "/plan exit");
 
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			assert.equal(chooserCalls, 1);
 			assert.equal(verificationCalls, 1);
 			assert.equal(confirmationCalls, 2);
@@ -1706,7 +1708,7 @@ describe("Plan session lifecycle", () => {
 			const lifecycle = await input(harness, "/plan exit");
 
 			const approvedPath = harness.appended.at(-1)?.data.approval?.path;
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			assert.notEqual(approvedPath, originalPath);
 			assert.equal(harness.appended.at(-1)?.data.candidatePath, approvedPath);
 			assert.match(
@@ -1733,7 +1735,7 @@ describe("Plan session lifecycle", () => {
 			await input(harness, "/plan");
 			await checkpointPlan(harness, "# Plan: Direct approval revision one\n", 0);
 			const lifecycle = await input(harness, "/plan exit");
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			assert.equal(harness.appended.at(-1)?.data.approval?.revision, 1);
 			await harness.handlers.get("before_agent_start")?.(
 				{
@@ -1781,7 +1783,7 @@ describe("Plan session lifecycle", () => {
 			await checkpointPlan(harness, "# Plan: Preflight-independent exit\n", 0);
 
 			const attemptedFinalization = await input(harness, "/plan exit");
-			assert.equal(attemptedFinalization.action, "transform");
+			assert.equal(attemptedFinalization.action, "dispatched");
 			assert.ok(harness.appended.at(-1)?.data.approval);
 
 			// Simulate model/auth preflight failure: Pi emits neither before_agent_start nor agent_settled.
@@ -1807,7 +1809,7 @@ describe("Plan session lifecycle", () => {
 			await input(harness, "/plan");
 			await checkpointPlan(harness, "# Plan: Settled exit fallback\n", 0);
 			const lifecycle = await input(harness, "/plan exit");
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			await harness.handlers.get("before_agent_start")?.(
 				{
 					type: "before_agent_start",
@@ -1850,7 +1852,7 @@ describe("Plan session lifecycle", () => {
 			try {
 				await input(harness, "/plan");
 				const lifecycle = await input(harness, "/plan exit");
-				assert.equal(lifecycle.action, "transform");
+				assert.equal(lifecycle.action, "dispatched");
 				await harness.handlers.get("before_agent_start")?.(
 					{
 						type: "before_agent_start",
@@ -1928,7 +1930,7 @@ describe("Plan session lifecycle", () => {
 					harness.ctx,
 				);
 				const lifecycle = await input(harness, "/plan exit");
-				assert.equal(lifecycle.action, "transform");
+				assert.equal(lifecycle.action, "dispatched");
 				await harness.handlers.get("before_agent_start")?.(
 					{
 						type: "before_agent_start",
@@ -1984,7 +1986,7 @@ describe("Plan session lifecycle", () => {
 			await input(harness, "/plan");
 			await checkpointPlan(harness, "# Plan: Superseded settled fallback\n", 0);
 			const lifecycle = await input(harness, "/plan exit");
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			await harness.handlers.get("before_agent_start")?.(
 				{
 					type: "before_agent_start",
@@ -2704,7 +2706,7 @@ describe("Plan session lifecycle", () => {
 			await input(harness, "/plan");
 			await checkpointPlan(harness, "# Plan: Deferred unpublished exit revision one\n", 0);
 			const lifecycle = await input(harness, "/plan exit");
-			assert.equal(lifecycle.action, "transform");
+			assert.equal(lifecycle.action, "dispatched");
 			await harness.handlers.get("before_agent_start")?.(
 				{
 					type: "before_agent_start",

@@ -494,7 +494,8 @@ describe("Atlas extension", () => {
 		assert.match(notifications[0] ?? "", /commands: \/guild, \/guild-handover, \/commit, \/skill:conventional-commit, \/skill:tdd/);
 		assert.match(notifications[0] ?? "", /tools: guild_handover, create_commit \(internal\)/);
 		assert.match(notifications[0] ?? "", /tools: rename_session, pithos_info/);
-		assert.match(notifications[0] ?? "", /prompts: plan/);
+		assert.match(notifications[0] ?? "", /commands: \/plan/);
+		assert.doesNotMatch(notifications[0] ?? "", /prompts: plan/);
 		assert.doesNotMatch(notifications[0] ?? "", /srs-generator/);
 		assert.match(notifications[0] ?? "", /skills: conventional-commit, tdd/);
 		assert.match(notifications[0] ?? "", /themes: plan/);

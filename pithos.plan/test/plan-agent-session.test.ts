@@ -106,6 +106,24 @@ function latestPlanState(sessionManager: SessionManager): Record<string, unknown
 		.at(-1)?.data as Record<string, unknown> | undefined;
 }
 
+async function lifecyclePrompt(session: Awaited<ReturnType<typeof createAgentSession>>["session"], text: string) {
+	let unsubscribe = () => {};
+	let timer: ReturnType<typeof setTimeout>;
+	const settled = new Promise<void>((resolve, reject) => {
+		timer = setTimeout(() => reject(new Error("Lifecycle dispatch did not settle")), 5000);
+		unsubscribe = session.subscribe((event) => {
+			if (event.type === "agent_settled") resolve();
+		});
+	});
+	try {
+		await session.prompt(text);
+		await settled;
+	} finally {
+		clearTimeout(timer!);
+		unsubscribe();
+	}
+}
+
 describe("Plan AgentSession queue integration", () => {
 	it("delivers an invisible custom follow-up under Plan enforcement and converts exit completion to save", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-plan-agent-session-"));
@@ -251,7 +269,7 @@ describe("Plan AgentSession queue integration", () => {
 			await session.prompt("Prepare an exact checkpoint.");
 			assert.equal(latestPlanState(sessionManager)?.checkpointRevision, 1);
 
-			await session.prompt("/plan exit");
+			await lifecyclePrompt(session, "/plan exit");
 
 			assert.equal(customMessageDelivered, true);
 			assert.equal(completedActionWhenCustomMessageDelivered, "save");
@@ -273,6 +291,147 @@ describe("Plan AgentSession queue integration", () => {
 			assert.deepEqual(extensionErrors, []);
 		} finally {
 			unsubscribe();
+			session.dispose();
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+
+	for (const action of ["save", "exit"] as const) it(`routes /plan ${action} before later input rewriting and publishes unchanged extension input`, async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-plan-agent-session-"));
+		const agentDir = join(cwd, "agent");
+		const rewriterPath = join(cwd, "rewrite-input.mjs");
+		const earlierInputPath = join(cwd, "earlier-input.mjs");
+		await mkdir(agentDir, { recursive: true });
+		await writeFile(earlierInputPath, `export default function(pi) { pi.on("input", async () => { await Promise.resolve(); }); }`);
+		await writeFile(
+			rewriterPath,
+			`export default function rewrite(pi) {
+ pi.on("input", (event) => {
+  pi.appendEntry("rewriter-observation", { source: event.source, text: event.text });
+  if (event.source === "extension") return { action: "continue" };
+  return { action: "transform", text: "REWRITTEN: " + event.text };
+ });
+}
+`,
+			"utf8",
+		);
+
+		const settingsManager = SettingsManager.inMemory({
+			compaction: { enabled: false },
+			retry: { enabled: false },
+		});
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		let publicationContext: ObservedContext | undefined;
+		const responses: Array<
+			| TestAssistantMessage
+			| ((context: ObservedContext) => TestAssistantMessage)
+		> = [
+			assistantToolCall("checkpoint-call", "update_plan_draft", {
+				content: PLAN_CONTENT,
+				expectedRevision: 0,
+			}),
+			assistantText("Checkpoint recorded."),
+			(context) => {
+				publicationContext = context;
+				return assistantToolCall("publish-call", "create_plan", { revision: 1 });
+			},
+			assistantText("Published."),
+		];
+		modelRuntime.registerProvider("plan-test-provider", {
+			name: "Plan test provider",
+			baseUrl: "http://localhost:0",
+			apiKey: "test-key",
+			api: "plan-test-api",
+			models: [{
+				id: "plan-test-model",
+				name: "Plan test model",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 4_096,
+			}],
+			streamSimple: (_model, context) => {
+				const next = responses.shift();
+				if (!next) throw new Error("No queued Plan integration response.");
+				const message = typeof next === "function"
+					? next(context as ObservedContext)
+					: next;
+				// The public coding-agent package does not re-export pi-ai's stream class;
+				// this faithful stream implements the runtime protocol at that boundary.
+				return responseStream(message) as never;
+			},
+		});
+		const model = modelRuntime.getModel("plan-test-provider", "plan-test-model");
+		assert.ok(model);
+
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			additionalExtensionPaths: [earlierInputPath, PLAN_EXTENSION_PATH, rewriterPath],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPrompt: "Base test prompt.",
+		});
+		await resourceLoader.reload();
+		assert.deepEqual(resourceLoader.getExtensions().errors, []);
+
+		const sessionManager = SessionManager.inMemory(cwd);
+		const { session } = await createAgentSession({
+			cwd,
+			agentDir,
+			model,
+			modelRuntime,
+			resourceLoader,
+			sessionManager,
+			settingsManager,
+		});
+		const extensionErrors: unknown[] = [];
+
+		try {
+			await session.bindExtensions({
+				mode: "rpc",
+				uiContext: {
+					select: async (_title: string, choices: string[]) =>
+						choices.find((choice) => choice === "Create plan"),
+					confirm: async () => true,
+					notify() {},
+					setFooter() {},
+					setStatus() {},
+				} as never,
+				onError: (error) => extensionErrors.push(error),
+			});
+
+			await session.prompt("/plan");
+			assert.equal(latestPlanState(sessionManager)?.active, true);
+			await session.prompt("Prepare an exact checkpoint.");
+			assert.equal(latestPlanState(sessionManager)?.checkpointRevision, 1);
+
+			await lifecyclePrompt(session, `/plan ${action}`);
+
+			const observations = sessionManager.getEntries().filter((entry) => entry.type === "custom" && entry.customType === "rewriter-observation").map((entry) => entry.data as { source: string; text: string });
+			assert.equal(observations.some((entry) => entry.text.startsWith("/plan")), false);
+			const internal = observations.filter((entry) => entry.source === "extension");
+			assert.equal(internal.length, 1);
+			assert.match(internal[0].text, /^Finalize/);
+			assert.equal(internal[0].text.includes("REWRITTEN"), false);
+			assert.ok(observations.some((entry) => entry.source === "interactive" && entry.text === "Prepare an exact checkpoint."));
+			const lastUser = publicationContext?.messages.filter((message) => message.role === "user").at(-1);
+			assert.deepEqual(lastUser?.content, [{ type: "text", text: internal[0].text }]);
+			const state = latestPlanState(sessionManager);
+			assert.equal(state?.active, action === "save");
+			assert.equal(typeof state?.publishedPath, "string");
+			assert.equal(await readFile(join(cwd, state?.publishedPath as string), "utf8"), PLAN_CONTENT);
+
+			assert.deepEqual(extensionErrors, []);
+		} finally {
 			session.dispose();
 			await rm(cwd, { recursive: true, force: true });
 		}
@@ -381,7 +540,7 @@ describe("Plan AgentSession queue integration", () => {
 
 			await session.prompt("/plan");
 			await session.prompt("Prepare revision one for publication.");
-			await session.prompt("/plan exit");
+			await lifecyclePrompt(session, "/plan exit");
 
 			const blockedSibling = sessionManager.getEntries().find(
 				(entry) =>
@@ -564,7 +723,7 @@ describe("Plan AgentSession queue integration", () => {
 
 			await session.prompt("/plan");
 			await session.prompt("Prepare an exact checkpoint before exit.");
-			await session.prompt("/plan exit");
+			await lifecyclePrompt(session, "/plan exit");
 
 			const continuationRead = sessionManager.getEntries().find(
 				(entry) =>

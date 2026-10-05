@@ -310,9 +310,7 @@
         "extensions": [
           "./extensions/plan-theme.ts"
         ],
-        "prompts": [
-          "./prompts"
-        ],
+        "prompts": [],
         "themes": [
           "./themes"
         ]
@@ -340,12 +338,7 @@
             "internal": true
           }
         ],
-        "prompts": [
-          {
-            "name": "plan",
-            "summary": "Session-owned read-only planning and exact checkpoint workflow."
-          }
-        ],
+        "prompts": [],
         "skills": [],
         "themes": [
           {

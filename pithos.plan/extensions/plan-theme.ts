@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { randomUUID } from "node:crypto";
 import { fileURLToPath } from "node:url";
@@ -73,6 +74,7 @@ type PlanLifecycleAction = "save" | "exit";
 type QueuedPlanLifecycleRequest = {
 	action: PlanLifecycleAction;
 	prompt: string;
+	admitted?: boolean;
 };
 
 const CREATE_PLAN_PARAMETERS = {
@@ -224,6 +226,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	const generatePlanCandidatePath = dependencies.generatePlanPath ?? generatePlanPath;
 	let state: PersistedPlanLifecycleState | undefined;
 	let checkpoint: PlanCheckpointDetails | undefined;
+	const lifecycleDispatch = new AsyncLocalStorage<QueuedPlanLifecycleRequest>();
 	let queuedRequest: QueuedPlanLifecycleRequest | undefined;
 	let pendingAction: PlanLifecycleAction | undefined;
 	let boundLifecyclePrompt: string | undefined;
@@ -1093,42 +1096,72 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	});
 
 	pi.on("input", async (event, ctx) => {
+		const dispatch = lifecycleDispatch.getStore();
+		if (event.source === "extension" && dispatch && dispatch === queuedRequest &&
+			!dispatch.admitted && event.text === dispatch.prompt) {
+			dispatch.admitted = true;
+			return { action: "continue" as const };
+		}
+		abortAwaitedUiOperation();
+		activityGeneration += 1;
+		if (!supersedeDeferredExitWithoutPublication()) supersedePublicationAuthorization();
+		return { action: "continue" as const };
+	});
+
+	function dispatchLifecycle(action: PlanLifecycleAction, prompt: string, ctx: ExtensionContext): void {
+		const request: QueuedPlanLifecycleRequest = { action, prompt };
+		queuedRequest = request;
+		try {
+			// Pi 0.83 returns void and starts input synchronously. AsyncLocalStorage
+			// retains provenance even across earlier middleware awaits, without
+			// admitting unrelated extension calls that copy the internal prompt.
+			// Do not await a nested agent run from the command handler. Pi reports
+			// asynchronous send failures itself (the API returns void); a failed
+			// preflight cannot bind authorization in another async call chain, and
+			// the next input/session activity clears the abandoned request.
+			lifecycleDispatch.run(request, () => pi.sendUserMessage(prompt));
+		} catch (error) {
+			if (queuedRequest === request) clearPublicationAuthorization();
+			notifyOrLog(ctx, `Plan finalization could not be dispatched: ${errorMessage(error)}. Plan mode remains active.`, "error");
+		}
+	}
+
+	async function handlePlanCommand(args: string, ctx: ExtensionContext): Promise<void> {
 		abortAwaitedUiOperation();
 		activityGeneration += 1;
 		const supersededDeferredExit = supersedeDeferredExitWithoutPublication();
 		const eventInputGeneration = activityGeneration;
 		const eventSessionGeneration = sessionGeneration;
 		if (!supersededDeferredExit) supersedePublicationAuthorization();
-		if (event.source === "extension") return { action: "continue" as const };
-		const command = parsePlanCommand(event.text);
+		const command = parsePlanCommand(`/plan ${args}`);
 		if (command) log.info("command.plan", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), kind: command.kind, active: state?.active, checkpointRevision: checkpoint?.revision });
-		if (!command) return { action: "continue" as const };
+		if (!command) return;
 		if (command.kind === "help") {
 			notifyOrLog(ctx, PLAN_COMMAND_HELP, "info");
-			return { action: "handled" as const };
+			return;
 		}
 		if (command.kind === "unknown") {
 			notifyOrLog(ctx, `Unknown /plan subcommand: ${command.argument || "(empty)"}\n\n${PLAN_COMMAND_HELP}`, "error");
-			return { action: "handled" as const };
+			return;
 		}
 		if (
 			(command.kind === "enter" || command.kind === "save" || command.kind === "exit") &&
-			(event.streamingBehavior || !ctx.isIdle())
+			!ctx.isIdle()
 		) {
 			notifyOrLog(ctx, "Wait for the current agent turn to finish before changing Plan mode.", "warning");
-			return { action: "handled" as const };
+			return;
 		}
 		if (command.kind === "enter") {
 			await createOrRestorePlan(ctx, eventInputGeneration);
-			return { action: "handled" as const };
+			return;
 		}
 		if (command.kind === "preview") {
 			if (!state || !checkpoint) {
 				notifyOrLog(ctx, "No plan checkpoint exists yet. Continue planning until update_plan_draft records one.", "warning");
-				return { action: "handled" as const };
+				return;
 			}
 			const previewBranch = capturePlanBranchStateIdentity();
-			if (!previewBranch) return { action: "handled" as const };
+			if (!previewBranch) return;
 			const previewPath = state.publishedPath ?? state.candidatePath;
 			const previewContent = checkpoint.content;
 			const uiOperation = beginAwaitedUiOperation(ctx);
@@ -1146,11 +1179,11 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				sessionGeneration !== eventSessionGeneration ||
 				!planBranchStateIdentityMatches(previewBranch)
 			) {
-				return { action: "handled" as const };
+				return;
 			}
 			if (previewError) throw previewError;
 			if (!shown) notifyOrLog(ctx, "Plan preview requires interactive UI.", "warning");
-			return { action: "handled" as const };
+			return;
 		}
 		if (command.kind === "status") {
 			const verificationBranch = capturePlanBranchStateIdentity();
@@ -1173,7 +1206,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					!verificationBranch ||
 					!planBranchStateIdentityMatches(verificationBranch)
 				) {
-					return { action: "handled" as const };
+					return;
 				}
 				if (state && planPublicationVerificationIsCurrent(verificationSnapshot, state, checkpoint)) {
 					let verificationResult: "synced" | "dirty" | "conflict";
@@ -1198,16 +1231,16 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				`Plan status: ${state?.active ? "active" : "inactive"}; revision ${revision}; ${state?.publicationState ?? "unpublished"}; path ${path}; session ${persistence}.`,
 				state?.publicationState === "conflict" ? "warning" : "info",
 			);
-			return { action: "handled" as const };
+			return;
 		}
 		if (!state?.active) {
 			notifyOrLog(ctx, "Plan mode is not active. Use /plan to enter or restore it.", "warning");
-			return { action: "handled" as const };
+			return;
 		}
 		if (command.kind === "save") {
 			if (checkpoint && state.publishedPath && state.publishedDigest === checkpoint.digest) {
 				const verificationSnapshot = snapshotPlanPublicationVerification(state, checkpoint);
-				if (!verificationSnapshot) return { action: "handled" as const };
+				if (!verificationSnapshot) return;
 				let verificationError: unknown;
 				try {
 					await verifyPublishedPlanFileDigest(
@@ -1223,7 +1256,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					sessionGeneration !== eventSessionGeneration ||
 					!planPublicationVerificationIsCurrent(verificationSnapshot, state, checkpoint)
 				) {
-					return { action: "handled" as const };
+					return;
 				}
 				let verificationResult: "synced" | "conflict";
 				let conflictMessage: string | undefined;
@@ -1245,16 +1278,13 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				} else {
 					notifyOrLog(ctx, conflictMessage ?? "The published plan could not be verified.", "error");
 				}
-				return { action: "handled" as const };
+				return;
 			}
-			queuedRequest = { action: "save", prompt: SAVE_PLAN_AGENT_PROMPT };
-			return {
-				action: "transform" as const,
-				text: SAVE_PLAN_AGENT_PROMPT,
-			};
+			dispatchLifecycle("save", SAVE_PLAN_AGENT_PROMPT, ctx);
+			return;
 		}
 		const directExitBranch = capturePlanBranchStateIdentity();
-		if (!directExitBranch) return { action: "handled" as const };
+		if (!directExitBranch) return;
 		if (
 			state.publishedPath &&
 			state.publishedDigest &&
@@ -1267,7 +1297,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				verificationError = error;
 			}
 			if (keepPlanActiveForConcurrentInput(ctx, eventInputGeneration, directExitBranch)) {
-				return { action: "handled" as const };
+				return;
 			}
 			if (verificationError) {
 				if (!(verificationError instanceof PlanPublicationConflictError)) throw verificationError;
@@ -1277,13 +1307,13 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				state.publicationState = "synced";
 				deactivatePlanMode(ctx);
 				notifyOrLog(ctx, "The published plan is unchanged; exited Plan mode immediately.", "info");
-				return { action: "handled" as const };
+				return;
 			}
 		}
 		if (checkpoint) {
 			const approvalTarget = await prepareDirectExitApproval(ctx, eventInputGeneration);
 			if (keepPlanActiveForConcurrentInput(ctx, eventInputGeneration, directExitBranch)) {
-				return { action: "handled" as const };
+				return;
 			}
 			let decision: Awaited<ReturnType<typeof confirmPlanPublication>> | undefined;
 			let confirmationError: unknown;
@@ -1304,7 +1334,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				uiOperation.finish();
 			}
 			if (keepPlanActiveForConcurrentInput(ctx, eventInputGeneration, directExitBranch)) {
-				return { action: "handled" as const };
+				return;
 			}
 			if (confirmationError || !decision) {
 				decision = uiOperation.signal.aborted ? { action: "continue" } : { action: "exit" };
@@ -1315,9 +1345,9 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			if (decision.action === "exit") {
 				deactivatePlanMode(ctx);
 				notifyOrLog(ctx, "Exited Plan mode without publishing; the latest checkpoint remains restorable.", "info");
-				return { action: "handled" as const };
+				return;
 			}
-			if (decision.action === "continue") return { action: "handled" as const };
+			if (decision.action === "continue") return;
 			if (!approvalTarget || !directExitApprovalIsCurrent(approvalTarget)) {
 				if (state?.approval) {
 					state.approval = undefined;
@@ -1328,7 +1358,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					"The checkpoint, destination, or publication baseline changed before approval could be bound. Plan mode remains active.",
 					"warning",
 				);
-				return { action: "handled" as const };
+				return;
 			}
 			state.approval = {
 				action: "exit",
@@ -1354,7 +1384,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				uiOperation.finish();
 			}
 			if (keepPlanActiveForConcurrentInput(ctx, eventInputGeneration, directExitBranch)) {
-				return { action: "handled" as const };
+				return;
 			}
 			if (confirmationError || !decision) {
 				decision = uiOperation.signal.aborted ? { action: "continue" } : { action: "exit" };
@@ -1365,21 +1395,23 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			if (decision.action === "exit") {
 				deactivatePlanMode(ctx);
 				notifyOrLog(ctx, "Exited Plan mode without publishing; the plan identity remains restorable.", "info");
-				return { action: "handled" as const };
+				return;
 			}
-			if (decision.action === "continue") return { action: "handled" as const };
+			if (decision.action === "continue") return;
 		}
-		queuedRequest = { action: "exit", prompt: EXIT_PLAN_AGENT_PROMPT };
-		return {
-			action: "transform" as const,
-			text: EXIT_PLAN_AGENT_PROMPT,
-		};
+		dispatchLifecycle("exit", EXIT_PLAN_AGENT_PROMPT, ctx);
+	}
+
+	pi.registerCommand("plan", {
+		description: "Enter, save, preview, exit, or report session-owned Plan mode",
+		handler: async (args, ctx) => { await handlePlanCommand(args, ctx); },
 	});
 
 	pi.on("before_agent_start", async (event) => {
 		lifecycleAgentRunActive = false;
 		if (queuedRequest) {
-			if (event.prompt === queuedRequest.prompt) {
+			if (lifecycleDispatch.getStore() === queuedRequest && queuedRequest.admitted &&
+				event.prompt === queuedRequest.prompt) {
 				pendingAction = queuedRequest.action;
 				boundLifecyclePrompt = event.prompt;
 				queuedRequest = undefined;

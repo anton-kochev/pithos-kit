@@ -5,7 +5,6 @@
   "keywords": [
     "pi-package",
     "pi-extension",
-    "pi-prompt-template",
     "pithos",
     "plan-mode",
     "planning"
@@ -42,9 +41,7 @@
       { "name": "update_plan_draft", "summary": "Persist an exact branch-local Markdown checkpoint with optimistic revision concurrency.", "internal": true },
       { "name": "create_plan", "summary": "Review and atomically create or update an approved checkpoint revision.", "internal": true }
     ],
-    "prompts": [
-      { "name": "plan", "summary": "Session-owned read-only planning and exact checkpoint workflow." }
-    ],
+    "prompts": [],
     "skills": [],
     "themes": [
       { "name": "plan", "summary": "Minimal planning-state theme." }
@@ -58,9 +55,7 @@
     "extensions": [
       "./extensions/plan-theme.ts"
     ],
-    "prompts": [
-      "./prompts"
-    ],
+    "prompts": [],
     "themes": [
       "./themes"
     ]
