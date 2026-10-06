@@ -18,7 +18,7 @@
     "test": "node --test test/*.test.mjs"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.84.1"
+    "@earendil-works/pi-coding-agent": ">=1.0.0"
   },
   "repository": {
     "type": "git",
@@ -31,7 +31,7 @@
   "pithosKit": {
     "displayName": "Themes",
     "summary": "Add accessible Auric light and dark themes with automatic appearance switching.",
-    "minimumPi": ">=0.84.1",
+    "minimumPi": ">=1.0.0",
     "commands": [],
     "tools": [],
     "prompts": [],

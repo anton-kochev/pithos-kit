@@ -27,14 +27,14 @@
     "jiti": "^2.4.2"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0",
     "typebox": "*"
   },
   "pithosKit": {
     "displayName": "Echo",
     "summary": "Ask an isolated read-only side agent about the session and project.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "ask", "usage": "/ask [--model <provider/model>] [--] <question>", "summary": "Ask Echo a read-only side-channel question." },
       { "name": "asked", "usage": "/asked [--help]", "summary": "Browse saved Echo answers." },

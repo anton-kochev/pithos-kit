@@ -46,7 +46,7 @@ In `.pithos`, Pi packages live under `pi.extensions`:
 
 ```yaml
 pi:
-  version: "0.84.2"
+  version: "1.0.0"
   extensions:
     "@pithos-kit/atlas": "npm:0.7.1"
     "@pithos-kit/guild": "npm:0.3.0"
@@ -62,7 +62,7 @@ Atlas can validate and interactively manage toolchain versions, `pi.version`, an
 
 Pi can hide or expose the Guild TDD skill without another extension. Run `pi config` for global settings or `pi config -l` for a project override, toggle the `tdd` skill, then run `/reload` in an active Pi session. Disabling the resource removes its model-visible description and native command after reload. When TDD is enabled, `enableSkillCommands` controls command registration and autocomplete; only disabling the resource makes the skill invisible to the agent. Instructions already expanded into conversation history remain unless you start a new session or branch from before the invocation.
 
-Current package metadata declares Pi `>=0.83.0` except Translate, which requires Pi `>=0.84.0`, and Context Bar and Themes, which require Pi `>=0.84.1`. Atlas reports incompatible combinations rather than silently accepting them.
+All packages require Pi `>=1.0.0`. Package metadata and Pi peer dependencies declare the same minimum; Atlas reports incompatible combinations rather than silently accepting them.
 
 ## Diagnostics logging
 

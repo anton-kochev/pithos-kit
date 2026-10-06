@@ -109,10 +109,10 @@ This checkout intentionally does not modify the separate `anton-kochev/pithos` r
 3. keeps exact `npm:<version>` pins under `pi.extensions`, removes `@pithos-kit/skills`, and pairs Guild 0.3.0 with Atlas 0.6.0 so Guild owns TDD plus `/commit`, `create_commit`, and `conventional-commit` only after Atlas stops registering them, avoiding duplicate command, tool, or skill registration;
 4. keeps `@pithos-kit/plan` as the sole owner of `/plan`, avoiding historical Skills versions that bundled the same handler;
 5. rebuilds generated `.pithos.d/` output from authoritative `.pithos` input rather than editing generated files;
-6. accounts for Context Bar and Themes requiring Pi `>=0.84.1` when selecting the new base Pi version;
+6. accounts for all current packages requiring Pi `>=1.0.0` when selecting the new base Pi version;
 7. tests a broken/incompatible project configuration and confirms the preinstalled Atlas remains available.
 
-This repository currently pins Pi `0.84.2` in `.pithos`; Atlas still declares compatibility with Pi `>=0.83.0`.
+All current packages, including Atlas, require Pi `>=1.0.0`. Select a compatible Pi version in the authoritative `.pithos` configuration; local pins are not release metadata.
 
 ## 6. Deprecate the retired Skills identities
 

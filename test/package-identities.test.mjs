@@ -5,19 +5,20 @@ import { describe, it } from "node:test";
 
 const root = resolve(import.meta.dirname, "..");
 const repositoryUrl = "git+https://github.com/anton-kochev/pithos-kit.git";
+const minimumPi = ">=1.0.0";
 const packages = [
-  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.6.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.echo", shortName: "echo", version: "0.5.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.answer", shortName: "answer", version: "0.3.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.telos", shortName: "telos", version: "0.3.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.guild", shortName: "guild", version: "0.6.0", minimumPi: ">=0.87.0" },
-  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0", minimumPi: ">=0.84.1" },
-  { directory: "pithos.plan", shortName: "plan", version: "0.5.2", minimumPi: ">=0.83.0" },
-  { directory: "pithos.themes", shortName: "themes", version: "0.1.0", minimumPi: ">=0.84.1" },
-  { directory: "pithos.translate", shortName: "translate", version: "2.0.0", minimumPi: ">=0.84.0" },
-  { directory: "pithos.web", shortName: "web", version: "0.2.0", minimumPi: ">=0.83.0" },
-  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.1", minimumPi: ">=0.83.0" },
+  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.6.0" },
+  { directory: "pithos.echo", shortName: "echo", version: "0.5.0" },
+  { directory: "pithos.answer", shortName: "answer", version: "0.3.0" },
+  { directory: "pithos.telos", shortName: "telos", version: "0.3.0" },
+  { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0" },
+  { directory: "pithos.guild", shortName: "guild", version: "0.6.0" },
+  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0" },
+  { directory: "pithos.plan", shortName: "plan", version: "0.5.2" },
+  { directory: "pithos.themes", shortName: "themes", version: "0.1.0" },
+  { directory: "pithos.translate", shortName: "translate", version: "2.0.0" },
+  { directory: "pithos.web", shortName: "web", version: "0.2.0" },
+  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.1" },
 ];
 
 const capabilityKinds = ["commands", "tools", "prompts", "skills", "themes", "agents"];
@@ -45,7 +46,7 @@ describe("pithos-kit package identities", () => {
     assert.match(readme, /^# pithos-kit$/m);
 
     const manifests = [];
-    for (const { directory, shortName, version, minimumPi } of packages) {
+    for (const { directory, shortName, version } of packages) {
       assert.equal(existsSync(resolve(root, directory)), true, `missing ${directory}/`);
 
       const manifest = readJson(resolve(root, directory, "package.json"));
@@ -58,7 +59,13 @@ describe("pithos-kit package identities", () => {
 
       assert.equal(typeof manifest.pithosKit?.displayName, "string");
       assert.equal(typeof manifest.pithosKit?.summary, "string");
-      assert.equal(manifest.pithosKit?.minimumPi, minimumPi);
+      assert.equal(manifest.pithosKit?.minimumPi, minimumPi, `${manifest.name} Pi minimum`);
+      assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], minimumPi);
+      for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
+        if (name.startsWith("@earendil-works/pi-")) {
+          assert.equal(range, minimumPi, `${manifest.name} peer ${name}`);
+        }
+      }
       assert.equal(Array.isArray(manifest.pithosKit?.configuration), true);
       for (const kind of capabilityKinds) {
         assert.equal(Array.isArray(manifest.pithosKit?.[kind]), true, `${manifest.name} must describe ${kind}`);
@@ -85,6 +92,7 @@ describe("pithos-kit package identities", () => {
 
       const packageReadme = readFileSync(resolve(root, directory, "README.md"), "utf8");
       assert.match(packageReadme, /\.pithos/u, `${manifest.name} must document .pithos`);
+      assert.match(packageReadme, /requires Pi (?:\*\*|`)?1\.0\.0/iu, `${manifest.name} must document the Pi minimum`);
       assert.match(packageReadme, new RegExp(`"@pithos-kit/${shortName}": "npm:${version.replaceAll(".", "\\.")}"`));
       if (shortName === "atlas") {
         assert.match(packageReadme, /\/pithos help/u);
@@ -110,6 +118,19 @@ describe("pithos-kit package identities", () => {
     assert.match(rootPackage.scripts["catalog:generate"], /generate-atlas-catalog\.ts/u);
   });
 
+  it("does not import the removed global completion API from pi-ai's main entrypoint", () => {
+    for (const { directory } of packages) {
+      for (const path of sourceFiles(resolve(root, directory)).filter((path) => path.endsWith(".ts") && !path.includes("/test/"))) {
+        const content = readFileSync(path, "utf8");
+        assert.doesNotMatch(
+          content,
+          /import\s*\{[^}]*\bcomplete\b[^}]*\}\s*from\s*["']@earendil-works\/pi-ai["']/u,
+          `${path} must use pi-ai/compat or the session model runtime for completion on Pi 1.x`,
+        );
+      }
+    }
+  });
+
   it("updates lock roots and keeps prior npm identities only in the administrative cutover", () => {
     for (const { directory, shortName } of packages) {
       const lockPath = resolve(root, directory, "package-lock.json");
@@ -117,6 +138,8 @@ describe("pithos-kit package identities", () => {
         const lock = readJson(lockPath);
         assert.equal(lock.name, `@pithos-kit/${shortName}`);
         assert.equal(lock.packages[""].name, `@pithos-kit/${shortName}`);
+        const manifest = readJson(resolve(root, directory, "package.json"));
+        assert.deepEqual(lock.packages[""].peerDependencies, manifest.peerDependencies, `${directory} lock peers`);
       }
     }
 

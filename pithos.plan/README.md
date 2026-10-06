@@ -7,6 +7,8 @@ explicit save/preview/exit commands, and conflict-safe atomic publication.
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/plan
 ```

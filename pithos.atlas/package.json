@@ -48,15 +48,15 @@
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": ">=0.83.0",
-    "@earendil-works/pi-coding-agent": ">=0.83.0",
-    "@earendil-works/pi-tui": ">=0.83.0",
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0",
     "typebox": "*"
   },
   "pithosKit": {
     "displayName": "Atlas",
     "summary": "Name sessions, inspect and configure Pithos, and manage guarded Pi runtime patches.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "pithos", "usage": "/pithos [help|packages|versions|doctor|config|patch]", "summary": "Open Atlas or run a catalog, diagnostic, configuration, or runtime-patch action." }
     ],

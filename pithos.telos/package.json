@@ -27,15 +27,15 @@
     "tsx": "^4.20.4"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0",
     "typebox": "*"
   },
   "pithosKit": {
     "displayName": "Telos",
     "summary": "Manage repo-scoped structured tasks through a command and agent tool.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "tasks", "usage": "/tasks [subcommand] [options]", "summary": "Browse and manage project tasks." }
     ],

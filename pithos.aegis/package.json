@@ -24,12 +24,12 @@
     "test": "node --test test/*.test.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-coding-agent": ">=1.0.0"
   },
   "pithosKit": {
     "displayName": "Aegis",
     "summary": "Protect agent shell commands and file mutations with project rules.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "aegis", "usage": "/aegis [status|list|reload|toggle|--help]", "summary": "Inspect and control Aegis for the current session." }
     ],

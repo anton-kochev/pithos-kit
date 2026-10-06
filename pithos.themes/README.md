@@ -13,7 +13,7 @@ Both themes use explicit RGB colors, include coordinated HTML export colors, and
 
 ## Install
 
-Requires Pi `0.84.1` or later.
+Requires Pi `1.0.0` or later.
 
 ```bash
 pi install npm:@pithos-kit/themes

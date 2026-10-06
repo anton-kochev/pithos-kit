@@ -15,8 +15,8 @@
     "test": "node --test test/*.test.ts"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.83.0",
-    "@earendil-works/pi-tui": ">=0.83.0"
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-coding-agent": "0.83.0",
@@ -33,7 +33,7 @@
   "pithosKit": {
     "displayName": "Plan",
     "summary": "Provide session-owned read-only planning, durable exact checkpoints, explicit save/preview/exit lifecycle commands, safe atomic publication, and a Plan theme.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "plan", "usage": "/plan [save | preview | exit | status | help]", "summary": "Enter or restore Plan mode, publish checkpoints, preview, report status, or safely exit." }
     ],

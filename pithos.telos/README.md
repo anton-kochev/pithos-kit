@@ -6,6 +6,8 @@ Telos adds a `/tasks` command and an agent-callable `telos_tasks` tool. Tasks pe
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/telos
 ```

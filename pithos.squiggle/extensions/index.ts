@@ -1,12 +1,13 @@
 import { existsSync, readFileSync, mkdirSync, writeFileSync, renameSync, rmSync } from "node:fs";
 import { randomUUID } from "node:crypto";
 import { dirname, join } from "node:path";
-import { complete, type UserMessage } from "@earendil-works/pi-ai";
+import type { UserMessage } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import * as piRuntime from "@earendil-works/pi-coding-agent";
 import type { ExtensionAPI, ExtensionCommandContext, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { createPithosLogger, errorMetadata, modelMetadata, usageMetadata, type PithosLogger } from "./logging.ts";
 
-// Older supported Pi releases do not export CONFIG_DIR_NAME.
+// Keep the conventional directory fallback when the runtime omits CONFIG_DIR_NAME.
 const CONFIG_DIR_NAME = (piRuntime as { CONFIG_DIR_NAME?: string }).CONFIG_DIR_NAME ?? ".pi";
 
 const SQUIGGLE_HELP = `Usage: /squiggle toggle

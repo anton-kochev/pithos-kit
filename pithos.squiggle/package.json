@@ -23,13 +23,13 @@
     "access": "public"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*"
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0"
   },
   "pithosKit": {
     "displayName": "Squiggle",
     "summary": "Quietly polish grammar and spelling in user prompts.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       { "name": "squiggle", "usage": "/squiggle [toggle|config|--help]", "summary": "Toggle prompt correction or configure its model." },
       { "name": "squiggle-status", "usage": "/squiggle-status [--help]", "summary": "Show correction status and configuration." }

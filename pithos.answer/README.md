@@ -13,6 +13,8 @@ It demonstrates the prompt-generator pattern with custom TUI:
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/answer
 ```

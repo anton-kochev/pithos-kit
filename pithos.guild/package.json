@@ -45,15 +45,15 @@
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": "*",
-    "@earendil-works/pi-tui": "*",
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0",
     "typebox": "*"
   },
   "pithosKit": {
     "displayName": "Guild",
     "summary": "Delegate focused software work through bounded role/profile handovers and repository-aware development guidance.",
-    "minimumPi": ">=0.87.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       {
         "name": "guild",

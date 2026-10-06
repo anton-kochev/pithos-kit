@@ -18,7 +18,7 @@ Or ask the main agent, “Use explorer/typescript to find the validation path an
 
 ## Install
 
-Requires Pi **0.87.0 or newer**. Provider-free tests run against exactly 0.99.0 and were last also checked against 0.87.0; other releases are not automatically certified.
+Requires Pi **1.0.0 or newer**. The provider-free development test harness remains pinned to 0.99.0; passing that harness does not certify Pi 1.x or real-provider behavior.
 
 Install the current release:
 

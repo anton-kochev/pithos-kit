@@ -1,4 +1,5 @@
-import { complete, StringEnum, type ToolCall, type UserMessage } from "@earendil-works/pi-ai";
+import { StringEnum, type ToolCall, type UserMessage } from "@earendil-works/pi-ai";
+import { complete } from "@earendil-works/pi-ai/compat";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { BorderedLoader } from "@earendil-works/pi-coding-agent";
 import {

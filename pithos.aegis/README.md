@@ -8,6 +8,8 @@ User-entered `!` and `!!` shell commands are not protected because they already 
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/aegis
 ```

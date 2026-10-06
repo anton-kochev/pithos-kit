@@ -6,6 +6,8 @@ Web adds bounded, read-only public Internet research to Pi. `web_search` uses th
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/web
 ```

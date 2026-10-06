@@ -23,9 +23,9 @@
     "node": ">=22.19.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-ai": "*",
-    "@earendil-works/pi-coding-agent": ">=0.84.0",
-    "@earendil-works/pi-tui": "*"
+    "@earendil-works/pi-ai": ">=1.0.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
+    "@earendil-works/pi-tui": ">=1.0.0"
   },
   "devDependencies": {
     "@earendil-works/pi-tui": "^0.84.0",
@@ -40,7 +40,7 @@
   "pithosKit": {
     "displayName": "Translate",
     "summary": "Translate interactive input into English and assistant output manually or display-only.",
-    "minimumPi": ">=0.84.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       {
         "name": "translate",

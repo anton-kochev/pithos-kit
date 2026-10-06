@@ -13,7 +13,7 @@
       "pithosKit": {
         "displayName": "Aegis",
         "summary": "Protect agent shell commands and file mutations with project rules.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "aegis",
@@ -47,7 +47,7 @@
       "pithosKit": {
         "displayName": "Answer",
         "summary": "Extract questions from the latest assistant response and answer them interactively.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "answer",
@@ -75,7 +75,7 @@
       "pithosKit": {
         "displayName": "Atlas",
         "summary": "Name sessions, inspect and configure Pithos, and manage guarded Pi runtime patches.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "pithos",
@@ -128,7 +128,7 @@
       "pithosKit": {
         "displayName": "Context Bar",
         "summary": "Show context-window composition above the editor and ChatGPT Codex usage in the footer.",
-        "minimumPi": ">=0.84.1",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "context-bar",
@@ -162,7 +162,7 @@
       "pithosKit": {
         "displayName": "Echo",
         "summary": "Ask an isolated read-only side agent about the session and project.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "ask",
@@ -203,7 +203,7 @@
       "pithosKit": {
         "displayName": "Guild",
         "summary": "Delegate focused software work through bounded role/profile handovers and repository-aware development guidance.",
-        "minimumPi": ">=0.87.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "guild",
@@ -318,7 +318,7 @@
       "pithosKit": {
         "displayName": "Plan",
         "summary": "Provide session-owned read-only planning, durable exact checkpoints, explicit save/preview/exit lifecycle commands, safe atomic publication, and a Plan theme.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "plan",
@@ -368,7 +368,7 @@
       "pithosKit": {
         "displayName": "Squiggle",
         "summary": "Quietly polish grammar and spelling in user prompts.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "squiggle",
@@ -427,7 +427,7 @@
       "pithosKit": {
         "displayName": "Telos",
         "summary": "Manage repo-scoped structured tasks through a command and agent tool.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "tasks",
@@ -466,7 +466,7 @@
       "pithosKit": {
         "displayName": "Themes",
         "summary": "Add accessible Auric light and dark themes with automatic appearance switching.",
-        "minimumPi": ">=0.84.1",
+        "minimumPi": ">=1.0.0",
         "commands": [],
         "tools": [],
         "prompts": [],
@@ -497,7 +497,7 @@
       "pithosKit": {
         "displayName": "Translate",
         "summary": "Translate interactive input into English and assistant output manually or display-only.",
-        "minimumPi": ">=0.84.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "translate",
@@ -531,7 +531,7 @@
       "pithosKit": {
         "displayName": "Web",
         "summary": "Search the public web with Brave and fetch bounded static HTML or text pages.",
-        "minimumPi": ">=0.83.0",
+        "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "web-setup",

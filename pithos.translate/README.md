@@ -2,7 +2,7 @@
 
 Bidirectional translation for [Pi](https://github.com/earendil-works/pi-mono): translate ordinary interactive prompts into English before the main agent turn, and translate eligible assistant prose manually or through display-only automatic output translation.
 
-Translate requires Pi **0.84.0 or later** because it uses the pre-expansion `input` event and synchronous display-only Markdown transformers.
+Translate requires Pi **1.0.0 or later**. It uses the pre-expansion `input` event and synchronous display-only Markdown transformers.
 
 ## Install
 

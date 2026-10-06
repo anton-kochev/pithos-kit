@@ -12,8 +12,8 @@ describe("Web package", () => {
 		assert.equal(manifest.name, "@pithos-kit/web");
 		assert.equal(manifest.version, "0.2.0");
 		assert.equal(manifest.engines.node, ">=22.19.0");
-		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=0.83.0");
-		assert.equal(manifest.pithosKit.minimumPi, ">=0.83.0");
+		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.0.0");
+		assert.equal(manifest.pithosKit.minimumPi, ">=1.0.0");
 		assert.deepEqual(manifest.pi.extensions, ["./extensions"]);
 		assert.deepEqual(manifest.pithosKit.commands, [{
 			name: "web-setup",

@@ -6,6 +6,8 @@ Echo adds a `/ask` command that spawns an isolated pi side-process with only rea
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/echo
 ```

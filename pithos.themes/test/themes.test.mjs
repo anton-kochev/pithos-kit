@@ -52,7 +52,8 @@ describe("@pithos-kit/themes", () => {
 	it("publishes a resource-only package containing both Auric themes", () => {
 		assert.equal(manifest.name, "@pithos-kit/themes");
 		assert.equal(manifest.version, "0.1.0");
-		assert.equal(manifest.pithosKit.minimumPi, ">=0.84.1");
+		assert.equal(manifest.pithosKit.minimumPi, ">=1.0.0");
+		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.0.0");
 		assert.deepEqual(manifest.pi, { themes: ["./themes"] });
 		assert.deepEqual(manifest.pithosKit.commands, []);
 		assert.deepEqual(manifest.pithosKit.themes.map(({ name }) => name), ["auric-dark", "auric-light"]);

@@ -10,7 +10,7 @@ The real bar uses a harmonious theme-aware color progression and spans the termi
 
 ## Install
 
-Context Bar requires Pi `0.84.1` or later. Do not add it to a Pithos environment still pinned to Pi `0.83.0`; Atlas will report that combination as incompatible.
+Context Bar requires Pi `1.0.0` or later. Atlas reports environments pinned to older Pi versions as incompatible.
 
 ```bash
 pi install npm:@pithos-kit/context-bar
@@ -93,7 +93,7 @@ Tiny categories may occupy less than one terminal cell and disappear from the pa
 
 ## Development
 
-Requires Node.js 22.19 or later and Pi 0.84.1 or later. This minimum includes upstream fixes for the dependency advisories affecting Pi 0.83.0.
+Requires Node.js 22.19 or later and Pi 1.0.0 or later.
 
 ```bash
 npm install

@@ -6,6 +6,8 @@ Atlas gives eligible new sessions readable synthetic names and includes a defaul
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/atlas
 ```
@@ -99,7 +101,7 @@ Codex · 5h 68% · week 74%
 
 It retains the current directory, Git branch, session name, provider, model, reasoning level, and extension status lines. It hides cumulative input/output/cache counts, cache-hit rate, estimated cost, context-window percentage, and the auto-compaction marker. The underlying accounting remains available through Pi's `/session`, RPC, and session data.
 
-Atlas 0.8.1 recognizes only complete reviewed stock or Atlas-patched footer digests for Pi 0.83.0, 0.84.1, and 0.84.2. Unknown versions plus locally or partially modified Pi sources are reported as unsupported and are never changed. Apply/remove preserve file permissions, bind mutation to the reviewed version and source digest, recheck source before an atomic same-directory replacement, and require an explicit confirmation naming the Pi version and target file. Atlas refuses mutation while Plan mode is active or indeterminate. Restart Pi after either operation.
+The optional built-in-file patch recognizes only complete reviewed stock or Atlas-patched footer digests for Pi 0.83.0, 0.84.1, and 0.84.2. It does not support the package's Pi 1.x minimum; use the normal runtime footer on Pi 1.x. Unknown versions plus locally or partially modified Pi sources are reported as unsupported and are never changed. Apply/remove preserve file permissions, bind mutation to the reviewed version and source digest, recheck source before an atomic same-directory replacement, and require an explicit confirmation naming the Pi version and target file. Atlas refuses mutation while Plan mode is active or indeterminate. Restart Pi after either operation.
 
 For Pithos image builds and other explicit non-interactive automation, the published package exposes the same engine as a CLI:
 
@@ -208,7 +210,7 @@ Start with `/pithos packages`: it is local and does not contact npm. Run `/pitho
 
 ## Development
 
-Atlas targets Pi `0.83.0` APIs for compatibility while this repository currently pins Pi `0.84.2` in `.pithos`. Context Bar still honestly reports its separate Pi `>=0.84.1` requirement.
+All pithos-kit packages require Pi `>=1.0.0`. Atlas's development test harness remains pinned to Pi `0.83.0`; passing it does not certify Pi 1.x runtime behavior.
 
 ```bash
 cd pithos.atlas

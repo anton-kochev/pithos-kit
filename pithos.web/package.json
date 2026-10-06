@@ -37,7 +37,7 @@
     "typescript": "^5.9.0"
   },
   "peerDependencies": {
-    "@earendil-works/pi-coding-agent": ">=0.83.0",
+    "@earendil-works/pi-coding-agent": ">=1.0.0",
     "typebox": "*"
   },
   "scripts": {
@@ -48,7 +48,7 @@
   "pithosKit": {
     "displayName": "Web",
     "summary": "Search the public web with Brave and fetch bounded static HTML or text pages.",
-    "minimumPi": ">=0.83.0",
+    "minimumPi": ">=1.0.0",
     "commands": [
       {
         "name": "web-setup",

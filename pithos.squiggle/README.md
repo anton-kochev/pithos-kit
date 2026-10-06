@@ -6,6 +6,8 @@ The extension intercepts user input, shows a `squiggling...` spinner while proce
 
 ## Install
 
+Requires Pi **1.0.0 or later**.
+
 ```bash
 pi install npm:@pithos-kit/squiggle
 ```
