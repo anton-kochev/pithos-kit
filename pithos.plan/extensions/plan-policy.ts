@@ -28,7 +28,9 @@ function soleNamedTool(tools: PlanToolInfo[], name: string): PlanToolInfo | unde
 
 export function isTrustedBuiltinTool(tools: PlanToolInfo[], name: string): boolean {
 	const tool = soleNamedTool(tools, name);
-	return tool?.sourceInfo.source === "builtin" && tool.sourceInfo.path === `<builtin:${name}>`;
+	// Pi 0.83 uses angle-bracket paths; newer runtimes use builtin:name.
+	return tool?.sourceInfo.source === "builtin"
+		&& (tool.sourceInfo.path === `<builtin:${name}>` || tool.sourceInfo.path === `builtin:${name}`);
 }
 
 function pathIsInside(parent: string, candidate: string): boolean {

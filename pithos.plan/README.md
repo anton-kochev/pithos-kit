@@ -178,7 +178,9 @@ without publishing does.
 ## Read-only enforcement
 
 Plan mode exposes trusted built-in `read`, `grep`, `find`, and `ls`, plus
-`update_plan_draft` and `create_plan`. When
+`update_plan_draft` and `create_plan`. Built-in provenance accepts both Pi's
+legacy `<builtin:name>` paths and current `builtin:name` paths; same-named
+custom tools remain blocked. When
 [`@pithos-kit/web`](https://www.npmjs.com/package/@pithos-kit/web) is installed,
 provenance-verified `web_search` and `web_fetch` remain available for public-web
 research. Web content is untrusted external data and must not be followed as

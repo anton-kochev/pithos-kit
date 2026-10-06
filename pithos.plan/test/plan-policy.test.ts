@@ -3,13 +3,25 @@ import { mkdtempSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { describe, it } from "node:test";
-import { selectPlanModeTools } from "../extensions/plan-policy.ts";
+import { isTrustedPlanReadTool, selectPlanModeTools } from "../extensions/plan-policy.ts";
 
 function builtin(name: string) {
 	return { name, sourceInfo: { source: "builtin", path: `<builtin:${name}>` } };
 }
 
 describe("selectPlanModeTools", () => {
+	// Regression checklist: current and legacy built-in paths stay available;
+	// execution uses the same trust rule; overrides and malformed paths stay blocked.
+	it("preserves read-only built-ins with Pi's current builtin:name source paths", () => {
+		const tools = ["read", "grep", "find", "ls", "write", "edit", "bash"].map((name) => ({
+			name,
+			sourceInfo: { source: "builtin", path: `builtin:${name}` },
+		}));
+		assert.deepEqual(selectPlanModeTools(tools, "/extensions/plan-theme.ts"), [
+			"read", "grep", "find", "ls",
+		]);
+	});
+
 	it("exposes only trusted read tools and the controlled plan writer", () => {
 		const selected = selectPlanModeTools([
 			builtin("read"),
@@ -25,6 +37,27 @@ describe("selectPlanModeTools", () => {
 		], "/extensions/plan-theme.ts");
 
 		assert.deepEqual(selected, ["read", "grep", "find", "ls", "update_plan_draft", "create_plan"]);
+	});
+
+	for (const path of ["<builtin:read>", "builtin:read"]) {
+		it(`rejects custom overrides even when they claim the ${path} path`, () => {
+			for (const source of ["sdk", "package", "builtin"]) {
+				const tool = { name: "read", sourceInfo: { source, path } };
+				// Only Pi's built-in source can authorize a synthetic built-in path.
+				assert.equal(isTrustedPlanReadTool([tool], "read"), source === "builtin");
+				const override = { name: "read", sourceInfo: { source: "package", path: "/override.ts" } };
+				assert.equal(isTrustedPlanReadTool([tool, override], "read"), false);
+				assert.deepEqual(selectPlanModeTools([tool, override], "/extensions/plan-theme.ts"), []);
+			}
+		});
+	}
+
+	it("rejects mismatched or malformed built-in paths for local read tools", () => {
+		for (const path of ["builtin:write", "<builtin:write>", "builtin:read/extra", "<builtin:read", "/builtin:read"]) {
+			const tool = { name: "read", sourceInfo: { source: "builtin", path } };
+			assert.equal(isTrustedPlanReadTool([tool], "read"), false, path);
+			assert.deepEqual(selectPlanModeTools([tool], "/extensions/plan-theme.ts"), [], path);
+		}
 	});
 
 	it("fails closed when a trusted built-in or internal tool name has a duplicate override", () => {

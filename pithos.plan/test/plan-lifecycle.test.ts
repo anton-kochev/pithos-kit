@@ -33,18 +33,24 @@ function parentLinkedBranch(entries: Entry[], leaf: Entry | undefined = entries.
 	return branch.reverse();
 }
 
-function builtin(name: string) {
+function builtin(name: string, pathFormat: "legacy" | "current" = "legacy") {
 	return {
 		name,
 		description: name,
 		parameters: {},
 		promptGuidelines: [],
-		sourceInfo: { source: "builtin", path: `<builtin:${name}>`, scope: "user", origin: "top-level" },
+		sourceInfo: {
+			source: "builtin",
+			path: pathFormat === "legacy" ? `<builtin:${name}>` : `builtin:${name}`,
+			scope: "user",
+			origin: "top-level",
+		},
 	};
 }
 
 function createHarness(options: {
 	cwd: string;
+	builtinPathFormat?: "legacy" | "current";
 	sessionId?: string;
 	sessionFile?: string;
 	entries?: Entry[];
@@ -74,7 +80,8 @@ function createHarness(options: {
 	let branchEntries = options.branch ?? allEntries;
 	const appended: Entry[] = [];
 	const notifications: Array<{ message: string; level: string }> = [];
-	const allTools: any[] = ["read", "grep", "find", "ls", "write", "edit", "bash"].map(builtin);
+	const allTools: any[] = ["read", "grep", "find", "ls", "write", "edit", "bash"]
+		.map((name) => builtin(name, options.builtinPathFormat));
 	let activeTools = allTools.map((tool) => tool.name);
 	const registeredTools = new Map<string, any>();
 	let sessionName = options.sessionName;
@@ -406,6 +413,30 @@ async function publishLatest(
 }
 
 describe("Plan session lifecycle", () => {
+	for (const builtinPathFormat of ["legacy", "current"] as const) {
+		it(`exposes and admits local read tools with ${builtinPathFormat} source paths, while blocking mutation`, async () => {
+			await withHarness({ builtinPathFormat }, async (harness) => {
+				const normalTools = [...harness.getActiveTools()];
+				await input(harness, "/plan");
+				for (const name of ["read", "grep", "find", "ls"]) {
+					assert.ok(harness.getActiveTools().includes(name), `${name} must be exposed`);
+					assert.equal(await harness.handlers.get("tool_call")?.({
+						type: "tool_call", toolCallId: `test-${name}`, toolName: name, input: {},
+					}, harness.ctx), undefined, `${name} must be admitted`);
+				}
+				for (const name of ["write", "edit", "bash"]) {
+					assert.equal(harness.getActiveTools().includes(name), false);
+					const result = await harness.handlers.get("tool_call")?.({
+						type: "tool_call", toolCallId: `test-${name}`, toolName: name, input: {},
+					}, harness.ctx);
+					assert.equal(result?.block, true);
+				}
+				await input(harness, "/plan exit");
+				assert.deepEqual(harness.getActiveTools(), normalTools);
+			});
+		});
+	}
+
 	it("creates one stable session-owned identity on bare /plan and treats re-entry while active as a no-op", async () => {
 		await withHarness({}, async (harness) => {
 			const first = await input(harness, "/plan");
