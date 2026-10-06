@@ -11,6 +11,7 @@ A monorepo of independently published Pi extensions, skills, prompts, themes, an
 - [`pithos.aegis/`](./pithos.aegis) — protect Pi agent shell commands and file mutations with configurable rules. [![npm version](https://img.shields.io/npm/v/@pithos-kit/aegis.svg)](https://www.npmjs.com/package/@pithos-kit/aegis)
 - [`pithos.guild/`](./pithos.guild) — bounded explorer, architect, coder, and reviewer handovers with reusable .NET, Angular, TypeScript, Rust, front-end, and general profiles plus repository-aware development guidance. [![npm version](https://img.shields.io/npm/v/@pithos-kit/guild.svg)](https://www.npmjs.com/package/@pithos-kit/guild)
 - [`pithos.context-bar/`](./pithos.context-bar) — context-window composition above the editor and ChatGPT Codex subscription usage in the footer. [![npm version](https://img.shields.io/npm/v/@pithos-kit/context-bar.svg)](https://www.npmjs.com/package/@pithos-kit/context-bar)
+- [`pithos.clio/`](./pithos.clio) — automatic evidence-backed documentation capture with an isolated read-only analyst and guarded, reviewable documentation diffs.
 - [`pithos.plan/`](./pithos.plan) — session-owned read-only planning with durable checkpoints, explicit lifecycle commands, and conflict-safe publication. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
 - [`pithos.themes/`](./pithos.themes) — accessible Auric light and dark themes with automatic appearance switching. [![npm version](https://img.shields.io/npm/v/@pithos-kit/themes.svg)](https://www.npmjs.com/package/@pithos-kit/themes)
 - [`pithos.translate/`](./pithos.translate) — translate ordinary interactive prompts into English and assistant prose manually or display-only. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
@@ -62,7 +63,9 @@ Atlas can validate and interactively manage toolchain versions, `pi.version`, an
 
 Pi can hide or expose the Guild TDD skill without another extension. Run `pi config` for global settings or `pi config -l` for a project override, toggle the `tdd` skill, then run `/reload` in an active Pi session. Disabling the resource removes its model-visible description and native command after reload. When TDD is enabled, `enableSkillCommands` controls command registration and autocomplete; only disabling the resource makes the skill invisible to the agent. Instructions already expanded into conversation history remain unless you start a new session or branch from before the invocation.
 
-All packages require Pi `>=1.0.0`. Package metadata and Pi peer dependencies declare the same minimum; Atlas reports incompatible combinations rather than silently accepting them.
+Packages require Pi `>=1.0.0` unless their manifests specify a newer minimum. Clio requires Pi `>=1.0.3` for its verified settlement and guarded nested-tool contracts. Package metadata and Pi peer dependencies declare matching minimums; Atlas reports incompatible combinations rather than silently accepting them.
+
+Clio is automatic when loaded. Prefer project-local installation (`pi install -l ./pithos.clio` from this checkout) to scope capture to one project. It analyzes coding and investigation evidence, updates existing documentation, and safely creates pages in allowed documentation directories without staging or committing. Clio is standalone and uses Pi's normal tool hooks, with no Aegis dependency. See [`pithos.clio/README.md`](./pithos.clio/README.md) for model/thinking configuration, progress, safety boundaries, and custom-tool permission coverage.
 
 ## Diagnostics logging
 
@@ -107,6 +110,7 @@ pi install -l ./pithos.aegis
 pi install -l ./pithos.guild
 pi install -l ./pithos.context-bar
 pi install -l ./pithos.plan
+pi install -l ./pithos.clio
 pi install -l ./pithos.themes
 pi install -l ./pithos.translate
 pi install -l ./pithos.web
@@ -143,6 +147,7 @@ git push --follow-tags
 | `pithos.guild` | `@pithos-kit/guild` | `pithos-kit.guild-v` | `publish-pithos.guild.yml` |
 | `pithos.context-bar` | `@pithos-kit/context-bar` | `pithos-kit.context-bar-v` | `publish-pithos.context-bar.yml` |
 | `pithos.plan` | `@pithos-kit/plan` | `pithos-kit.plan-v` | `publish-pithos.plan.yml` |
+| `pithos.clio` | `@pithos-kit/clio` | `pithos-kit.clio-v` | `publish-pithos.clio.yml` |
 | `pithos.themes` | `@pithos-kit/themes` | `pithos-kit.themes-v` | `publish-pithos.themes.yml` |
 | `pithos.translate` | `@pithos-kit/translate` | `pithos-kit.translate-v` | `publish-pithos.translate.yml` |
 | `pithos.web` | `@pithos-kit/web` | `pithos-kit.web-v` | `publish-pithos.web.yml` |

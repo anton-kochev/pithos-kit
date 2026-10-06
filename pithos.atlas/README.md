@@ -210,7 +210,7 @@ Start with `/pithos packages`: it is local and does not contact npm. Run `/pitho
 
 ## Development
 
-All pithos-kit packages require Pi `>=1.0.0`. Atlas's development test harness remains pinned to Pi `0.83.0`; passing it does not certify Pi 1.x runtime behavior.
+All pithos-kit packages require at least Pi `1.0.0`; individual packages may declare a newer minimum (Clio requires `>=1.0.3`). Atlas's development test harness remains pinned to Pi `0.83.0`; passing it does not certify Pi 1.x runtime behavior.
 
 ```bash
 cd pithos.atlas

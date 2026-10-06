@@ -57,6 +57,7 @@ describe("Atlas catalog manifest validation", () => {
 			"pithos.themes",
 			"pithos.translate",
 			"pithos.web",
+			"pithos.clio",
 			"pithos.atlas",
 		];
 		const manifests = directories.map((directory) => JSON.parse(readFileSync(resolve(root, directory, "package.json"), "utf8")));

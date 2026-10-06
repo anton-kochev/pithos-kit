@@ -117,6 +117,48 @@
       }
     },
     {
+      "name": "@pithos-kit/clio",
+      "version": "0.1.0",
+      "description": "Clio: automatic evidence-backed documentation capture for Pi.",
+      "pi": {
+        "extensions": [
+          "./extensions/index.ts"
+        ],
+        "skills": [],
+        "prompts": [],
+        "themes": []
+      },
+      "pithosKit": {
+        "displayName": "Clio",
+        "summary": "Automatically capture evidence-backed documentation through guarded parent tools.",
+        "minimumPi": ">=1.0.3",
+        "commands": [],
+        "tools": [
+          {
+            "name": "clio_capture",
+            "summary": "Host-scheduled documentation capture.",
+            "internal": true
+          },
+          {
+            "name": "clio_create_document",
+            "summary": "Host-authorized exclusive new-page publication; deferred internal mutation tool.",
+            "internal": true
+          }
+        ],
+        "prompts": [],
+        "skills": [],
+        "themes": [],
+        "agents": [],
+        "configuration": [
+          {
+            "kind": "file",
+            "key": ".pi/clio.json",
+            "summary": "Project-local worker model, thinking, documentation directories and finite limits."
+          }
+        ]
+      }
+    },
+    {
       "name": "@pithos-kit/context-bar",
       "version": "0.2.0",
       "description": "A context-window composition bar with ChatGPT Codex subscription usage for Pi.",

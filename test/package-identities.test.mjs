@@ -18,6 +18,8 @@ const packages = [
   { directory: "pithos.themes", shortName: "themes", version: "0.1.0" },
   { directory: "pithos.translate", shortName: "translate", version: "2.0.0" },
   { directory: "pithos.web", shortName: "web", version: "0.2.0" },
+  // Clio relies on the guarded nested-tool and settlement contracts verified on 1.0.3.
+  { directory: "pithos.clio", shortName: "clio", version: "0.1.0", minimumPi: ">=1.0.3" },
   { directory: "pithos.atlas", shortName: "atlas", version: "0.8.1" },
 ];
 
@@ -46,7 +48,7 @@ describe("pithos-kit package identities", () => {
     assert.match(readme, /^# pithos-kit$/m);
 
     const manifests = [];
-    for (const { directory, shortName, version } of packages) {
+    for (const { directory, shortName, version, minimumPi: packageMinimum = minimumPi } of packages) {
       assert.equal(existsSync(resolve(root, directory)), true, `missing ${directory}/`);
 
       const manifest = readJson(resolve(root, directory, "package.json"));
@@ -59,11 +61,11 @@ describe("pithos-kit package identities", () => {
 
       assert.equal(typeof manifest.pithosKit?.displayName, "string");
       assert.equal(typeof manifest.pithosKit?.summary, "string");
-      assert.equal(manifest.pithosKit?.minimumPi, minimumPi, `${manifest.name} Pi minimum`);
-      assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], minimumPi);
+      assert.equal(manifest.pithosKit?.minimumPi, packageMinimum, `${manifest.name} Pi minimum`);
+      assert.equal(manifest.peerDependencies?.["@earendil-works/pi-coding-agent"], packageMinimum);
       for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
         if (name.startsWith("@earendil-works/pi-")) {
-          assert.equal(range, minimumPi, `${manifest.name} peer ${name}`);
+          assert.equal(range, packageMinimum, `${manifest.name} peer ${name}`);
         }
       }
       assert.equal(Array.isArray(manifest.pithosKit?.configuration), true);
@@ -92,7 +94,8 @@ describe("pithos-kit package identities", () => {
 
       const packageReadme = readFileSync(resolve(root, directory, "README.md"), "utf8");
       assert.match(packageReadme, /\.pithos/u, `${manifest.name} must document .pithos`);
-      assert.match(packageReadme, /requires Pi (?:\*\*|`)?1\.0\.0/iu, `${manifest.name} must document the Pi minimum`);
+      const documentedMinimum = packageMinimum.slice(2).replaceAll(".", "\\.");
+      assert.match(packageReadme, new RegExp(`requires (?:\\*\\*|\x60)?Pi (?:\\*\\*|\x60)?${documentedMinimum}`, "iu"), `${manifest.name} must document the Pi minimum`);
       assert.match(packageReadme, new RegExp(`"@pithos-kit/${shortName}": "npm:${version.replaceAll(".", "\\.")}"`));
       if (shortName === "atlas") {
         assert.match(packageReadme, /\/pithos help/u);

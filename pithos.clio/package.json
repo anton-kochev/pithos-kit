@@ -1,0 +1,89 @@
+{
+  "name": "@pithos-kit/clio",
+  "version": "0.1.0",
+  "description": "Clio: automatic evidence-backed documentation capture for Pi.",
+  "type": "module",
+  "license": "MIT",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pithos",
+    "documentation"
+  ],
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/anton-kochev/pithos-kit.git",
+    "directory": "pithos.clio"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-agent-core": ">=1.0.3",
+    "@earendil-works/pi-ai": ">=1.0.3",
+    "@earendil-works/pi-coding-agent": ">=1.0.3",
+    "@earendil-works/pi-tui": ">=1.0.3",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-agent-core": "1.0.3",
+    "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/pi-coding-agent": "1.0.3",
+    "@earendil-works/pi-tui": "1.0.3",
+    "typebox": "1.3.27",
+    "@types/node": "^24.0.0",
+    "tsx": "^4.20.4",
+    "typescript": "^5.9.0"
+  },
+  "pithosKit": {
+    "displayName": "Clio",
+    "summary": "Automatically capture evidence-backed documentation through guarded parent tools.",
+    "minimumPi": ">=1.0.3",
+    "commands": [],
+    "tools": [
+      {
+        "name": "clio_capture",
+        "summary": "Host-scheduled documentation capture.",
+        "internal": true
+      },
+      {
+        "name": "clio_create_document",
+        "summary": "Host-authorized exclusive new-page publication; deferred internal mutation tool.",
+        "internal": true
+      }
+    ],
+    "prompts": [],
+    "skills": [],
+    "themes": [],
+    "agents": [],
+    "configuration": [
+      {
+        "kind": "file",
+        "key": ".pi/clio.json",
+        "summary": "Project-local worker model, thinking, documentation directories and finite limits."
+      }
+    ]
+  },
+  "pi": {
+    "extensions": [
+      "./extensions/index.ts"
+    ],
+    "skills": [],
+    "prompts": [],
+    "themes": []
+  },
+  "files": [
+    "extensions",
+    "src",
+    "README.md",
+    "NOTICE.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  }
+}

@@ -137,7 +137,9 @@ describe("Atlas extension", () => {
 			const result = await tools.get("pithos_info").execute("call", { action: "catalog" }, undefined, undefined, {
 				cwd: "/project",
 			} as never);
-			assert.equal(result.details.packages.length, 12);
+			assert.equal(result.details.packages.length, 13);
+			const clio = result.details.packages.find((item: { name: string }) => item.name === "@pithos-kit/clio");
+			assert.equal(clio?.pithosKit.minimumPi, ">=1.0.3");
 		} finally {
 			globalThis.fetch = originalFetch;
 		}
