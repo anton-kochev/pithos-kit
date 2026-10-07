@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/atlas",
-  "version": "0.8.1",
+  "version": "0.9.0",
   "description": "Session names, catalog, diagnostics, configuration, and guarded Pi runtime patches for pithos-kit.",
   "keywords": [
     "pi-package",

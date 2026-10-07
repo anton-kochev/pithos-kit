@@ -20,7 +20,7 @@ const packages = [
   { directory: "pithos.web", shortName: "web", version: "0.2.0" },
   // Clio relies on the guarded nested-tool and settlement contracts verified on 1.0.3.
   { directory: "pithos.clio", shortName: "clio", version: "0.0.1", minimumPi: ">=1.0.3" },
-  { directory: "pithos.atlas", shortName: "atlas", version: "0.8.1" },
+  { directory: "pithos.atlas", shortName: "atlas", version: "0.9.0" },
 ];
 
 const capabilityKinds = ["commands", "tools", "prompts", "skills", "themes", "agents"];

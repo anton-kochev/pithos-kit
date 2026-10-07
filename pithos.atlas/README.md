@@ -15,7 +15,7 @@ pi install npm:@pithos-kit/atlas
 Pin an exact version:
 
 ```bash
-pi install npm:@pithos-kit/atlas@0.8.1
+pi install npm:@pithos-kit/atlas@0.9.0
 ```
 
 For local development:
@@ -29,7 +29,7 @@ pi install -l ./pithos.atlas
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/atlas": "npm:0.8.1"
+    "@pithos-kit/atlas": "npm:0.9.0"
 ```
 
 The separate Pithos base image can preinstall Atlas so it remains available to diagnose a project configuration that would otherwise prevent project packages from loading.
@@ -122,7 +122,7 @@ On Windows, the launcher recognizes npm's global-prefix `node_modules` and proje
 For example, an image or container entrypoint can expose the persistent launcher transparently as `pi` while leaving the recreated Pi installation later on `PATH`:
 
 ```bash
-npm install --global --prefix /persistent/atlas --legacy-peer-deps @pithos-kit/atlas@0.8.1
+npm install --global --prefix /persistent/atlas --legacy-peer-deps @pithos-kit/atlas@0.9.0
 mkdir -p /persistent/pi-wrapper
 ln -sfn /persistent/atlas/bin/pithos-atlas-pi /persistent/pi-wrapper/pi
 export PATH="/persistent/pi-wrapper:/opt/pi-npm/bin:$PATH"
