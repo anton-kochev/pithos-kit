@@ -83,7 +83,7 @@ test('invalid mixed evidence batches terminate before any reads; turn and file b
     const files = await snapshot(root, ['src/cache.ts'], config);
     let turns = 0;
     const result = await runWorker(context(() => { turns++; return call('read', 'src/rules.ts'); }), files, config, undefined, {root});
-    assert.equal(turns, settings.maxTurns ?? 1);
+    assert.equal(turns, settings.maxTurns ?? config.maxTurns);
     assert.ok(result.problem);
     assert.equal(result.proposal, undefined);
   }
@@ -215,3 +215,41 @@ test('latest task user survives long assistant and tool traffic within the conte
   assert.doesNotMatch(prompt, /RAW_RESULT/);
   assert.ok(Buffer.byteLength(prompt) < 25000);
 });
+
+test('capacity refusal permits final proposal from prior snapshots only', async () => fixture(async root => {
+  for (const citeRefused of [false, true]) {
+    const config = parseConfig({maxFiles: 2});
+    const files = await snapshot(root, ['src/cache.ts'], config);
+    let turns = 0;
+    const result = await runWorker(context(ctx => {
+      if (++turns === 1) return call('read', 'src/rules.ts');
+      const feedback = ctx.messages.filter((m: any) => m.role === 'toolResult').at(-1);
+      assert.equal(feedback.isError, false);
+      const body = JSON.parse(feedback.content[0].text);
+      assert.deepEqual(body.refusal, {limit: 'file-count', current: 2, requested: 1, max: 2});
+      assert.equal(body.status, 'capacity');
+      assert.doesNotMatch(feedback.content[0].text, /export const ttl/);
+      return message([{type: 'text', text: JSON.stringify({findings: [{claim: 'Cache enabled', kind: 'observed', sources: [{path: citeRefused ? 'src/rules.ts' : 'src/cache.ts', startLine: 1, endLine: 1}]}], edits: [], unresolved: []})}]);
+    }), files, config, undefined, {root});
+    assert.equal(turns, 2);
+    assert.equal(files.some(f => f.path === 'src/rules.ts'), false);
+    if (citeRefused) assert.match(result.problem!, /invalid source reference/);
+    else { assert.equal(result.problem, undefined); assert.equal(result.proposal?.findings.length, 1); }
+  }
+}));
+
+test('worker exposes initial allowance and distinguishes hard request context and turn caps', async () => fixture(async root => {
+  const config = parseConfig({maxTurns: 1});
+  const files = await snapshot(root, ['src/cache.ts'], config);
+  const result = await runWorker(context(ctx => {
+    const prompt = JSON.parse(ctx.messages.find((m: any) => m.role === 'user').content[0].text);
+    assert.equal(prompt.budget.remainingFiles, config.maxFiles - files.length);
+    assert.equal(prompt.budget.remainingEvidenceBytes, config.maxContextBytes - Buffer.byteLength(JSON.stringify(files)));
+    return call('read', 'src/rules.ts');
+  }), files, config, undefined, {root});
+  assert.match(result.problem!, /request-turns.*current=1.*requested=1.*max=1/);
+  let requests = 0;
+  const constrained = await runWorker(context(() => { requests++; return empty(); }), files, parseConfig({maxContextBytes: 1000}), undefined, {root});
+  assert.equal(requests, 0);
+  assert.match(constrained.problem!, /request-context-bytes.*current=0.*requested=\d+.*max=1000/);
+}));

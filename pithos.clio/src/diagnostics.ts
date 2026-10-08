@@ -1,5 +1,6 @@
 import { redactSensitive } from './context.ts';
 import { isExcludedEvidencePath } from './evidence.ts';
+import { BudgetError } from './budget.ts';
 
 // Diagnostics are excerpts, not a complete secret classifier. Drop terminal
 // sequences/format controls before heuristic matching, and redact before limits.
@@ -49,6 +50,7 @@ const evidenceReasons = new Set([
   'Clio: growing file exceeds budget',
 ]);
 export function evidenceFailureReason(error: unknown): string | undefined {
+  if (error instanceof BudgetError) return error.message;
   if (error instanceof Error) {
     if (evidenceReasons.has(error.message)) return error.message;
     if (error.message.startsWith('Clio: excluded path ')) return 'Clio: excluded path';

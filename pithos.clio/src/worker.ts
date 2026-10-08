@@ -9,6 +9,7 @@ import { Value } from 'typebox/value';
 import { taskContext, type SessionObservation } from './context.ts';
 import type { Destination } from './destinations.ts';
 import { evidenceFailureReason, workerDiagnostic } from './diagnostics.ts';
+import { BudgetError, evidenceBudget } from './budget.ts';
 
 type WorkerContext = Pick<ExtensionContext, 'model' | 'thinkingLevel'> & {
   modelRegistry: Pick<ExtensionContext['modelRegistry'], 'find' | 'getAvailable' | 'streamSimple'>;
@@ -51,12 +52,15 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
     toolExecution: 'sequential',
     finishTurn: ({message, toolResults}) => {
       if (toolResults.some(r => r.isError)) toolProblem ??= evidenceFailure ?? workerDiagnostic('Clio: worker incomplete (evidence tool refused or failed)', result.model, turns);
-      if (turns >= config.maxTurns && message.stopReason === 'toolUse') toolProblem ??= 'Clio: worker turn budget exhausted before final proposal';
+      if (turns >= config.maxTurns && message.stopReason === 'toolUse') toolProblem ??= new BudgetError('request-turns', turns, 1, config.maxTurns).message;
       if (toolProblem || message.stopReason !== 'toolUse') return {action: 'end'};
     },
     streamFn: (m, context, options) => ctx.modelRegistry.streamSimple(m, context, {...options, maxTokens: Math.min(model.maxTokens, Math.ceil(config.maxResultBytes / 3))}),
     prepareRequest: ({context}) => {
-      if (++turns > config.maxTurns || Buffer.byteLength(JSON.stringify(context)) > config.maxContextBytes) throw new Error('Clio: worker context/turn budget exceeded');
+      if (turns >= config.maxTurns) throw new BudgetError('request-turns', turns, 1, config.maxTurns);
+      const bytes = Buffer.byteLength(JSON.stringify(context));
+      if (bytes > config.maxContextBytes) throw new BudgetError('request-context-bytes', 0, bytes, config.maxContextBytes);
+      turns++;
     },
   });
   const abort = () => agent.abort();
@@ -96,7 +100,7 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
   });
   try {
     if (signal?.aborted) throw new Error('Clio: cancelled');
-    await agent.prompt(JSON.stringify({schema: ProposalSchema, task, destinations: evidence?.destinations?.map(({path, missing}) => ({path, missing})), files: files.map(({path, text, doc}) => ({path, text, doc}))}));
+    await agent.prompt(JSON.stringify({schema: ProposalSchema, task, budget: evidenceBudget(files, config), destinations: evidence?.destinations?.map(({path, missing}) => ({path, missing})), files: files.map(({path, text, doc}) => ({path, text, doc}))}));
     if (signal?.aborted || timedOut) throw new Error(timedOut ? 'Clio: worker timeout' : 'Clio: cancelled');
     if (toolProblem) throw new Error(toolProblem);
     if (stop !== 'stop') throw new Error(workerDiagnostic(`Clio: worker incomplete (${stop || 'unknown'})`, result.model, turns, failureReason));

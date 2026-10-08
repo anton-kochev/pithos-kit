@@ -6,6 +6,7 @@ import { Value } from 'typebox/value';
 import type { Config } from './config.ts';
 import type { Destination } from './destinations.ts';
 import { redactSensitive, type SessionObservation } from './context.ts';
+import { BudgetError } from './budget.ts';
 
 const excluded = /(^|\/)(?:\.[^/]+|node_modules|vendor|dist|build|coverage|assets|generated|skills?|prompts?|instructions?)(\/|$)|(?:^|\/)(?:AGENTS(?:\.override)?|CLAUDE|SKILL|SYSTEM|APPEND_SYSTEM)\.md$|(?:secret|credential|password|token|private|instructions?|\.generated\.|\.min\.)/i;
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go', '.cs', '.java', '.rb', '.md']);
@@ -20,6 +21,12 @@ export function isDoc(path: string, config: Config): boolean {
 export function assertStableEditPath(path: string): void {
   if (path.startsWith('@') || /^~(?:\/|$)/.test(path) || path.startsWith('file://') || /[\u00a0\u2000-\u200a\u202f\u205f\u3000]/.test(path)) throw new Error('Clio: path normalization refused');
 }
+// Only a missing component at lstat is ordinary directory absence. Root and
+// canonicalization failures (including dangling symlinks) remain fatal.
+export class DirectoryNotFoundError extends Error {
+  readonly code = 'ENOENT';
+  constructor() { super('Clio: directory not found'); }
+}
 export async function safeDirectory(root: string, path: string): Promise<string> {
   const base = await realpath(root);
   if (path === '.') return base;
@@ -27,7 +34,10 @@ export async function safeDirectory(root: string, path: string): Promise<string>
   let target = base;
   for (const part of path.split('/')) {
     target = join(target, part);
-    const stat = await lstat(target);
+    const stat = await lstat(target).catch((error: unknown) => {
+      if (error instanceof Error && 'code' in error && error.code === 'ENOENT') throw new DirectoryNotFoundError();
+      throw error;
+    });
     if (stat.isSymbolicLink() || !stat.isDirectory()) throw new Error('Clio: unsafe directory');
   }
   if (await realpath(target) !== resolve(base, path)) throw new Error('Clio: canonical directory changed');
@@ -51,10 +61,11 @@ export async function safeFile(root: string, path: string, config: Config, doc =
   const handle = await open(target, 'r');
   try {
     const stat = await handle.stat();
-    if (!stat.isFile() || stat.nlink !== 1 || stat.size > config.maxContextBytes) throw new Error('Clio: file budget exceeded');
+    if (!stat.isFile() || stat.nlink !== 1) throw new Error('Clio: file budget exceeded');
+    if (stat.size > config.maxContextBytes) throw new BudgetError('evidence-bytes', 0, stat.size, config.maxContextBytes);
     const buffer = Buffer.alloc(config.maxContextBytes + 1);
     const {bytesRead} = await handle.read(buffer, 0, buffer.length, 0);
-    if (bytesRead > config.maxContextBytes) throw new Error('Clio: growing file exceeds budget');
+    if (bytesRead > config.maxContextBytes) throw new BudgetError('evidence-bytes', 0, bytesRead, config.maxContextBytes);
     const text = new TextDecoder('utf-8', {fatal: true, ignoreBOM: true}).decode(buffer.subarray(0, bytesRead));
     assertSafeContent(text, config);
     return {path, text, hash: createHash('sha256').update(text).digest('hex'), dev: stat.dev, ino: stat.ino, doc: isDoc(path, config)};
