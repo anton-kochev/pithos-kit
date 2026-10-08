@@ -23,7 +23,7 @@ Requires Pi **1.0.0 or newer**. The provider-free development test harness remai
 Install the current release:
 
 ```bash
-pi install npm:@pithos-kit/guild@0.6.0
+pi install npm:@pithos-kit/guild@0.7.0
 ```
 
 For local development from this repository:
@@ -44,7 +44,7 @@ pi -e ./pithos.guild
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/guild": "npm:0.6.0"
+    "@pithos-kit/guild": "npm:0.7.0"
 ```
 
 ## Roles and profiles
