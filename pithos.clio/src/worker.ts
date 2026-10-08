@@ -8,6 +8,7 @@ import { evidenceTool } from './exploration.ts';
 import { Value } from 'typebox/value';
 import { taskContext, type SessionObservation } from './context.ts';
 import type { Destination } from './destinations.ts';
+import { evidenceFailureReason, workerDiagnostic } from './diagnostics.ts';
 
 type WorkerContext = Pick<ExtensionContext, 'model' | 'thinkingLevel'> & {
   modelRegistry: Pick<ExtensionContext['modelRegistry'], 'find' | 'getAvailable' | 'streamSimple'>;
@@ -32,13 +33,24 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
   let measuredTurns = 0;
   let timedOut = false;
   let toolProblem: string | undefined;
+  let evidenceFailure: string | undefined;
   const tools = evidence?.root ? [evidenceTool(evidence.root, files, config)] : [];
+  for (const tool of tools) {
+    const execute = tool.execute;
+    tool.execute = async (id, args, signal, onUpdate) => {
+      try { return await execute(id, args, signal, onUpdate); }
+      catch (error) {
+        evidenceFailure ??= workerDiagnostic('Clio: worker incomplete (evidence tool refused or failed)', result.model, turns, evidenceFailureReason(error), args);
+        throw error;
+      }
+    };
+  }
   const task = taskContext(evidence?.entries ?? [], config);
   const agent = new Agent({
     initialState: {model, thinkingLevel: thinking, tools, systemPrompt: POLICY},
     toolExecution: 'sequential',
     finishTurn: ({message, toolResults}) => {
-      if (toolResults.some(r => r.isError)) toolProblem ??= 'Clio: worker incomplete (evidence tool refused or failed)';
+      if (toolResults.some(r => r.isError)) toolProblem ??= evidenceFailure ?? workerDiagnostic('Clio: worker incomplete (evidence tool refused or failed)', result.model, turns);
       if (turns >= config.maxTurns && message.stopReason === 'toolUse') toolProblem ??= 'Clio: worker turn budget exhausted before final proposal';
       if (toolProblem || message.stopReason !== 'toolUse') return {action: 'end'};
     },
@@ -52,6 +64,7 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
   const timer = setTimeout(() => { timedOut = true; agent.abort(); }, config.timeoutMs);
   let finalText = '';
   let stop = '';
+  let failureReason: string | undefined;
   const unsubscribe = agent.subscribe(event => {
     if (event.type === 'message_update' && Buffer.byteLength(JSON.stringify(event.message)) > config.maxResultBytes) agent.abort();
     if (event.type === 'message_end' && event.message.role === 'assistant') {
@@ -77,6 +90,7 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
         agent.abort();
       }
       stop = m.stopReason;
+      failureReason = m.errorMessage;
       finalText = m.content.filter(c => c.type === 'text').map(c => c.text).join('');
     }
   });
@@ -85,7 +99,7 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
     await agent.prompt(JSON.stringify({schema: ProposalSchema, task, destinations: evidence?.destinations?.map(({path, missing}) => ({path, missing})), files: files.map(({path, text, doc}) => ({path, text, doc}))}));
     if (signal?.aborted || timedOut) throw new Error(timedOut ? 'Clio: worker timeout' : 'Clio: cancelled');
     if (toolProblem) throw new Error(toolProblem);
-    if (stop !== 'stop') throw new Error(`Clio: worker incomplete (${stop || 'unknown'})`);
+    if (stop !== 'stop') throw new Error(workerDiagnostic(`Clio: worker incomplete (${stop || 'unknown'})`, result.model, turns, failureReason));
     result.proposal = validateProposal(finalText, files, config, task.entries, evidence?.destinations);
     const cited = new Set(result.proposal.findings.flatMap(f => f.sources.flatMap(s => 'entryId' in s ? [s.entryId] : [])));
     result.sessionEvidence = task.entries.filter(e => cited.has(e.entryId));

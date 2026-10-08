@@ -10,6 +10,7 @@ import { redactSensitive, type SessionObservation } from './context.ts';
 const excluded = /(^|\/)(?:\.[^/]+|node_modules|vendor|dist|build|coverage|assets|generated|skills?|prompts?|instructions?)(\/|$)|(?:^|\/)(?:AGENTS(?:\.override)?|CLAUDE|SKILL|SYSTEM|APPEND_SYSTEM)\.md$|(?:secret|credential|password|token|private|instructions?|\.generated\.|\.min\.)/i;
 const sourceExtensions = new Set(['.ts', '.tsx', '.js', '.jsx', '.mjs', '.cjs', '.py', '.rs', '.go', '.cs', '.java', '.rb', '.md']);
 export interface Snapshot { path: string; text: string; hash: string; dev: number; ino: number; doc: boolean }
+export function isExcludedEvidencePath(path: string): boolean { return excluded.test(path); }
 export function isDoc(path: string, config: Config): boolean {
   return !excluded.test(path) && (/(^|\/)README\.md$/.test(path) || (path.endsWith('.md') && (path.split('/').slice(0, -1).includes('docs') || config.docsDirs.some(d => path.startsWith(d + '/')))));
 }

@@ -67,6 +67,8 @@ Packages require Pi `>=1.0.0` unless their manifests specify a newer minimum. Cl
 
 Clio is automatic when loaded. Prefer project-local installation (`pi install -l ./pithos.clio` from this checkout) to scope capture to one project. It analyzes coding and investigation evidence, updates existing documentation, and safely creates pages in allowed documentation directories without staging or committing. Clio is standalone and uses Pi's normal tool hooks, with no Aegis dependency. See [`pithos.clio/README.md`](./pithos.clio/README.md) for model/thinking configuration, progress, safety boundaries, and custom-tool permission coverage.
 
+Clio's `worker incomplete (...)` diagnostics include the selected model, turn, and a bounded, sanitized reason. Evidence-tool failures also include the action and a filtered relative path, and stop the worker before proposal validation. Unrecognized evidence errors report `No failure reason available`; diagnostic redaction is heuristic, not a guarantee that all sensitive content is removed.
+
 ## Diagnostics logging
 
 Pithos Kit runtime extensions support opt-in JSON Lines diagnostics. Logging is disabled by default. Enable per-package logs while debugging with:

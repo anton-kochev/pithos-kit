@@ -378,3 +378,33 @@ permission boundary. Independently reran Clio `npm test` (**85 passed**), typech
 and package dry-run (**18 files**); root `npm test` (**3 passed**); restored Aegis
 `npm test` (**5 passed**). Focused static review found no actionable defects.
 No staging, commit, runtime installation or release was performed.
+
+## Worker failure diagnostics
+
+Test list: streamed provider error; synchronous stream exception; failed evidence
+call among successful siblings; missing reason; byte bounds/redaction order;
+reflected request payloads; unsafe paths; errors after an investigation turn.
+The delegated attempt ended prematurely; the parent inspected its partial files,
+restored the original worker reporting before checking the regression red, and
+completed implementation and validation. Only Clio files were changed.
+
+| Behavior | Observed red | Observed green |
+| --- | --- | --- |
+| Streamed/synchronous provider explanations | Original reporting returned only `Clio: worker incomplete (error)`, missing HTTP 429/401 explanations | Both retain sanitized explanation and selected model/turn, no assistant content |
+| Evidence failure among sibling calls | Generic evidence failure omitted `Clio: evidence outside observed scope` | Host wrapper captures failing action/path/reason, excludes successful content, one request and no proposal |
+| UTF-8 bounds, reflected payload and path protection | Output exceeded 900 bytes, included `PRIVATE_REQUEST_BODY`, and exposed the absolute temporary root | All three pass after limits and conservative omission |
+| Additional auth headers/signatures | Synchronous exception exposed Basic auth, cookie and bare signature fixture values | Values omitted; safe HTTP explanation retained |
+
+Commands: first regression red used `npm test -- --test-name-pattern='diagnostics streamed provider'` (the script ran the entire suite); all subsequent red/green checks used `npm test` from `pithos.clio`. The first provider implementation left only the evidence regression failing. The first evidence green attempt exposed a test-fixture mistake: its forbidden word `refused` matched the retained category. Replaced call-ID markers with unique strings rather than weakening the category check. Missing-reason and second-turn tests were supplemental assertions, not claimed as separate driving cycles.
+
+Diagnostics are host-owned for evidence failures (allowlisted messages/codes,
+not raw result text). Existing cancellation, timeout, budgets, usage accounting,
+permissions, no-retry and no-incomplete-proposal behavior remain unchanged.
+Provider redaction is heuristic; arbitrary sensitive prose and every provider's
+error representation are not certified. Payload omission can hide useful details.
+
+Final validation: Clio `npm test` **93 passed**, zero failed/skipped;
+`npm run typecheck` passed; `npm pack --dry-run` passed (**19 files**, including
+`src/diagnostics.ts`); root `npm test` **3 passed**. No paid/live provider calls,
+manual capture, runtime reload/install, release/version changes, staging or
+commits were performed. Unrelated working-tree changes were preserved.
