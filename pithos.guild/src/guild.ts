@@ -35,10 +35,13 @@ import { captureRepoState, repoStateName, type CaptureRepoStateOptions, type Rep
 import { createGuildTraceRecorder, type GuildTraceBinding, type GuildTraceRecorder } from "./trace-recorder.ts";
 import type { GuildSkillReceipt } from "./resources.ts";
 import { RunQueue } from "./run-queue";
+import { LiveTranscriptStore } from "./live-transcript.ts";
+import { createLiveTranscriptInspector } from "./live-transcript-ui.ts";
+import { createInlineGuildPanel, type InlineGuildPanel } from "./inline-panel.ts";
 import { admitGuildHandover } from "./safety";
 import {
 	createGuildHandoverProgress,
-	createGuildPanel,
+	type GuildHandoverProgress,
 	renderGuildCall,
 	renderGuildLifecycleMessage,
 	renderGuildResult,
@@ -88,6 +91,8 @@ const GUILD_HANDOVER_PARAMETERS = Type.Object({
 type GuildHandoverStatus = "queued" | "running" | "started" | "completed" | "failed" | "cancelled";
 
 export interface GuildDependencies {
+	/** Session-owned observational store shared by dashboard and focused handovers. */
+	createTranscriptStore?: () => LiveTranscriptStore;
 	run: (options: RunGuildRoleOptions) => Promise<GuildRoleRunResult>;
 	/** Per-session child trace recorder; the default is enabled only by PITHOS_GUILD_TRACE=1. */
 	createTraceRecorder?: () => GuildTraceRecorder | undefined;
@@ -326,34 +331,58 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	let traceRecorder: GuildTraceRecorder | undefined;
 	registerCommitWorkflow(pi);
 
+	// Session-local observation; inspection never owns child execution.
+	const transcriptStore = (dependencies.createTranscriptStore ?? (() => new LiveTranscriptStore()))();
+	const observeTranscript = (observe: () => void) => {
+		try { observe(); } catch { /* Observation must never own execution. */ }
+	};
 	const runQueue = new RunQueue();
 	const activeRuns = new GuildRunTracker();
 	let ticker: NodeJS.Timeout | undefined;
 	let activeUiContext: ExtensionContext | undefined;
 	let shuttingDown = false;
+	const dashboardRunIds = new Set<string>();
+	let panel: InlineGuildPanel | undefined;
+	let panelMounted = false;
+	let panelGeneration = 0;
+	let panelLines: string[] = [];
+	let panelIds: string[] = [];
+	const directProgress = new Set<GuildHandoverProgress>();
 
 	const clearVisibility = (ctx: ExtensionContext) => {
+		panelGeneration++;
+		panel?.dispose(); panel = undefined; panelMounted = false;
+		panelLines = []; panelIds = [];
 		if (!ctx.hasUI) return;
 		ctx.ui.setWidget("guild-dashboard", undefined);
 		ctx.ui.setStatus("guild-dashboard", undefined);
 	};
 
 	const refreshVisibility = (ctx: ExtensionContext) => {
-		if (!ctx.hasUI) return;
+		if (shuttingDown || !ctx.hasUI) return;
 		if (activeRuns.size === 0) {
 			clearVisibility(ctx);
 			return;
 		}
-		const lines = activeRuns.formatLines();
+		panelLines = activeRuns.formatLines();
+		panelIds = [...dashboardRunIds];
 		if (ctx.mode === "tui") {
-			ctx.ui.setWidget(
-				"guild-dashboard",
-				(_tui, theme) => createGuildPanel(lines, theme),
-			);
-		} else {
-			ctx.ui.setWidget("guild-dashboard", lines);
-		}
-		ctx.ui.setStatus("guild-dashboard", `guild: ${activeRuns.size} active`);
+			if (!panelMounted) {
+				panelMounted = true;
+				const generation = ++panelGeneration;
+				ctx.ui.setWidget("guild-dashboard", (tui, theme) => {
+					if (shuttingDown || generation !== panelGeneration) return {render: () => [], invalidate() {}};
+					panel?.dispose();
+					panel = createInlineGuildPanel(transcriptStore, tui, theme,
+						handler => ctx.ui.onTerminalInput(handler), () => refreshVisibility(ctx),
+						() => ctx.ui.getEditorText(),
+						() => !shuttingDown && directProgress.size === 0 && ctx.mode === "tui" && ctx.hasUI && guildEditorOwnsInput(tui));
+					panel.update(panelLines, panelIds);
+					return panel;
+				});
+			} else panel?.update(panelLines, panelIds);
+		} else ctx.ui.setWidget("guild-dashboard", panelLines);
+		ctx.ui.setStatus("guild-dashboard", activeRuns.size ? `guild: ${activeRuns.size} active` : undefined);
 	};
 
 	const ensureTicker = (ctx: ExtensionContext) => {
@@ -368,6 +397,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 	const finishVisibleRun = (runId: string, ctx: ExtensionContext) => {
 		activeRuns.finish(runId);
+		dashboardRunIds.delete(runId);
 		if (activeRuns.size === 0 && ticker) {
 			clearInterval(ticker);
 			ticker = undefined;
@@ -381,11 +411,16 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 	pi.on("session_shutdown", async (event, ctx) => {
 		shuttingDown = true;
+		panel?.dispose();
+		for (const progress of directProgress) progress.dispose();
+		directProgress.clear();
+		observeTranscript(() => transcriptStore.dispose());
 		traceRecorder?.dispose();
 		traceRecorder = undefined;
 		log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), activeRuns: activeRuns.size });
 		const previousUiContext = activeUiContext;
 		activeRuns.clear();
+		dashboardRunIds.clear();
 		if (ticker) clearInterval(ticker);
 		ticker = undefined;
 		activeUiContext = undefined;
@@ -411,6 +446,12 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let phase: GuildRunPhase = "queued";
 		let latest: GuildRoleRunResult | undefined;
 		let cancelled = false;
+		let terminalPhase: "completed" | "failed" | "cancelled" = "failed";
+		let terminalDiagnostic: string | undefined;
+		if (!shuttingDown) observeTranscript(() => transcriptStore.start({
+			id: runId, role: prepared.role, profile: prepared.profile,
+			task: prepared.task, phase, startedAt,
+		}));
 		log.info("handover.start", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: prepared.role, profile: prepared.profile, model, thinkingLevel });
 
 		const binding = traceBinding(ctx, model, thinkingLevel);
@@ -418,8 +459,10 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let unbindTrace: (() => void) | undefined;
 
 		if (visibility === "dashboard") {
+			dashboardRunIds.add(runId);
 			activeRuns.start({
 				id: runId,
+				task: prepared.task,
 				role: prepared.role,
 				profile: prepared.profile,
 				phase,
@@ -450,6 +493,9 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 					thinkingLevel,
 					projectTrusted: prepared.projectTrusted,
 					signal: queueSignal,
+					onEvent: (event) => {
+						if (!shuttingDown) observeTranscript(() => transcriptStore.ingest(runId, event));
+					},
 					onUpdate: (partial) => {
 						latest = partial;
 						if (visibility === "dashboard") {
@@ -486,6 +532,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				if (result.status !== "completed" || !result.report || !result.output.trim()) throw new Error(`${target} completed without a validated protocol result.`);
 				log.info("handover.complete", { runId, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), role: result.role, profile: result.profile, model: result.model ?? inheritedModel, stopReason: result.stopReason, exitCode: result.exitCode, durationMs: Date.now() - startedAt, usage: usageMetadata(result.usage) });
 
+				terminalPhase = "completed";
 				return {
 					content: [{ type: "text", text: truncateUtf8(result.output.trim(), MAX_MODEL_OUTPUT_BYTES) }],
 					details: resultDetails(
@@ -503,6 +550,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				signal,
 				onPhase: (nextPhase) => {
 					phase = nextPhase;
+					if (!shuttingDown) observeTranscript(() => transcriptStore.updatePhase(runId, phase));
 					if (visibility === "dashboard") {
 						activeRuns.update(runId, { phase });
 						refreshVisibility(ctx);
@@ -519,8 +567,11 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				: baseDetails(prepared, status, phase, inheritedModel, thinkingLevel, startedAt);
 			details.runId = runId;
 			details.error = truncateUtf8(errorText(error), 4096);
+			terminalPhase = status;
+			terminalDiagnostic = details.error;
 			return {content: [{type: "text", text: `Guild handover ${status}: ${details.error}`}], details, ...providerUsage(latest)};
 		} finally {
+			observeTranscript(() => transcriptStore.finish(runId, terminalPhase, terminalDiagnostic));
 			unbindTrace?.();
 			if (visibility === "dashboard") finishVisibleRun(runId, ctx);
 		}
@@ -707,6 +758,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 			type LoaderResult = HandoverExecutionResult | { error: string; details?: GuildHandoverDetails } | { cancelled: true; details?: GuildHandoverDetails };
 			let loaderResult: LoaderResult | undefined;
+			let ownedProgress: GuildHandoverProgress | undefined;
 			try {
 				loaderResult = await ctx.ui.custom<LoaderResult>((tui, theme, keybindings, done) => {
 					const progress = createGuildHandoverProgress({
@@ -716,11 +768,19 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 						phase,
 						task: prepared.task,
 						startedAt,
+						createInspection: () => {
+							const viewer = createLiveTranscriptInspector(transcriptStore, tui, theme, keybindings, () => {}, runId, true);
+							return viewer;
+						},
 					}, tui, theme, keybindings);
+					ownedProgress = progress;
+					directProgress.add(progress);
 					let finished = false;
 					const finish = (value: LoaderResult) => {
 						if (finished) return;
 						finished = true;
+						progress.dispose();
+						directProgress.delete(progress);
 						done(value);
 					};
 
@@ -751,6 +811,9 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				});
 			} catch (error) {
 				loaderResult = { error: errorText(error) };
+			} finally {
+				ownedProgress?.dispose();
+				if (ownedProgress) directProgress.delete(ownedProgress);
 			}
 
 			if (loaderResult && "content" in loaderResult) {
@@ -827,4 +890,18 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 
 export default function guild(pi: ExtensionAPI): void {
 	registerGuild(pi);
+}
+
+// Pi 1.0.4 TuiBase exposes this public getter at runtime, but TUI's
+// interface omits it. Check capability locally; never import runtime internals.
+// CustomEditor's public app-action/shortcut hooks distinguish it from dialog
+// Inputs/Editors. Unknown replacement editors fail closed rather than steal keys.
+function guildEditorOwnsInput(tui: {hasOverlay(): boolean}): boolean {
+	if (tui.hasOverlay()) return false;
+	const focusApi = tui as {getFocusedComponent?: () => unknown};
+	if (typeof focusApi.getFocusedComponent !== "function") return false;
+	const owner = focusApi.getFocusedComponent();
+	if (!owner || typeof owner !== "object") return false;
+	const editor = owner as {getText?: unknown; onAction?: unknown; onExtensionShortcut?: unknown};
+	return typeof editor.getText === "function" && typeof editor.onAction === "function" && "onExtensionShortcut" in editor;
 }

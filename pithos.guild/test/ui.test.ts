@@ -365,3 +365,35 @@ it("renders cancelled tool results distinctly even when Pi marks the tool result
  assert.match(rendered, /usage unknown/);
  assert.doesNotMatch(rendered, /Completed|Failed/);
 });
+
+it("keeps compact edges and an inline selection hint while fullscreen dashboard clicks use run IDs", () => {
+ const clicked: string[] = [];
+ const panel = createGuildPanel(["Guild · 2 active", "⏳ coder/typescript · running · 1s", "⏳ coder/typescript · queued · 0s"], {...theme, name: "dark"}, {runIds: ["first", "second"], inspect: id => clicked.push(id)});
+ const lines = panel.render(80); assert.equal(lines.length, 5); assert.match(lines[1], /↑ select · → expand/);
+ assert.deepEqual(panel.handleMouse!({type: "click", button: "left", y: 3} as any), {handled: true, render: false});
+ assert.deepEqual(clicked, ["second"]);
+ assert.equal(panel.handleMouse!({type: "wheel", button: "none", y: 2} as any), undefined);
+});
+
+it("direct inspection opens/back/scroll without abort, and disposal releases each viewer", () => {
+ let opens = 0; let disposals = 0; let inputs = 0;
+ const progress = createGuildHandoverProgress({role: "coder", profile: "typescript", source: "package", task: "Work", startedAt: 0,
+  createInspection: () => {opens++; return {render: () => ["detail"], invalidate() {}, handleInput() {inputs++;}, dispose() {disposals++;}};},
+ }, {requestRender() {}}, theme, {matches: (data: string) => data === "escape"});
+ try {
+  assert.match(progress.render(100).join("\n"), /F6.*Enter.*inspect/);
+  for (const key of ["\x1b[17~", "\r"]) {
+   progress.handleInput(key); assert.deepEqual(progress.render(100), ["detail"]);
+   progress.update({activity: "Updated while inspecting", turns: 3});
+   progress.handleInput("\x1b[A"); assert.equal(progress.signal.aborted, false);
+   progress.handleInput("escape"); assert.equal(progress.signal.aborted, false);
+   assert.match(progress.render(100).join("\n"), /Updated while inspecting/);
+  }
+  progress.handleInput("\r"); progress.handleInput("\x1b[17~");
+  assert.equal(disposals, 3); assert.equal(inputs, 2);
+  progress.handleInput("\r"); progress.dispose(); progress.dispose();
+  assert.equal(opens, 4); assert.equal(disposals, 4); assert.equal(progress.signal.aborted, false);
+ } finally { progress.dispose(); }
+ const cancellable = createGuildHandoverProgress({role: "coder", profile: "general", source: "package", task: "Work", startedAt: 0}, {requestRender() {}}, theme, {matches: () => true});
+ cancellable.handleInput("escape"); assert.equal(cancellable.signal.aborted, true); cancellable.dispose();
+});

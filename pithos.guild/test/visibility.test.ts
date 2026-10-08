@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
+import { visibleWidth } from "@earendil-works/pi-tui";
 import { GuildRunTracker } from "../src/visibility";
 
 describe("Guild member run visibility", () => {
@@ -12,7 +13,7 @@ describe("Guild member run visibility", () => {
       phase: "queued" as const,
       member: "dotnet-architect" as const,
       startedAt: 1_000,
-      task: "Do not show this task",
+      task: "Inspect task · queued",
       model: "do-not-show-this-model",
       tools: ["read"],
     };
@@ -31,10 +32,10 @@ describe("Guild member run visibility", () => {
 
     assert.deepEqual(lines, [
       "Guild · 2 active",
-      "⏳ architect/dotnet · queued · 5s · 2 turns",
+      "⏳ architect/dotnet · queued · 5s · 2 turns · Inspect task · queued",
       "⏳ coder/angular · running · 4s",
     ]);
-    assert.doesNotMatch(lines.join("\n"), /Do not show|do-not-show|\bread\b/);
+    assert.doesNotMatch(lines.join("\n"), /do-not-show|\bread\b/);
   });
 
   it("formats long elapsed times as readable units", () => {
@@ -74,4 +75,18 @@ describe("Guild member run visibility", () => {
     assert.match(tracker.formatLines(4_000)[0], /^Guild · 1 active$/);
     assert.doesNotMatch(tracker.formatLines(4_000).join("\n"), /frontend-architect|recent|completed/);
   });
+});
+
+it("sanitizes and bounds previews without changing the original task", () => {
+  const tracker = new GuildRunTracker();
+  const task = "\x1b[31mInspect\x1b[0m\n\t" + "界".repeat(100) + "\x00\x07";
+  const run = { id: "preview", role: "coder" as const, profile: "typescript" as const,
+    phase: "queued" as const, startedAt: 0, task };
+  tracker.start(run);
+  const preview = tracker.formatLines(0)[1].split(" · ").slice(3).join(" · ");
+  assert.equal(run.task, task);
+  assert.match(preview, /^Inspect 界/);
+  assert.match(preview, /…$/);
+  assert.ok(visibleWidth(preview) <= 80);
+  assert.doesNotMatch(preview, /[\x00-\x1f\x7f-\x9f]/);
 });

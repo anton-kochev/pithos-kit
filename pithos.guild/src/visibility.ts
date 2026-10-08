@@ -1,3 +1,4 @@
+import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import type { GuildProfile, GuildRole } from "./agents";
 
 export type GuildRunPhase = "queued" | "running";
@@ -6,6 +7,7 @@ interface ActiveGuildRunState {
 	id: string;
 	startedAt: number;
 	turns?: number;
+	task?: string;
 }
 
 export interface CanonicalActiveGuildRun extends ActiveGuildRunState {
@@ -26,7 +28,17 @@ export type ActiveGuildRun = CanonicalActiveGuildRun | LegacyActiveGuildRun;
 
 interface TrackedGuildRun extends ActiveGuildRunState {
 	identity: string;
+	preview?: string;
 	phase: GuildRunPhase;
+}
+
+export function taskPreview(task: string | undefined): string | undefined {
+	if (!task) return undefined;
+	const safe = stripTerminalSequences(task)
+		.replace(/[\r\n\t]/g, " ")
+		.replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "")
+		.replace(/\s+/g, " ").trim();
+	return safe ? stripTerminalSequences(truncateToWidth(safe, 80, "…")) : undefined;
 }
 
 function elapsedTime(startedAt: number, now: number): string {
@@ -55,6 +67,7 @@ export class GuildRunTracker {
 		this.runs.set(run.id, {
 			id: run.id,
 			identity,
+			preview: taskPreview(run.task),
 			phase: run.phase ?? "running",
 			startedAt: run.startedAt,
 			turns: run.turns,
@@ -84,7 +97,7 @@ export class GuildRunTracker {
 		const lines = [`Guild · ${this.runs.size} active`];
 		for (const run of this.runs.values()) {
 			const turns = run.turns ? ` · ${run.turns} turn${run.turns === 1 ? "" : "s"}` : "";
-			lines.push(`⏳ ${run.identity} · ${run.phase} · ${elapsedTime(run.startedAt, now)}${turns}`);
+			lines.push(`⏳ ${run.identity} · ${run.phase} · ${elapsedTime(run.startedAt, now)}${turns}${run.preview ? ` · ${run.preview}` : ""}`);
 		}
 		return lines;
 	}

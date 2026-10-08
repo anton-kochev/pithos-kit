@@ -2,6 +2,7 @@ import { getMarkdownTheme, keyHint, type Theme } from "@earendil-works/pi-coding
 import {
 	Container,
 	Markdown,
+	matchesKey,
 	Spacer,
 	Text,
 	truncateToWidth,
@@ -57,13 +58,13 @@ function usesLightGuildPanel(theme: Theme): boolean {
 	const name = theme.name?.toLowerCase();
 	if (name?.includes("light")) return true;
 	if (name?.includes("dark")) return false;
-	const match = theme.getBgAnsi("toolPendingBg").match(/\[48;2;(\d+);(\d+);(\d+)m/);
+	const match = (theme.getBgAnsi?.("toolPendingBg") ?? "").match(/\[48;2;(\d+);(\d+);(\d+)m/);
 	if (!match) return false;
 	const [, red = "0", green = "0", blue = "0"] = match;
 	return 0.2126 * Number(red) + 0.7152 * Number(green) + 0.0722 * Number(blue) >= 128;
 }
 
-function guildPanelAnsi(theme: Theme): { background: string; foreground: string } {
+export function guildPanelAnsi(theme: Theme): { background: string; foreground: string } {
 	const color = usesLightGuildPanel(theme) ? GUILD_PANEL_LIGHT : GUILD_PANEL_DARK;
 	if (typeof theme.getColorMode === "function" && theme.getColorMode() === "256color") {
 		return {
@@ -78,14 +79,21 @@ function guildPanelAnsi(theme: Theme): { background: string; foreground: string 
 	};
 }
 
-export function createGuildPanel(lines: string[], theme: Theme): Component {
+export function createGuildPanel(lines: string[], theme: Theme, inspection?: { runIds: readonly string[]; inspect(id: string): void }, hint = "↑ select · → expand", selectedIndex?: number): Component {
 	return {
 		invalidate(): void {},
+		handleMouse(event) {
+			if (event.type !== "click" || event.button !== "left") return;
+			const id = inspection?.runIds[event.y - 2];
+			if (!id) return;
+			inspection?.inspect(id);
+			return { handled: true, render: false };
+		},
 		render(width: number): string[] {
 			if (width <= 0) return [];
 			const summary = lines[0]?.replace(/^Guild\s*/, "") ?? "";
-			const title = theme.fg("accent", "Guild") + (summary ? theme.fg("muted", ` ${summary}`) : "");
-			const runs = lines.slice(1).map((line) => styledPanelLine(line, theme));
+			const title = theme.fg("accent", "Guild") + (summary ? theme.fg("muted", ` ${summary}`) : "") + theme.fg("dim", ` · ${hint}`);
+			const runs = lines.slice(1).map((line, index) => (index === selectedIndex ? theme.fg("accent", "›") : "") + styledPanelLine(line, theme));
 			const { background, foreground } = guildPanelAnsi(theme);
 			const edge = (block: "▄" | "▀") => `${foreground}${block.repeat(width)}\u001b[39m`;
 			const content = [title, ...runs].map((line) =>
@@ -261,6 +269,8 @@ interface GuildHandoverProgressBaseOptions {
 	task: string;
 	startedAt: number;
 	phase?: GuildRunPhase;
+	// Read-only view ownership is separate from this card's cancellation controller.
+	createInspection?: () => Component & { dispose(): void };
 }
 
 export interface CanonicalGuildHandoverProgressOptions extends GuildHandoverProgressBaseOptions {
@@ -299,6 +309,8 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 	private turns = 0;
 	private phase: GuildRunPhase;
 	private cancelling = false;
+	private disposed = false;
+	private inspection: (Component & { dispose(): void }) | undefined;
 
 	constructor(
 		private readonly options: GuildHandoverProgressOptions,
@@ -327,6 +339,20 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 	}
 
 	handleInput(data: string): void {
+		if (this.disposed) return;
+		if (this.inspection) {
+			if (matchesKey(data, "f6") || this.keybindings.matches(data, "tui.select.cancel")) {
+				this.inspection.dispose();
+				this.inspection = undefined;
+				this.tui.requestRender();
+			} else this.inspection.handleInput?.(data);
+			return;
+		}
+		if (!this.controller.signal.aborted && this.options.createInspection && (matchesKey(data, "f6") || matchesKey(data, "return"))) {
+			this.inspection = this.options.createInspection();
+			this.tui.requestRender();
+			return;
+		}
 		if (this.controller.signal.aborted || !this.keybindings.matches(data, "tui.select.cancel")) return;
 		this.cancelling = true;
 		this.activity = "Stopping Guild member";
@@ -336,12 +362,17 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 	}
 
 	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
 		clearInterval(this.timer);
+		this.inspection?.dispose();
+		this.inspection = undefined;
 	}
 
-	invalidate(): void {}
+	invalidate(): void { this.inspection?.invalidate(); }
 
 	render(width: number): string[] {
+		if (this.inspection) return this.inspection.render(Math.min(width, HANDOVER_PROGRESS_MAX_WIDTH));
 		const cardWidth = Math.max(2, Math.min(width, HANDOVER_PROGRESS_MAX_WIDTH));
 		const innerWidth = Math.max(1, cardWidth - 2);
 		const border = (value: string) => this.theme.fg("borderAccent", value);
@@ -373,6 +404,7 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 		lines.push(frameLine(memberSummary(identity.label, identity.source, identity.role, this.theme)));
 		for (const requestLine of requestLines(this.options.task, innerWidth, this.theme)) lines.push(frameLine(requestLine));
 		lines.push(frameLine(joinSides(activity, cancel, innerWidth)));
+		if (this.options.createInspection) lines.push(frameLine(this.theme.fg("dim", "  F6 / Enter inspect · Esc / Ctrl+C cancel")));
 		lines.push(border(`╰${"─".repeat(innerWidth)}╯`));
 		return lines;
 	}

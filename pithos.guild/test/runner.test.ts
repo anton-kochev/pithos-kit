@@ -668,3 +668,32 @@ it("retains host run/task identity on failed terminals without a child report", 
  assert.match(result.taskId ?? "", /^[0-9a-f-]{36}$/);
  assert.equal(result.report, undefined);
 });
+
+it("observes parsed child events without allowing observer failures or mutations to change results", async () => {
+  const events: Array<Readonly<{ type: string }>> = [];
+  const { result } = await captureCanonicalRun({
+    role: "explorer", profile: "typescript", task: "Inspect", cwd: process.cwd(), projectTrusted: true,
+    onEvent: (event) => {
+      events.push(event);
+      if (event.type === "message_end") {
+        const message = event.message as { content?: Array<{ text?: string }> };
+        if (message?.content?.[0]?.text) {
+          try { message.content[0].text = "Mutated"; } catch { /* read-only snapshot */ }
+        }
+      }
+      if (event.type === "tool_execution_end") {
+        const toolResult = event.result as {details?: {summary?: string}};
+        try { if (toolResult?.details) toolResult.details.summary = "Mutated report"; } catch {}
+      }
+      throw new Error("observer failure");
+    },
+  });
+  assert.ok(events.some(event => event.type === "message_update"), "parsed text deltas must reach the observer");
+  assert.ok(events.some(event => event.type === "agent_settled"));
+  assert.ok(events.every(Object.isFrozen), "observations must be frozen snapshots");
+  assert.equal(result.status, "completed");
+  assert.equal(result.report?.summary, "Captured");
+  assert.equal(result.usage.turns, 2);
+  assert.equal(result.usage.input, 3);
+  assert.equal(result.errorMessage, undefined);
+});

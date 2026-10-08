@@ -13,6 +13,7 @@ import {
 } from "../src/agents";
 import { registerGuild, type GuildDependencies } from "../src/guild";
 import type { GuildRoleRunResult, RunGuildRoleOptions } from "../src/runner";
+import { LiveTranscriptStore } from "../src/live-transcript.ts";
 
 import { renderReport, validateResult } from "../src/protocol.ts";
 import { buildTask, report } from "./protocol-fixtures.ts";
@@ -73,6 +74,7 @@ function successfulRunner(options: RunGuildRoleOptions): Promise<GuildRoleRunRes
 }
 
 function fakePi() {
+  const shortcuts = new Map<string, any>();
   const tools = new Map<string, any>();
   const commands = new Map<string, any>();
   const handlers = new Map<string, any>();
@@ -80,6 +82,7 @@ function fakePi() {
   const messageRenderers = new Map<string, any>();
   return {
     api: {
+      registerShortcut(name: string, definition: any) { shortcuts.set(name, definition); },
       registerTool(definition: any) {
         tools.set(definition.name, definition);
       },
@@ -100,6 +103,7 @@ function fakePi() {
       return tools.get("guild_handover");
     },
     tools,
+    shortcuts,
     commands,
     handlers,
     messages,
@@ -148,6 +152,8 @@ function context(overrides: Record<string, unknown> = {}) {
       notify: () => undefined,
       setWidget: () => undefined,
       setStatus: () => undefined,
+      getEditorText: () => "",
+      onTerminalInput: (_handler: any) => () => {},
     },
     ...overrides,
   };
@@ -385,7 +391,8 @@ describe("guild extension", () => {
       run: async (options) => {
         const visible = [...widgetUpdates].reverse().find(Array.isArray)?.join("\n") ?? "";
         assert.match(visible, /coder\/typescript.*running/);
-        assert.doesNotMatch(visible, /Implement validation|openai-codex|read, grep/);
+        assert.doesNotMatch(visible, /openai-codex|read, grep/);
+        assert.equal(options.task, "Implement validation");
         options.onUpdate?.(resultFor(options, {
           output: "Working",
           activity: "Running verification",
@@ -395,10 +402,11 @@ describe("guild extension", () => {
       },
     });
     const ctx: any = context();
+    let renderedPanel: any;
     ctx.ui.setWidget = (_key: string, value: any) => {
       const rendered = typeof value === "function"
-        ? value(
-          { requestRender: () => undefined },
+        ? (renderedPanel = value(
+          { terminal: {rows: 24}, requestRender: () => {if (renderedPanel) widgetUpdates.push(renderedPanel.render(120));} },
           {
             name: "test-light",
             fg: (_color: string, text: string) => text,
@@ -407,7 +415,7 @@ describe("guild extension", () => {
             getBgAnsi: () => "\u001b[48;2;223;236;243m",
             getColorMode: () => "truecolor",
           },
-        ).render(120)
+        )).render(120)
         : value;
       widgetUpdates.push(rendered);
     };
@@ -422,6 +430,7 @@ describe("guild extension", () => {
       ctx,
     );
 
+    assert.ok(widgetUpdates.some(lines => /running.*Implement validation/.test(lines?.join("\n") ?? "")), "running dashboard must include the task preview");
     assert.ok(updates.length >= 3);
     assert.deepEqual(updates.slice(0, 2).map(({ details }) => details.phase), ["queued", "running"]);
     assert.equal(updates[0].details.status, "queued");
@@ -1409,4 +1418,409 @@ it("settles exactly once when a phase observer reentrantly shuts down the queue"
   assert.equal(terminal.details.status, "cancelled");
   assert.equal(calls, stopAt === "queued" ? 0 : 1);
  }
+});
+
+it("tracks admitted queued transcripts and immutable runner events separately from results", async () => {
+ const store = new LiveTranscriptStore();
+ const pi = fakePi();
+ const gate = deferred<void>();
+ let calls = 0;
+ let notifications = 0;
+ store.subscribe(() => { notifications++; });
+ registerGuild(pi.api as any, {
+  createTranscriptStore: () => store,
+  run: async options => {
+   calls++;
+   assert.equal(store.get(options.runId!)?.phase, "running");
+   options.onEvent?.({type: "message_update", assistantMessageEvent: {type: "text_delta", delta: "private live text", contentIndex: 0}});
+   options.onEvent?.({type: "tool_execution_end", toolCallId: "read1", toolName: "read", result: {content: [{type: "text", text: "private tool result"}]}});
+   await gate.promise;
+   return resultFor(options);
+  },
+ });
+ const task = "Original\n task";
+ const first = pi.tool.execute("live-first", {role: "coder", profile: "typescript", task}, undefined, undefined, context());
+ const snapshot = store.get("live-first")!;
+ assert.equal(snapshot.task, task);
+ assert.equal(snapshot.entries[0].content, "private live text");
+ assert.equal(snapshot.entries[1].content, "private tool result");
+ assert.ok(Object.isFrozen(snapshot.entries));
+ const second = pi.tool.execute("live-second", {role: "reviewer", profile: "general", task: "Next"}, undefined, undefined, context());
+ assert.equal(store.get("live-second")?.phase, "queued");
+ assert.equal(calls, 1);
+ gate.resolve();
+ const results = await Promise.all([first, second]);
+ assert.deepEqual(store.list().recent.map(run => run.phase), ["completed", "completed"]);
+ assert.equal(snapshot.phase, "running");
+ assert.equal(results[0].details.task, task);
+ assert.doesNotMatch(JSON.stringify(results), /private live text|private tool result/);
+ assert.equal(pi.messages.length, 0);
+ assert.ok(notifications >= 8);
+});
+
+it("seals focused blocked completion, failures and queued cancellation exactly once", async () => {
+ class RecordingStore extends LiveTranscriptStore {
+  finishes: string[] = [];
+  override finish(...args: Parameters<LiveTranscriptStore["finish"]>) {
+   this.finishes.push(args[0]);
+   super.finish(...args);
+  }
+ }
+ const store = new RecordingStore();
+ const pi = fakePi();
+ const gate = deferred<void>();
+ const spawned: string[] = [];
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {
+  spawned.push(options.task);
+  if (options.task === "Fail") throw new Error("runner failure");
+  if (options.task === "Hold") await gate.promise;
+  const result = resultFor(options);
+  if (options.task === "Blocked") result.report = {...result.report!, taskOutcome: "blocked", blockers: ["External blocker"]};
+  return result;
+ }});
+ await pi.commands.get("guild-handover").handler("coder/typescript Blocked", context());
+ const directId = pi.messages[0].message.details.runId;
+ assert.equal(store.get(directId)?.phase, "completed");
+ assert.equal(pi.messages[1].message.details.taskOutcome, "blocked");
+ assert.equal(store.list().active.length, 0);
+ await assertTerminal(pi.tool.execute("live-fail", {role: "coder", profile: "typescript", task: "Fail"}, undefined, undefined, context()), "failed");
+ assert.equal(store.get("live-fail")?.phase, "failed");
+ assert.match(store.get("live-fail")!.diagnostic!, /runner failure/);
+ const active = pi.tool.execute("live-hold", {role: "coder", profile: "typescript", task: "Hold"}, undefined, undefined, context());
+ const controller = new AbortController();
+ const queued = pi.tool.execute("live-cancel", {role: "reviewer", profile: "general", task: "Never spawn"}, controller.signal, undefined, context());
+ controller.abort();
+ await assertTerminal(queued, "cancelled");
+ assert.equal(store.get("live-cancel")?.phase, "cancelled");
+ assert.ok(!spawned.includes("Never spawn"));
+ gate.resolve();
+ await active;
+ assert.equal(new Set(store.finishes).size, 4);
+ assert.equal(store.finishes.length, 4);
+});
+
+it("isolates every transcript observation without swallowing runner or update failures", async () => {
+ class ThrowingStore extends LiveTranscriptStore {
+  observed: string[] = [];
+  private fail(name: string): never { this.observed.push(name); throw new Error(`observer ${name}`); }
+  override start(): void { this.fail("start"); }
+  override updatePhase(): void { this.fail("phase"); }
+  override ingest(): void { this.fail("ingest"); }
+  override finish(): void { this.fail("finish"); }
+  override dispose(): void { this.fail("dispose"); }
+ }
+ const store = new ThrowingStore();
+ const pi = fakePi();
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {
+  options.onEvent?.({type: "message_end", message: {role: "assistant", content: [{type: "text", text: "Live"}]}});
+  if (options.task === "Runner fails") throw new Error("execution failed");
+  options.onUpdate?.(resultFor(options));
+  return resultFor(options);
+ }});
+ await assertTerminal(pi.tool.execute("observe-ok", {role: "coder", profile: "general", task: "Success"}, undefined, undefined, context()), "completed");
+ await assertTerminal(pi.tool.execute("observe-fail", {role: "coder", profile: "general", task: "Runner fails"}, undefined, undefined, context()), "failed", /execution failed/);
+ await assertTerminal(pi.tool.execute("update-fail", {role: "coder", profile: "general", task: "Update fails"}, undefined, (update: any) => {
+  if (update.details.activity === "Completed") throw new Error("update failed");
+ }, context()), "failed", /update failed/);
+ await pi.handlers.get("session_shutdown")({}, context());
+ for (const name of ["start", "phase", "ingest", "finish", "dispose"]) assert.ok(store.observed.includes(name), name);
+});
+
+it("disposes session transcripts before awaiting shutdown and rejects late resurrection", async () => {
+ const store = new LiveTranscriptStore();
+ const pi = fakePi();
+ const gate = deferred<void>();
+ let options!: RunGuildRoleOptions;
+ let factories = 0;
+ let calls = 0;
+ let notifications = 0;
+ store.subscribe(() => { throw new Error("subscriber failure"); });
+ store.subscribe(() => { notifications++; });
+ registerGuild(pi.api as any, {createTranscriptStore: () => { factories++; return store; }, run: async value => {
+  calls++;
+  options = value;
+  value.onEvent?.({type: "message_update", assistantMessageEvent: {type: "text_delta", delta: "Secret"}});
+  await gate.promise;
+  return resultFor(value);
+ }});
+ assert.equal(factories, 1);
+ assert.equal(calls, 0);
+ assert.deepEqual(store.list().active, []);
+ assert.equal(pi.handlers.has("session_before_switch"), false);
+ const active = pi.tool.execute("dispose-active", {role: "coder", profile: "typescript", task: "Active"}, undefined, undefined, context());
+ const queued = pi.tool.execute("dispose-queued", {role: "coder", profile: "typescript", task: "Queued"}, undefined, undefined, context());
+ assert.equal(store.list().active.length, 2);
+ let settled = false;
+ const shutdown = pi.handlers.get("session_shutdown")({reason: "reload"}, context());
+ void shutdown.then(() => { settled = true; });
+ assert.equal(store.get("dispose-active"), undefined);
+ assert.equal(store.list().retainedBytes, 0);
+ assert.equal(settled, false);
+ const changes = notifications;
+ options.onEvent?.({type: "message_update", assistantMessageEvent: {type: "text_delta", delta: "Late secret"}});
+ store.start({id: "late-direct", role: "coder", profile: "typescript", task: "Late", phase: "queued", startedAt: 0});
+ await assertTerminal(queued, "cancelled");
+ gate.resolve();
+ await assertTerminal(active, "cancelled");
+ await shutdown;
+ await assertTerminal(pi.tool.execute("dispose-late", {role: "coder", profile: "typescript", task: "Late"}, undefined, undefined, context()), "cancelled");
+ assert.equal(calls, 1);
+ assert.equal(notifications, changes);
+ assert.equal(store.list().active.length + store.list().recent.length, 0);
+});
+
+// Inline dashboard contract: no custom screen and no editor replacement.
+it("focuses and expands the stable inline widget while busy, preserving draft and releasing capture", async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>();
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {await gate.promise; return resultFor(options);}});
+ const commands = [...pi.commands.keys()]; let panel: any; let factories = 0; let capture: any; let listeners = 0;
+ const ctx = context({isIdle: () => false, waitForIdle: () => {throw new Error("must not wait");}});
+ ctx.ui.custom = (() => {throw new Error("no dashboard modal");}) as any;
+ let draft = "draft 中文";
+ (ctx.ui as any).getEditorText = () => draft;
+ (ctx.ui as any).setEditorText = () => {throw new Error("must not replace draft");};
+ (ctx.ui as any).setEditorComponent = () => {throw new Error("must not replace editor");};
+ (ctx.ui as any).onTerminalInput = (listener: any) => {capture = listener; listeners++; return () => {capture = undefined; listeners--;};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {
+  if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false, getFocusedComponent: () => ({getText: () => (ctx.ui as any).getEditorText(), onAction() {}, onExtensionShortcut() {}})}, {fg: (_: string, text: string) => text});}
+  else if (!value) panel = undefined;
+ }) as any;
+ const child = pi.tool.execute("inline-busy", {role: "coder", profile: "typescript", task: "Busy task"}, undefined, undefined, ctx);
+ assert.equal(pi.shortcuts.has("f6"), false);
+ assert.equal(pi.shortcuts.has("alt+i"), false); assert.equal(listeners, 1);
+ assert.match(panel.render(80).join("\n"), /↑ select/);
+ assert.equal(capture("\x1b[A"), undefined); draft = "";
+ assert.deepEqual(capture("\x1b[A"), {consume: true}); assert.equal(listeners, 1);
+ assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(80).join("\n"), /Task · Busy task/);
+ await new Promise(resolve => setTimeout(resolve, 1100)); assert.equal(factories, 1);
+ assert.deepEqual(capture("\x1b"), {consume: true}); assert.doesNotMatch(panel.render(80).join("\n"), /Task · Busy task/);
+ const oldCapture = capture; assert.equal(capture("x"), undefined); assert.equal(listeners, 1); assert.equal(oldCapture("\r"), undefined);
+ assert.equal((ctx.ui as any).getEditorText(), ""); assert.deepEqual([...pi.commands.keys()], commands);
+ capture("\x1b[A"); capture("\r"); gate.resolve(); await child;
+ assert.equal(panel, undefined); assert.equal(listeners, 0);
+ assert.equal(oldCapture("\x1b"), undefined);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+it("leaves overlays and custom dialog owners alone, including transitions from panel navigation", async () => {
+ const pi = fakePi(); const gate = deferred<void>();
+ registerGuild(pi.api as any, {run: async options => {await gate.promise; return resultFor(options);}});
+ const ctx = context(); let capture: any; let overlay = false; let owner: any;
+ const editor = {getText: () => "", onAction() {}, onExtensionShortcut: undefined}; owner = editor;
+ (ctx.ui as any).getEditorText = () => "";
+ (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; return () => {};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => overlay, getFocusedComponent: () => owner}, {fg: (_: string, text: string) => text});}) as any;
+ const child = pi.tool.execute("owner-guard", {role: "coder", profile: "typescript", task: "Work"}, undefined, undefined, ctx);
+ overlay = true; assert.equal(capture("\x1b[A"), undefined);
+ overlay = false; owner = {handleInput() {}}; assert.equal(capture("\x1b[A"), undefined);
+ owner = {getText: () => ""}; assert.equal(capture("\x1b[A"), undefined); // dialog input is not main editor
+ owner = editor; assert.deepEqual(capture("\x1b[A"), {consume: true});
+ owner = {handleInput() {}}; assert.equal(capture("\x1b"), undefined); assert.equal(capture("\x1b[B"), undefined);
+ owner = editor; assert.equal(capture("\r"), undefined);
+ capture("\x1b[A"); overlay = true; assert.equal(capture("\x1b"), undefined);
+ gate.resolve(); await child; await pi.handlers.get("session_shutdown")({}, ctx);
+});
+it("never captures direct progress input even if a host still reports the editor as focused", async () => {
+ const pi = fakePi(); const gate = deferred<void>(); const ready = deferred<void>(); let capture: any; let progress: any;
+ const ctx = context(); const theme = {fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text};
+ const tui = {requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false,
+  getFocusedComponent: () => ({getText: () => "", onAction() {}, onExtensionShortcut() {}})};
+ (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; return () => {};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") value(tui, theme);}) as any;
+ ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  progress = factory(tui, theme, {matches: (data: string) => data === "\x1b"}, resolve); ready.resolve();
+ })) as any;
+ registerGuild(pi.api as any, {run: async options => {await gate.promise; return resultFor(options);}});
+ const child = pi.tool.execute("direct-guard", {role: "coder", profile: "typescript", task: "Work"}, undefined, undefined, ctx);
+ capture("\x1b[A");
+ const direct = pi.commands.get("guild-handover").handler("explorer/typescript Direct", ctx); await ready.promise;
+ try {
+  assert.equal(capture("\x1b[A"), undefined); assert.equal(capture("\x1b"), undefined);
+  assert.equal(progress.signal.aborted, false); progress.handleInput("\x1b"); assert.equal(progress.signal.aborted, true);
+ } finally {
+  progress.handleInput("\x1b"); gate.resolve(); await child; await direct; await pi.handlers.get("session_shutdown")({}, ctx);
+ }
+});
+it("cleans compact final runs and closes inline capture before shutdown; late callbacks are inert", async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>();
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {await gate.promise; return resultFor(options);}});
+ let panel: any; let capture: any; let off = 0;
+ const ctx = context();
+ (ctx.ui as any).onTerminalInput = (listener: any) => {capture = listener; return () => {off++;};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {panel = typeof value === "function" ? value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false, getFocusedComponent: () => ({getText: () => (ctx.ui as any).getEditorText(), onAction() {}, onExtensionShortcut() {}})}, {fg: (_: string, text: string) => text}) : value;}) as any;
+ assert.equal(pi.shortcuts.has("alt+i"), false); assert.equal(capture, undefined);
+ (ctx.ui as any).getEditorText = () => "";
+ const child = pi.tool.execute("inline-shutdown", {role: "coder", profile: "typescript", task: "Work"}, undefined, undefined, ctx);
+ (capture as any)("\x1b[A"); const oldPanel = panel;
+ const shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+ assert.equal(off, 1); assert.equal((capture as any)("\r"), undefined); assert.deepEqual(oldPanel.render(80), []); assert.equal(panel, undefined);
+ gate.resolve(); await child; await shutdown;
+ assert.equal(store.list().active.length + store.list().recent.length, 0);
+ const other = fakePi(); registerGuild(other.api as any, {run: successfulRunner});
+ await other.tool.execute("compact-final", {role: "coder", profile: "typescript", task: "Work"}, undefined, undefined, ctx);
+ assert.equal(panel, undefined);
+});
+it("disposes observers on rebuild and makes cleared widget factories inert", async () => {
+ const pi = fakePi(); const gate = deferred<void>(); let factory: any; let capture: any; let listeners = 0;
+ const ctx = context(); const tui = {requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false,
+  getFocusedComponent: () => ({getText: () => "", onAction() {}, onExtensionShortcut() {}})};
+ const theme = {fg: (_: string, text: string) => text};
+ (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; listeners++; return () => {listeners--;};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") {factory = value; value(tui, theme);}}) as any;
+ registerGuild(pi.api as any, {run: async options => {await gate.promise; return resultFor(options);}});
+ const child = pi.tool.execute("rebuild", {role: "coder", profile: "typescript", task: "Work"}, undefined, undefined, ctx);
+ const staleCapture = capture; const oldPanel = factory(tui, theme);
+ assert.equal(listeners, 1); assert.equal(staleCapture("\x1b[A"), undefined);
+ gate.resolve(); await child; assert.equal(listeners, 0);
+ const late = factory(tui, theme); assert.deepEqual(late.render(80), []); assert.equal(listeners, 0);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+ assert.deepEqual(factory(tui, theme).render(80), []); assert.deepEqual(oldPanel.render(80), []);
+});
+it("fullscreen rows expand exact IDs beneath the panel with detail-aware click coordinates", async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>(); const secondGate = deferred<void>();
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {await (options.runId === "row-first" ? gate.promise : secondGate.promise); return resultFor(options);}});
+ let panel: any; let factories = 0;
+ const ctx = context();
+ (ctx.ui as any).onTerminalInput = () => () => {};
+ ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 35}}, {fg: (_: string, text: string) => text});} else if (!value) panel = undefined;}) as any;
+ ctx.ui.custom = (() => {throw new Error("no modal");}) as any;
+ const first = pi.tool.execute("row-first", {role: "coder", profile: "typescript", task: "First"}, undefined, undefined, ctx);
+ const second = pi.tool.execute("row-second", {role: "coder", profile: "typescript", task: "Second"}, undefined, undefined, ctx);
+ let lines = panel.render(100); let row = lines.findIndex((line: string) => /running.*First/.test(line));
+ assert.deepEqual(panel.handleMouse({type: "click", button: "left", y: row}), {handled: true, render: false});
+ lines = panel.render(100); assert.match(lines.join("\n"), /Task · First/);
+ row = lines.findIndex((line: string) => /queued.*Second/.test(line));
+ assert.ok(row > 3); panel.handleMouse({type: "click", button: "left", y: row});
+ assert.match(panel.render(100).join("\n"), /Task · Second/);
+ gate.resolve(); await first; assert.equal(factories, 1); assert.match(panel.render(100).join("\n"), /Task · Second/);
+ secondGate.resolve(); await second; assert.equal(panel, undefined);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const terminal of ["completed", "failed", "cancelled", "shutdown", "disposed"] as const) it(`direct detail settles ${terminal} with correct run events and releases listeners`, async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>(); const ready = deferred<void>();
+ let listeners = 0; const subscribe = store.subscribe.bind(store);
+ store.subscribe = listener => {listeners++; const off = subscribe(listener); let disposed = false; return () => {if (!disposed) {disposed = true; listeners--; off();}};};
+ let child: RunGuildRoleOptions | undefined; let progress: any; let doneCalls = 0;
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {
+  child = options;
+  options.onEvent?.({type: "message_end", message: {role: "assistant", content: [{type: "text", text: "Own emitted transcript"}]}});
+  ready.resolve(); await gate.promise;
+  if (terminal === "failed") throw new Error("Detail failure");
+  return resultFor(options);
+ }});
+ store.start({id: "other", role: "coder", profile: "typescript", task: "Other task", phase: "running", startedAt: 0});
+ store.ingest("other", {type: "message_end", message: {role: "assistant", content: [{type: "text", text: "Wrong transcript"}]}});
+ const ctx = context(); ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  progress = factory({requestRender() {}, terminal: {rows: 20}}, {fg: (_: string, text: string) => text, bg: (_: string, text: string) => text}, {matches: (data: string, binding: string) => data === binding}, (value: any) => {doneCalls++; resolve(value);});
+ })) as any;
+ const command = pi.commands.get("guild-handover").handler("coder/typescript Own task", ctx);
+ await ready.promise;
+ for (let i = 0; i < 2; i++) {
+  progress.handleInput("\x1b[17~"); assert.match(progress.render(100).join("\n"), /Own emitted transcript/);
+  assert.doesNotMatch(progress.render(100).join("\n"), /Wrong transcript/);
+  progress.handleInput("\x1b[A"); progress.handleInput("tui.select.cancel");
+  assert.equal(child?.signal?.aborted, false); assert.equal(listeners, 0);
+ }
+ progress.handleInput("\r"); assert.equal(listeners, 1);
+ assert.match(progress.render(100).at(-1), /Esc back · F6 back/);
+ let shutdown: Promise<void> | undefined;
+ if (terminal === "shutdown") {shutdown = pi.handlers.get("session_shutdown")({}, ctx); assert.equal(listeners, 0);}
+ if (terminal === "disposed") {progress.dispose(); assert.equal(listeners, 0); assert.equal(child?.signal?.aborted, false);}
+ if (terminal === "cancelled") {
+  progress.handleInput("tui.select.cancel"); assert.equal(child?.signal?.aborted, false);
+  progress.handleInput("tui.select.cancel"); assert.equal(child?.signal?.aborted, true);
+  // A cancelling card must not reopen inspection.
+  progress.handleInput("\r"); assert.equal(listeners, 0);
+ }
+ gate.resolve(); await command; await shutdown;
+ assert.equal(doneCalls, 1); assert.equal(listeners, 0);
+ const status = terminal === "shutdown" ? "cancelled" : terminal === "disposed" ? "completed" : terminal;
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", status]);
+ assert.equal(pi.messages[0].message.details.runId, pi.messages[1].message.details.runId);
+ progress.dispose();
+});
+
+// Final-run behavior list: every terminal outcome, focus/draft changes, stale
+// input/render/factory callbacks, ticker removal and repeated shutdown.
+for (const terminal of ["completed", "failed", "cancelled", "queued-cancelled"] as const) {
+ for (const ownership of ["editor", "draft", "dialog"] as const) it(`auto-clears expanded final ${terminal} with ${ownership} ownership`, async () => {
+  const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>(); const ready = deferred<void>();
+  let calls = 0;
+  registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {
+   calls++; ready.resolve(); await gate.promise;
+   if (terminal === "failed") throw new Error("terminal fixture failure");
+   return resultFor(options);
+  }});
+  const ctx = context(); let panel: any; let factory: any; let capture: any; let listeners = 0; let subscriptions = 0;
+  let draft = ""; let editorOwns = true; let status: string | undefined; let clears = 0;
+  const subscribe = store.subscribe.bind(store);
+  store.subscribe = listener => {subscriptions++; const off = subscribe(listener); return () => {subscriptions--; off();};};
+  const editor = {getText: () => draft, onAction() {}, onExtensionShortcut() {}};
+  const tui = {requestRender() {}, terminal: {rows: 40}, hasOverlay: () => false, getFocusedComponent: () => editorOwns ? editor : {handleInput() {}}};
+  const theme = {fg: (_: string, text: string) => text};
+  (ctx.ui as any).getEditorText = () => draft;
+  (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; listeners++; return () => {listeners--;};};
+  ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") {factory = value; panel = value(tui, theme);} else {panel = value; clears++;}}) as any;
+  ctx.ui.setStatus = ((_key: string, value: string | undefined) => {status = value;}) as any;
+  const controller = new AbortController();
+  // Cancel queued work reentrantly before RunQueue can launch a child.
+  const child = pi.tool.execute(`final-${terminal}-${ownership}`, {role: "coder", profile: "typescript", task: "Final task"}, controller.signal, (update: any) => {
+   if (terminal === "queued-cancelled" && update.details.phase === "queued") {
+    capture("\x1b[A"); capture("\x1b[C"); controller.abort();
+   }
+  }, ctx);
+  if (terminal !== "queued-cancelled") {
+   await ready.promise; capture("\x1b[A"); capture("\x1b[C");
+  }
+  const stalePanel = panel; const staleCapture = capture; const staleFactory = factory;
+  assert.equal(subscriptions, 1);
+  if (ownership === "draft") draft = "nonempty 中文";
+  if (ownership === "dialog") editorOwns = false;
+  if (terminal === "cancelled") controller.abort();
+  gate.resolve(); const result = await child;
+  assert.equal(result.details.status, terminal === "queued-cancelled" ? "cancelled" : terminal);
+  assert.equal(calls, terminal === "queued-cancelled" ? 0 : 1);
+  assert.equal(panel, undefined); assert.equal(status, undefined); assert.equal(listeners, 0); assert.equal(subscriptions, 0);
+  assert.deepEqual(stalePanel.render(100), []);
+  for (const key of ["\x1b", "\x1b[D", "\x1b[A", "x"]) assert.equal(staleCapture(key), undefined);
+  assert.deepEqual(staleFactory(tui, theme).render(100), []); assert.equal(listeners, 0);
+  const before = clears; await new Promise(resolve => setTimeout(resolve, 1050)); assert.equal(clears, before, "no orphan ticker");
+  await pi.handlers.get("session_shutdown")({}, ctx); await pi.handlers.get("session_shutdown")({}, ctx);
+  assert.equal(listeners, 0); assert.equal(staleCapture("\x1b"), undefined);
+ });
+}
+
+for (const terminal of ["completed", "failed", "cancelled", "queued-cancelled"] as const) it(`removes expanded ${terminal} while another queued/run survives; close across queue switch`, async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore(); const firstGate = deferred<void>(); const secondGate = deferred<void>(); const ready = deferred<void>();
+ const controller = new AbortController();
+ registerGuild(pi.api as any, {createTranscriptStore: () => store, run: async options => {
+  await (options.runId === "queue-first" ? firstGate.promise : secondGate.promise);
+  if (terminal === "failed" && options.runId === "queue-first") throw new Error("selected failed");
+  return resultFor(options);
+ }});
+ const ctx = context(); let panel: any; let capture: any; let subscriptions = 0; let listeners = 0;
+ const subscribe = store.subscribe.bind(store);
+ store.subscribe = listener => {subscriptions++; const off = subscribe(listener); return () => {subscriptions--; off();};};
+ (ctx.ui as any).getEditorText = () => "";
+ (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; listeners++; return () => {listeners--;};};
+ ctx.ui.setWidget = ((_key: string, value: any) => {panel = typeof value === "function" ? value({requestRender() {}, terminal: {rows: 48}, hasOverlay: () => false,
+  getFocusedComponent: () => ({getText: () => "", onAction() {}, onExtensionShortcut() {}})}, {fg: (_: string, text: string) => text}) : value;}) as any;
+ const first = pi.tool.execute("queue-first", {role: "coder", profile: "typescript", task: "First"}, terminal === "cancelled" ? controller.signal : undefined, (update: any) => {if (update.details.phase === "running") ready.resolve();}, ctx);
+ await ready.promise;
+ const second = pi.tool.execute("queue-second", {role: "coder", profile: "typescript", task: "Second"}, terminal === "queued-cancelled" ? controller.signal : undefined, undefined, ctx);
+ capture("\x1b[A"); if (terminal !== "queued-cancelled") capture("\x1b[A"); capture("\x1b[C");
+ assert.equal(subscriptions, 1);
+ if (terminal === "cancelled" || terminal === "queued-cancelled") controller.abort();
+ if (terminal === "queued-cancelled") await second;
+ else {firstGate.resolve(); await first;}
+ assert.equal(subscriptions, 0); assert.equal(listeners, 1);
+ const removed = terminal === "queued-cancelled" ? "Second" : "First";
+ const survivor = terminal === "queued-cancelled" ? "First" : "Second";
+ const output = panel.render(100).join("\n"); assert.doesNotMatch(output, new RegExp(removed + "|Task ·|Session")); assert.match(output, new RegExp(survivor));
+ // Closing selected compact navigation during a queue phase transition is harmless.
+ assert.deepEqual(capture("\x1b"), {consume: true}); assert.equal(capture("\x1b"), undefined);
+ assert.equal(controller.signal.aborted, terminal === "cancelled" || terminal === "queued-cancelled");
+ firstGate.resolve(); secondGate.resolve(); await first; await second;
+ assert.equal(panel, undefined); assert.equal(listeners, 0); assert.equal(subscriptions, 0); assert.equal(capture("\x1b"), undefined);
+ await pi.handlers.get("session_shutdown")({}, ctx);
 });

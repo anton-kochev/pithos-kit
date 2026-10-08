@@ -61,6 +61,15 @@ type ChildObservationPayload =
 	| { type: "stdout" | "stderr"; base64: string }
 	| { type: "end"; exitCode: number | null; aborted: boolean; selectedSkills: GuildSkillReceipt[] };
 
+/** A parsed JSON event snapshot; nested values must be narrowed before inspection. */
+export type GuildParsedEvent = Readonly<{ type: string } & Record<string, unknown>>;
+
+function freezeObservation(value: unknown): void {
+	if (!value || typeof value !== "object") return;
+	for (const child of Object.values(value)) freezeObservation(child);
+	Object.freeze(value);
+}
+
 export interface RunGuildRoleOptions {
 	/** Parent tool-call or direct-command ID, used only for observation correlation. */
 	runId?: string;
@@ -74,6 +83,8 @@ export interface RunGuildRoleOptions {
 	projectTrusted: boolean;
 	signal?: AbortSignal;
 	onUpdate?: (result: GuildRoleRunResult) => void;
+	/** Memory-only observation through ResultStream; exceptions never own execution. */
+	onEvent?: (event: GuildParsedEvent) => void;
 }
 
 function buildGuildRoleChildArguments(
@@ -360,6 +371,8 @@ interface GuildChildProcessOptions {
 	cwd: string;
 	signal?: AbortSignal;
 	onUpdate?: (result: GuildRoleRunResult) => void;
+	/** Memory-only observation through ResultStream; exceptions never own execution. */
+	onEvent?: (event: GuildParsedEvent) => void;
 }
 
 export function cloneProviderUsage(usage: Usage | null | undefined): Usage | null | undefined {
@@ -405,7 +418,18 @@ async function runGuildChild(
 			killTimer.unref?.();
 		};
 		const abort = () => { wasAborted = true; stop(); };
-		const event = (value: unknown) => { applyJsonEvent(result, value); emitUpdate(); };
+		const event = (value: unknown) => {
+			applyJsonEvent(result, value);
+			emitUpdate();
+			if (options.onEvent) {
+				try {
+					// The protocol and usage reducers retain references; never expose those objects.
+					const snapshot = structuredClone(value) as GuildParsedEvent;
+					freezeObservation(snapshot);
+					options.onEvent(snapshot);
+				} catch { /* observational, including snapshot failures */ }
+			}
+		};
 		child.stdout.on("data", (chunk: Buffer) => {
 			if (closed) return;
 			safeObserve({ type: "stdout", base64: chunk.toString("base64") });
