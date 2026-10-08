@@ -118,7 +118,7 @@
     },
     {
       "name": "@pithos-kit/clio",
-      "version": "0.0.1",
+      "version": "0.0.2",
       "description": "Clio: automatic evidence-backed documentation capture for Pi.",
       "pi": {
         "extensions": [
