@@ -22,6 +22,7 @@ export type CompletedPlanPublication = {
 	revision: number;
 	digest: string;
 	path: string;
+	// Legacy reader compatibility only; never assign or replay a persisted generated name.
 	sessionName?: string;
 };
 

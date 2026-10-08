@@ -9,8 +9,17 @@ import {
 import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
+
+// These integration tests exercise agent/publication lifecycle, not inference.
+// Never let ambient provider credentials start a background naming request.
+const previousOffline = process.env.PI_OFFLINE;
+process.env.PI_OFFLINE = "true";
+after(() => {
+	if (previousOffline === undefined) delete process.env.PI_OFFLINE;
+	else process.env.PI_OFFLINE = previousOffline;
+});
 
 const PLAN_EXTENSION_PATH = fileURLToPath(new URL("../extensions/plan-theme.ts", import.meta.url));
 const QUEUED_CUSTOM_TYPE = "plan-custom-queue-regression";

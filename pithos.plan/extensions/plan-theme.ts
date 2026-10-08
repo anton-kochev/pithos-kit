@@ -39,7 +39,7 @@ import {
 	type PlanCheckpointDetails,
 	type PlanPublicationState,
 } from "./plan-state.ts";
-import { derivePlanSessionName } from "./plan-session-name.ts";
+import { createPlanSessionNaming, type PlanNameCompletionTransport } from "./plan-session-name.ts";
 import { updatePlanStatus } from "./plan-status.ts";
 import { createPithosLogger, errorMetadata } from "./plan-logging.ts";
 
@@ -151,6 +151,7 @@ function legacyBranchWasActive(entries: readonly unknown[]): boolean {
 type PlanThemeDependencies = {
 	verifyPlanFileDigest?: typeof verifyPlanFileDigest;
 	generatePlanPath?: typeof generatePlanPath;
+	namingCompletion?: PlanNameCompletionTransport;
 };
 
 type PlanBranchStateIdentity = Readonly<{
@@ -221,6 +222,7 @@ function planPublicationVerificationIsCurrent(
 
 export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDependencies = {}): void {
 	const log = createPithosLogger();
+	const sessionNaming = createPlanSessionNaming(pi, dependencies.namingCompletion);
 	log.info("extension.register");
 	const verifyPublishedPlanFileDigest = dependencies.verifyPlanFileDigest ?? verifyPlanFileDigest;
 	const generatePlanCandidatePath = dependencies.generatePlanPath ?? generatePlanPath;
@@ -286,20 +288,6 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				? { completedPublication: { ...state.completedPublication } }
 				: {}),
 		});
-	}
-
-	function trySetSessionName(ctx: ExtensionContext, sessionName: string): boolean {
-		try {
-			if (pi.getSessionName() !== sessionName) pi.setSessionName(sessionName);
-			return true;
-		} catch (error) {
-			notifyOrLog(
-				ctx,
-				`The plan was published, but its session name could not be updated: ${errorMessage(error)}.`,
-				"warning",
-			);
-			return false;
-		}
 	}
 
 	function clearPublicationAuthorization(persistApprovalChange = true): void {
@@ -753,10 +741,6 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 
 		try {
 			await verifyPublishedPlanFileDigest(ctx.cwd, approval.path, approval.digest);
-			const recoveringFirstPublication = state.publishedPath === undefined;
-			const sessionName = recoveringFirstPublication
-				? derivePlanSessionName(checkpoint.content, approval.path)
-				: undefined;
 			state.publishedPath = approval.path;
 			state.candidatePath = approval.path;
 			state.publishedRevision = approval.revision;
@@ -768,10 +752,8 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 				revision: approval.revision,
 				digest: approval.digest,
 				path: approval.path,
-				...(sessionName ? { sessionName } : {}),
 			};
 			persistState();
-			if (sessionName) trySetSessionName(ctx, sessionName);
 			notifyOrLog(
 				ctx,
 				approval.action === "exit"
@@ -835,7 +817,6 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			}
 		}
 
-		if (completed.sessionName) trySetSessionName(ctx, completed.sessionName);
 		if (state) delete state.completedPublication;
 		if (completed.action === "exit" && state) {
 			applyInactiveMode(ctx, true);
@@ -995,13 +976,13 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			}
 			publicationExecutionStarted = true;
 			const firstPublication = state.publishedPath === undefined;
-			const firstPublicationSessionName = firstPublication
-				? derivePlanSessionName(checkpoint.content, path)
-				: undefined;
+			const publishedContent = checkpoint.content;
+			const publicationSessionGeneration = sessionGeneration;
+			const publicationOwner = state.ownerSessionId;
 			try {
 				let writeWasUnchanged = false;
 				if (firstPublication) {
-					await createPlanFileAtPath(ctx.cwd, path, checkpoint.content, signal);
+					await createPlanFileAtPath(ctx.cwd, path, publishedContent, signal);
 				} else {
 					if (!state.publishedDigest) {
 						throw new Error("Published plan state is missing its optimistic-concurrency digest.");
@@ -1009,7 +990,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					const result = await updatePlanFileAtPath(
 						ctx.cwd,
 						path,
-						checkpoint.content,
+						publishedContent,
 						state.publishedDigest,
 						signal,
 					);
@@ -1033,11 +1014,13 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 					revision: checkpoint.revision,
 					digest: checkpoint.digest,
 					path,
-					...(firstPublicationSessionName ? { sessionName: firstPublicationSessionName } : {}),
 				};
 				persistState();
-				if (firstPublicationSessionName) {
-					trySetSessionName(ctx, firstPublicationSessionName);
+				// Persist the first published path before launching: updates/recovery must
+				// never retry naming, even if this one-shot attempt is interrupted.
+				if (firstPublication && sessionGeneration === publicationSessionGeneration &&
+					state.ownerSessionId === publicationOwner) {
+					sessionNaming.start(ctx, publishedContent);
 				}
 				log.info("tool.create_plan.complete", { toolCallId, durationMs: Date.now() - started, revision: checkpoint.revision, path, firstPublication, unchanged: writeWasUnchanged, action: completedAction });
 				return {
@@ -1075,6 +1058,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	});
 
 	pi.on("session_start", async (event, ctx) => {
+		sessionNaming.reset();
 		log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
 		activityGeneration += 1;
 		sessionGeneration += 1;
@@ -1085,6 +1069,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	});
 
 	pi.on("session_tree", async (_event, ctx) => {
+		sessionNaming.cancel();
 		activityGeneration += 1;
 		sessionGeneration += 1;
 		exitFallbackOperation = undefined;
@@ -1096,6 +1081,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 	});
 
 	pi.on("session_shutdown", async (event, ctx) => {
+		sessionNaming.cancel();
 		log.info("session.shutdown", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), active: state?.active });
 		activityGeneration += 1;
 		sessionGeneration += 1;
@@ -1666,18 +1652,6 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 			return undefined;
 		}
 		let completedAction = state?.completedPublication?.action ?? publicationAction;
-		const details = event.details as {
-			path?: unknown;
-			firstPublication?: unknown;
-		} | undefined;
-		if (
-			details?.firstPublication === true &&
-			checkpoint &&
-			typeof details.path === "string" &&
-			details.path === state?.publishedPath
-		) {
-			trySetSessionName(ctx, derivePlanSessionName(checkpoint.content, details.path));
-		}
 		if (
 			completedAction === "exit" &&
 			publicationExecutionStarted &&
@@ -1713,7 +1687,6 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		if (completed) {
 			publicationToolCallId = undefined;
 			clearPublicationAuthorization();
-			if (completed.sessionName) trySetSessionName(ctx, completed.sessionName);
 			if (state) delete state.completedPublication;
 			if (completed.action === "exit") {
 				deactivatePlanMode(ctx);

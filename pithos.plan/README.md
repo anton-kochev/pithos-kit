@@ -168,9 +168,35 @@ writers are not locked and can still race the final filesystem calls.
 
 If the latest checkpoint digest is already published, Pi verifies the on-disk
 bytes and performs no write. `/plan save` remains active; `/plan exit` exits
-immediately when that verified publication is unchanged. A successful first
-publication also derives the contextual session name from the outcome-focused
-`# Plan:` title.
+immediately when that verified publication is unchanged.
+
+### Content-inferred session name
+
+After the first successful approved publication, Plan starts a nonblocking model
+request to infer a descriptive session name from the published content, for example
+`guild-selected-row-highlight`. It does not use the first heading or filename as
+the name. Only a complete response of 3–6 lowercase ASCII kebab-case words, at most
+64 characters, is accepted.
+
+The request uses the cheapest authenticated, session-scoped, non-reasoning text
+model available through Pi. It sends **only the first 8,000 characters of the
+published Markdown**, labeled as untrusted data rather than instructions. It
+includes no conversation, cwd, tool outputs, path, or session identifier. Published
+Markdown is never changed by naming. The request may incur a small provider charge;
+the Pi 0.83 development runtime does not include this background usage in session
+totals. There is no prompt caching or retry, and a ten-second deadline includes
+credential resolution.
+
+Missing credentials/model, invalid output, provider or metadata failure, timeout,
+or `PI_OFFLINE=1`, `true`, or `yes` leaves the existing name unchanged. Manual or
+extension-provided renames while inference is pending cancel it and remain
+authoritative, even if the name is subsequently changed back. Session replacement,
+branch navigation, reload, and shutdown cancel/discard pending results. `/plan exit`
+itself does not cancel naming: it may finish after Plan mode has exited.
+
+Updates, repeated saves, and restart recovery neither retry inference nor replay
+old generated names. If the process stops between publication and naming, the
+current name is retained on recovery.
 
 Approval is persisted as an exact revision/digest/path/base-digest binding so a
 completed write can be reconciled safely after a process interruption. `/tree`

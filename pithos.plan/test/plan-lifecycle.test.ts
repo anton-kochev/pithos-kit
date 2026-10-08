@@ -10,6 +10,7 @@ import {
 	PlanPublicationConflictError,
 	verifyPlanFileDigest,
 } from "../extensions/plan-files.ts";
+import type { PlanNameCompletionTransport } from "../extensions/plan-session-name.ts";
 import planTheme from "../extensions/plan-theme.ts";
 import { commandHarness } from "./command-harness.ts";
 
@@ -71,6 +72,7 @@ function createHarness(options: {
 	hasPendingMessages?: () => boolean;
 	isIdle?: () => boolean;
 	sessionName?: string;
+	namingCompletion?: PlanNameCompletionTransport;
 	verifyPlanFileDigest?: typeof verifyPlanFileDigest;
 	generatePlanPath?: typeof generatePlanPath;
 	setSessionName?: (name: string) => void;
@@ -93,6 +95,16 @@ function createHarness(options: {
 		const leaf = branchEntries.at(-1);
 		return typeof leaf?.id === "string" ? leaf.id : null;
 	};
+	const appendSessionInfo = (name: string) => {
+		const entry = {
+			type: "session_info", id: `entry-${nextEntry++}`, parentId: currentParentId(),
+			timestamp: new Date().toISOString(), name,
+		};
+		allEntries.push(entry);
+		if (branchEntries !== allEntries) branchEntries.push(entry);
+		sessionName = name;
+	};
+	if (sessionName !== undefined) appendSessionInfo(sessionName);
 	const routing = commandHarness(handlers);
 	const pi = {
 		registerCommand: routing.registerCommand,
@@ -128,7 +140,7 @@ function createHarness(options: {
 		},
 		setSessionName(name: string) {
 			options.setSessionName?.(name);
-			sessionName = name;
+			appendSessionInfo(name);
 			sessionNameChanges.push(name);
 		},
 		getSessionName: () => sessionName,
@@ -146,6 +158,11 @@ function createHarness(options: {
 		mode: options.mode ?? "rpc",
 		hasUI: options.hasUI ?? true,
 		signal: options.signal,
+	scopedModels: [],
+	modelRegistry: {
+		getAvailable: () => [{ provider: "test", id: "cheap", reasoning: false, input: ["text"], maxTokens: 128, cost: { input: 0, output: 0 } }],
+		getApiKeyAndHeaders: async () => ({ ok: true, apiKey: "mock-key" }),
+	},
 		isIdle: options.isIdle ?? (() => true),
 		// Exercise Pi 0.83's live ExtensionContext queue contract without synthesizing an input event.
 		hasPendingMessages: options.hasPendingMessages ?? (() => false),
@@ -181,6 +198,7 @@ function createHarness(options: {
 	planTheme(pi as never, {
 		verifyPlanFileDigest: options.verifyPlanFileDigest,
 		generatePlanPath: options.generatePlanPath,
+		namingCompletion: options.namingCompletion ?? (async () => { throw new Error("mock: naming unavailable"); }),
 	} as never);
 	return {
 		routing,
@@ -196,6 +214,10 @@ function createHarness(options: {
 			branchEntries = entries;
 		},
 		getSessionName: () => sessionName,
+		rename(name: string) {
+			appendSessionInfo(name);
+			return handlers.get("session_info_changed")?.({ type: "session_info_changed", name }, ctx);
+		},
 		sessionNameChanges,
 		getThemeName: () => uiTheme.name,
 		themeChanges,
@@ -414,6 +436,105 @@ async function publishLatest(
 }
 
 describe("Plan session lifecycle", () => {
+	it("infers from the first approved published Goal plan in background, survives Plan exit, and never replays on results or updates", async () => {
+		const response = Promise.withResolvers<{ stopReason: string; content: Array<{ type: string; text: string }> }>();
+		let calls = 0;
+		const content = "# Goal\r\nHighlight the selected Guild row, preserving contrast.\r\n";
+		await withHarness({
+			confirm: async () => true,
+			select: async () => "Create plan",
+			sessionName: "neon-pager-reboot",
+			namingCompletion: async (_model, context) => {
+				calls += 1;
+				assert.equal(JSON.parse(context.messages[0].content[0].text).publishedPlan, content);
+				return response.promise;
+			},
+		}, async (harness) => {
+			await input(harness, "/plan");
+			await checkpointPlan(harness, content, 0);
+			assert.equal(calls, 0);
+			const publication = await assertOperationSettlesPromptly(publishLatest(harness, 1, "/plan exit"));
+			assert.equal(await readFile(join(harness.ctx.cwd, publication.details.path), "utf8"), content);
+			assert.equal(harness.appended.at(-1)?.data.active, false);
+			assert.equal(harness.getSessionName(), "neon-pager-reboot");
+			assert.equal(calls, 1);
+			assert.equal(harness.appended.some((entry: Entry) => entry.data.completedPublication?.sessionName), false);
+			response.resolve({ stopReason: "stop", content: [{ type: "text", text: "guild-selected-row-highlight" }] });
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			assert.deepEqual(harness.sessionNameChanges, ["guild-selected-row-highlight"]);
+			await harness.rename("manual-authoritative-name");
+			await harness.handlers.get("agent_settled")?.({ type: "agent_settled" }, harness.ctx);
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Goal\nChange Guild row styling again.\n", 1);
+			await publishLatest(harness, 2);
+			assert.equal(calls, 1);
+			assert.equal(harness.getSessionName(), "manual-authoritative-name");
+		});
+	});
+
+	it("cancels pending Plan inference on lifecycle invalidation without allowing late names into another session", async () => {
+		for (const event of ["session_shutdown", "session_start", "session_tree", "rename"]) {
+			let signal: AbortSignal | undefined;
+			let calls = 0;
+			const response = Promise.withResolvers<{ stopReason: string; content: Array<{ type: string; text: string }> }>();
+			await withHarness({
+				confirm: async () => true,
+				sessionName: "existing-session-name",
+				namingCompletion: async (_model, _context, options) => {
+					calls += 1;
+					signal = options.signal as AbortSignal;
+					return response.promise;
+				},
+			}, async (harness) => {
+				await input(harness, "/plan");
+				await checkpointPlan(harness, "# Goal\nHighlight Guild selected rows.", 0);
+				assert.equal(calls, 0);
+				await publishLatest(harness, 1);
+				assert.equal(calls, 1);
+				if (event === "rename") await harness.rename("manual-session-name");
+				else await harness.handlers.get(event)?.({ type: event, reason: event === "session_start" ? "resume" : "new" }, harness.ctx);
+				assert.equal(signal?.aborted, true, event);
+				response.resolve({ stopReason: "stop", content: [{ type: "text", text: "guild-selected-row-highlight" }] });
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.deepEqual(harness.sessionNameChanges, [], event);
+				assert.equal(harness.getSessionName(), event === "rename" ? "manual-session-name" : "existing-session-name");
+				assert.equal(calls, 1);
+			});
+		}
+	});
+
+	it("never resurrects legacy generated names or starts inference when reconciling completed or digest-verified crash publications", async () => {
+		for (const command of ["/plan save", "/plan exit"] as const) {
+			await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+				await input(original, "/plan");
+				await checkpointPlan(original, "# Goal\nHighlight selected Guild rows.\n", 0);
+				await publishLatest(original, 1, command, false);
+				const approvalIndex = original.allEntries.findLastIndex((entry: Entry) => entry.data?.approval);
+				assert.ok(approvalIndex >= 0);
+				const approvedEntries = structuredClone(original.allEntries.slice(0, approvalIndex + 1));
+				const completedEntries = structuredClone(original.allEntries);
+				const completed = completedEntries.findLast((entry: Entry) => entry.data?.completedPublication);
+				completed.data.completedPublication.sessionName = "stale-generated-name";
+				for (const entries of [completedEntries, approvedEntries]) {
+					let calls = 0;
+					const resumed = createHarness({
+						cwd: original.ctx.cwd, entries: structuredClone(entries), sessionName: "manual-authoritative-name",
+						namingCompletion: async () => { calls += 1; return { stopReason: "stop", content: [{ type: "text", text: "guild-selected-row-highlight" }] }; },
+					});
+					await resumed.handlers.get("session_start")?.({ type: "session_start", reason: "resume" }, resumed.ctx);
+					await resumed.handlers.get("agent_settled")?.({ type: "agent_settled" }, resumed.ctx);
+					assert.equal(resumed.getSessionName(), "manual-authoritative-name");
+					assert.deepEqual(resumed.sessionNameChanges, []);
+					assert.equal(calls, 0);
+					assert.equal(resumed.appended.at(-1)?.data.active, command === "/plan save");
+					await resumed.handlers.get("session_start")?.({ type: "session_start", reason: "reload" }, resumed.ctx);
+					assert.equal(calls, 0);
+					assert.equal(resumed.getSessionName(), "manual-authoritative-name");
+				}
+			});
+		}
+	});
+
 	for (const builtinPathFormat of ["legacy", "current"] as const) {
 		it(`exposes and admits local read tools with ${builtinPathFormat} source paths, while blocking mutation`, async () => {
 			await withHarness({ builtinPathFormat }, async (harness) => {
@@ -765,8 +886,8 @@ describe("Plan session lifecycle", () => {
 			assert.equal(harness.appended.at(-1)?.data.active, true);
 			assert.equal(harness.appended.at(-1)?.data.publicationState, "synced");
 			assert.equal(harness.appended.at(-1)?.data.publishedPath, publication.details.path);
-			assert.equal(harness.getSessionName(), "stable-publication");
-			assert.deepEqual(harness.sessionNameChanges, ["stable-publication"]);
+			assert.equal(harness.getSessionName(), undefined);
+			assert.deepEqual(harness.sessionNameChanges, []);
 			assert.deepEqual(harness.getActiveTools(), [
 				"read", "grep", "find", "ls", "update_plan_draft", "create_plan",
 			]);
@@ -784,6 +905,7 @@ describe("Plan session lifecycle", () => {
 		let namingAttempts = 0;
 		await withHarness({
 			confirm: async () => true,
+			namingCompletion: async () => ({ stopReason: "stop", content: [{ type: "text", text: "naming-failure-revision-one" }] }),
 			setSessionName: () => {
 				namingAttempts += 1;
 				if (namingAttempts === 1) throw new Error("simulated session naming failure");
@@ -795,7 +917,7 @@ describe("Plan session lifecycle", () => {
 			const first = await publishLatest(harness, 1);
 			assert.equal(harness.appended.at(-1)?.data.publishedPath, first.details.path);
 			assert.equal(harness.appended.at(-1)?.data.publishedRevision, 1);
-			assert.equal(harness.getSessionName(), "naming-failure-revision-one");
+			assert.equal(harness.getSessionName(), undefined);
 
 			await checkpointPlan(harness, "# Plan: Naming failure revision two\n", 1);
 			const second = await publishLatest(harness, 2);
@@ -804,7 +926,7 @@ describe("Plan session lifecycle", () => {
 			assert.equal(second.details.path, first.details.path);
 			assert.equal(harness.appended.at(-1)?.data.publishedPath, first.details.path);
 			assert.equal(harness.appended.at(-1)?.data.publishedRevision, 2);
-			assert.equal(namingAttempts, 2);
+			assert.equal(namingAttempts, 1);
 			assert.deepEqual(
 				(await readdir(planDirectory)).filter((name) => name.endsWith(".md")),
 				[first.details.path.split("/").at(-1)],
@@ -3464,7 +3586,7 @@ describe("Plan session lifecycle", () => {
 		});
 	});
 
-	it("restores the contextual name for /plan save after a restart between write and tool result", async () => {
+	it("preserves the current name for /plan save after a restart between write and tool result", async () => {
 		await withHarness({ confirm: async () => true }, async (original) => {
 			await input(original, "/plan");
 			const content = "# Plan: Crash-safe saved name\n";
@@ -3500,8 +3622,8 @@ describe("Plan session lifecycle", () => {
 			assert.equal(reconciled.active, true);
 			assert.equal(reconciled.publishedPath, publication.details.path);
 			assert.equal(reconciled.completedPublication, undefined);
-			assert.equal(resumed.getSessionName(), "crash-safe-saved-name");
-			assert.deepEqual(resumed.sessionNameChanges, ["crash-safe-saved-name"]);
+			assert.equal(resumed.getSessionName(), undefined);
+			assert.deepEqual(resumed.sessionNameChanges, []);
 
 			const alreadyNamed = createHarness({
 				cwd: original.ctx.cwd,
@@ -3714,8 +3836,8 @@ describe("Plan session lifecycle", () => {
 			assert.equal(resumed.getThemeName(), "dark");
 			assert.equal(reconciled.completedPublication, undefined);
 			assert.equal(resumed.getActiveTools().includes("create_plan"), false);
-			assert.equal(resumed.getSessionName(), "restarted-exit-completion");
-			assert.deepEqual(resumed.sessionNameChanges, ["restarted-exit-completion"]);
+			assert.equal(resumed.getSessionName(), undefined);
+			assert.deepEqual(resumed.sessionNameChanges, []);
 			assert.match(resumed.notifications.at(-1)?.message ?? "", /completed.*exit.*restart/i);
 		});
 	});
