@@ -43,9 +43,12 @@ export async function safeDirectory(root: string, path: string): Promise<string>
   if (await realpath(target) !== resolve(base, path)) throw new Error('Clio: canonical directory changed');
   return target;
 }
+// A line-leading warning (optionally a comment/Markdown header), not an
+// incidental mention inside prose. Other generated markers remain conservative.
+const doNotEditMarker = /^[\t \uFEFF]*(?:(?:\/\/|\/\*+|\*+|<!--|#+|--|;)[^\r\n]*?|(?:\*{1,2}|`{1,3})?(?:warning:[\t ]*)?)do[\t ]+not[\t ]+edit\b/im;
 export function assertSafeContent(text: string, config: Config): void {
   if (Buffer.byteLength(text, 'utf8') > config.maxContextBytes) throw new Error('Clio: file budget exceeded');
-  if (text.includes('\0') || redactSensitive(text) !== text || /(?:auto[- ]?generated|<!--\s*generated|do not edit|BEGIN .*PRIVATE KEY|(?:api[_-]?key|password|secret)\s*[:=]\s*["'][^"']{8,})/i.test(text)) throw new Error('Clio: generated or sensitive content refused');
+  if (text.includes('\0') || redactSensitive(text) !== text || doNotEditMarker.test(text) || /(?:auto[- ]?generated|<!--\s*generated|BEGIN .*PRIVATE KEY|(?:api[_-]?key|password|secret)\s*[:=]\s*["'][^"']{8,})/i.test(text)) throw new Error('Clio: generated or sensitive content refused');
 }
 export async function safeFile(root: string, path: string, config: Config, doc = false): Promise<Snapshot> {
   assertStableEditPath(path);
