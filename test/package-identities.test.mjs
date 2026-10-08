@@ -14,7 +14,7 @@ const packages = [
   { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0" },
   { directory: "pithos.guild", shortName: "guild", version: "0.7.0" },
   { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0" },
-  { directory: "pithos.plan", shortName: "plan", version: "0.5.2" },
+  { directory: "pithos.plan", shortName: "plan", version: "0.5.3" },
   { directory: "pithos.themes", shortName: "themes", version: "0.1.0" },
   { directory: "pithos.translate", shortName: "translate", version: "2.0.0" },
   { directory: "pithos.web", shortName: "web", version: "0.2.0" },
