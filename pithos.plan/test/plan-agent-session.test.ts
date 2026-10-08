@@ -124,6 +124,118 @@ async function lifecyclePrompt(session: Awaited<ReturnType<typeof createAgentSes
 	}
 }
 
+describe("Plan AgentSession tool restoration integration", () => {
+	it("restores shell and custom tools after navigating back to an exited planning branch", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "pi-plan-agent-session-tools-"));
+		const agentDir = join(cwd, "agent");
+		await mkdir(agentDir, { recursive: true });
+		const settingsManager = SettingsManager.inMemory({
+			compaction: { enabled: false },
+			retry: { enabled: false },
+		});
+		const modelRuntime = await ModelRuntime.create({
+			authPath: join(agentDir, "auth.json"),
+			modelsPath: null,
+		});
+		const responses: TestAssistantMessage[] = [
+			assistantText("Ready to plan."),
+			assistantText("Explored the requirements."),
+			assistantToolCall("restored-shell", "bash", { command: "printf SHELL_RESTORED" }),
+			assistantText("Shell access restored."),
+		];
+		modelRuntime.registerProvider("plan-test-provider", {
+			name: "Plan test provider",
+			baseUrl: "http://localhost:0",
+			apiKey: "test-key",
+			api: "plan-test-api",
+			models: [{
+				id: "plan-test-model",
+				name: "Plan test model",
+				reasoning: false,
+				input: ["text"],
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
+				contextWindow: 128_000,
+				maxTokens: 4_096,
+			}],
+			streamSimple: () => {
+				const next = responses.shift();
+				if (!next) throw new Error("No queued tool restoration response.");
+				return responseStream(next) as never;
+			},
+		});
+		const model = modelRuntime.getModel("plan-test-provider", "plan-test-model");
+		assert.ok(model);
+		const resourceLoader = new DefaultResourceLoader({
+			cwd,
+			agentDir,
+			settingsManager,
+			additionalExtensionPaths: [PLAN_EXTENSION_PATH],
+			noExtensions: true,
+			noSkills: true,
+			noPromptTemplates: true,
+			noThemes: true,
+			noContextFiles: true,
+			systemPrompt: "Base test prompt.",
+		});
+		await resourceLoader.reload();
+		assert.deepEqual(resourceLoader.getExtensions().errors, []);
+		const sessionManager = SessionManager.inMemory(cwd);
+		const { session } = await createAgentSession({
+			cwd, agentDir, model, modelRuntime, resourceLoader, sessionManager, settingsManager,
+			customTools: [{
+				name: "github_history",
+				label: "GitHub history fixture",
+				description: "A custom tool that must be restored, not allowed during Plan.",
+				parameters: { type: "object", properties: {} },
+				execute: async () => ({ content: [{ type: "text", text: "fixture history" }], details: undefined }),
+			}] as never,
+		});
+		const extensionErrors: unknown[] = [];
+		const normalTools = ["read", "bash", "github_history"];
+		try {
+			await session.bindExtensions({
+				mode: "rpc",
+				uiContext: {
+					select: async (_title: string, choices: string[]) => choices.find((choice) => choice === "Exit without publishing"),
+					notify() {},
+					setFooter() {},
+					setStatus() {},
+				} as never,
+				onError: (error) => extensionErrors.push(error),
+			});
+			session.setActiveToolsByName(normalTools);
+			await session.prompt("Establish the normal tool loadout.");
+			const beforePlanLeaf = sessionManager.getLeafId();
+			assert.ok(beforePlanLeaf);
+			await session.prompt("/plan");
+			await session.prompt("Explore the requirements without publishing.");
+			assert.equal(session.getActiveToolNames().includes("bash"), false);
+			assert.equal(session.getActiveToolNames().includes("github_history"), false);
+			await session.prompt("/plan exit");
+			const exitedLeaf = sessionManager.getLeafId();
+			assert.ok(exitedLeaf);
+			assert.equal(latestPlanState(sessionManager)?.active, false);
+
+			await session.navigateTree(beforePlanLeaf, { summarize: false });
+			await session.navigateTree(exitedLeaf, { summarize: false });
+			assert.equal(latestPlanState(sessionManager)?.active, false);
+			assert.deepEqual(session.getActiveToolNames(), normalTools);
+			await session.prompt("Use the restored shell.");
+			const shellResult = sessionManager.getEntries().find((entry) =>
+				entry.type === "message" && entry.message.role === "toolResult" && entry.message.toolCallId === "restored-shell",
+			);
+			assert.ok(shellResult?.type === "message" && shellResult.message.role === "toolResult");
+			assert.equal(shellResult.message.isError, false);
+			assert.match(JSON.stringify(shellResult.message.content), /SHELL_RESTORED/);
+			assert.equal(responses.length, 0);
+			assert.deepEqual(extensionErrors, []);
+		} finally {
+			session.dispose();
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
 describe("Plan AgentSession queue integration", () => {
 	it("delivers an invisible custom follow-up under Plan enforcement and converts exit completion to save", async () => {
 		const cwd = await mkdtemp(join(tmpdir(), "pi-plan-agent-session-"));

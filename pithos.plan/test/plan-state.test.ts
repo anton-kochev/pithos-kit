@@ -211,6 +211,25 @@ describe("reconstructPlanSession", () => {
 		assert.equal(branchA.state?.planId, branchB.state?.planId);
 	});
 
+	it("recovers a legacy exited branch's tool snapshot from its nearest owned ancestor only", () => {
+		const entered = lifecycle({ previousToolNames: ["read", "bash"] });
+		// Older exit entries cleared the snapshot, but the active ancestor kept it.
+		const exited = lifecycle({ active: false });
+		const sibling = lifecycle({ previousToolNames: ["read", "edit"] });
+		const entries = [entered, exited, sibling];
+		const restored = reconstructPlanSession(entries, [entered, exited], "session-a");
+
+		assert.equal(restored.state?.active, false);
+		assert.deepEqual(restored.state?.previousToolNames, ["read", "bash"]);
+		assert.equal(reconstructPlanSession(entries, [], "session-a").state?.previousToolNames, undefined);
+		assert.equal(reconstructPlanSession(entries, [entered, exited], "fork-session").state, undefined);
+
+		const emptySelection = lifecycle({ previousToolNames: [] });
+		const laterExit = lifecycle({ active: false });
+		const laterEntries = [entered, exited, emptySelection, laterExit];
+		assert.deepEqual(reconstructPlanSession(laterEntries, laterEntries, "session-a").state?.previousToolNames, []);
+	});
+
 	it("keeps completed publication recovery branch-local when sibling checkpoints have the same revision and digest", () => {
 		const content = "# Identical checkpoint";
 		const checkpointDigest = planContentDigest(content);

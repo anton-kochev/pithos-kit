@@ -191,6 +191,7 @@ function createHarness(options: {
 		notifications,
 		registeredTools,
 		getActiveTools: () => activeTools,
+		setActiveTools: pi.setActiveTools,
 		setBranch(entries: Entry[]) {
 			branchEntries = entries;
 		},
@@ -436,6 +437,94 @@ describe("Plan session lifecycle", () => {
 			});
 		});
 	}
+
+	it("restores the exact pre-Plan selection when /tree replays Plan tools on an exited branch", async () => {
+		await withHarness({}, async (harness) => {
+			const normalTools = ["read", "bash"];
+			harness.setActiveTools(normalTools);
+			await input(harness, "/plan");
+			const planTools = [...harness.getActiveTools()];
+			await input(harness, "/plan exit");
+			const exitedBranch = [...harness.allEntries];
+
+			harness.setBranch([]);
+			harness.setActiveTools(normalTools);
+			await harness.handlers.get("session_tree")?.(
+				{ type: "session_tree", oldLeafId: "exited", newLeafId: "before-plan" },
+				harness.ctx,
+			);
+			harness.setBranch(exitedBranch);
+			// Pi 1.x restores the transcript's tools before emitting session_tree.
+			// No model request after exit has yet declared the restored normal tools.
+			harness.setActiveTools(planTools);
+			await harness.handlers.get("session_tree")?.(
+				{ type: "session_tree", oldLeafId: "before-plan", newLeafId: "exited" },
+				harness.ctx,
+			);
+
+			assert.equal(harness.appended.at(-1)?.data.active, false);
+			assert.deepEqual(harness.getActiveTools(), normalTools);
+			assert.equal(await harness.handlers.get("tool_call")?.({
+				type: "tool_call", toolCallId: "history", toolName: "bash", input: { command: "git log -1" },
+			}, harness.ctx), undefined);
+			assert.equal(await harness.handlers.get("user_bash")?.({
+				type: "user_bash", command: "gh --version",
+			}, harness.ctx), undefined);
+
+			await input(harness, "/plan");
+			assert.equal(harness.getActiveTools().includes("bash"), false);
+			await input(harness, "/plan exit");
+			assert.deepEqual(harness.getActiveTools(), normalTools, "re-entry must not capture a poisoned snapshot");
+		});
+	});
+
+	it("uses the selected exited branch's tools rather than an active sibling's snapshot", async () => {
+		for (const [exitedTools, siblingTools] of [
+			[["read", "bash"], ["read"]],
+			[["read"], ["read", "bash"]],
+		]) {
+			await withHarness({}, async (harness) => {
+				harness.setActiveTools(exitedTools);
+				await input(harness, "/plan");
+				const planTools = [...harness.getActiveTools()];
+				await input(harness, "/plan exit");
+				const exitedBranch = [...harness.allEntries];
+
+				harness.setBranch([]);
+				harness.setActiveTools(siblingTools);
+				await harness.handlers.get("session_tree")?.({ type: "session_tree" }, harness.ctx);
+				await input(harness, "/plan");
+				harness.setBranch(exitedBranch);
+				harness.setActiveTools(planTools);
+				await harness.handlers.get("session_tree")?.({ type: "session_tree" }, harness.ctx);
+
+				assert.equal(harness.appended.at(-1)?.data.active, false);
+				assert.deepEqual(harness.getActiveTools(), exitedTools);
+			});
+		}
+	});
+
+	it("preserves non-Plan incoming tool selections when reconciling an exited branch", async () => {
+		for (const incomingTools of [["read", "edit"], [], ["read", "grep", "find", "ls"]]) {
+			await withHarness({}, async (harness) => {
+				harness.setActiveTools(["read", "bash"]);
+				await input(harness, "/plan");
+				await input(harness, "/plan exit");
+				const exitedBranch = [...harness.allEntries];
+				await input(harness, "/plan");
+
+				harness.setBranch(exitedBranch);
+				harness.setActiveTools(incomingTools);
+				await harness.handlers.get("session_tree")?.({ type: "session_tree" }, harness.ctx);
+				assert.deepEqual(harness.getActiveTools(), incomingTools);
+
+				await harness.handlers.get("session_start")?.(
+					{ type: "session_start", reason: "reload" }, harness.ctx,
+				);
+				assert.deepEqual(harness.getActiveTools(), incomingTools);
+			});
+		}
+	});
 
 	it("creates one stable session-owned identity on bare /plan and treats re-entry while active as a no-op", async () => {
 		await withHarness({}, async (harness) => {
@@ -3575,13 +3664,19 @@ describe("Plan session lifecycle", () => {
 		});
 	});
 
-	it("finishes an already-persisted /plan exit transition after a restart between write and tool result", async () => {
+	it("finishes an already-persisted /plan exit transition and restores tools/theme from a restricted restart", async () => {
 		await withHarness({
+			mode: "tui",
 			confirm: async () => true,
 			select: async () => "Create plan",
 		}, async (original) => {
+			const normalTools = ["read", "bash"];
+			original.setActiveTools(normalTools);
 			await input(original, "/plan");
+			const planTools = [...original.getActiveTools()];
 			await checkpointPlan(original, "# Plan: Restarted exit completion\n", 0);
+			// Use the harness's RPC approval dialogs; activation captured the TUI theme.
+			original.ctx.mode = "rpc";
 			await startLifecycleCommand(original, "/plan exit");
 			const call = {
 				type: "tool_call",
@@ -3603,7 +3698,10 @@ describe("Plan session lifecycle", () => {
 				sessionId: "session-a",
 				sessionFile: join(original.ctx.cwd, "session.jsonl"),
 				entries: [...original.allEntries],
+				mode: "tui",
 			});
+			resumed.setActiveTools(planTools);
+			resumed.ctx.ui.setTheme({ name: "plan" });
 			await resumed.handlers.get("session_start")?.(
 				{ type: "session_start", reason: "resume" },
 				resumed.ctx,
@@ -3612,6 +3710,8 @@ describe("Plan session lifecycle", () => {
 			const reconciled = resumed.appended.at(-1)?.data;
 			assert.equal(reconciled.active, false);
 			assert.equal(reconciled.publishedPath, publication.details.path);
+			assert.deepEqual(resumed.getActiveTools(), normalTools);
+			assert.equal(resumed.getThemeName(), "dark");
 			assert.equal(reconciled.completedPublication, undefined);
 			assert.equal(resumed.getActiveTools().includes("create_plan"), false);
 			assert.equal(resumed.getSessionName(), "restarted-exit-completion");

@@ -580,13 +580,21 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		updatePlanStatus(ctx.ui, false);
 	}
 
+	function hasReplayedPlanTools(current: string[]): boolean {
+		const planned = selectPlanModeTools(pi.getAllTools(), PLAN_EXTENSION_PATH);
+		return current.some((name) => name === PLAN_CREATE_TOOL_NAME || name === PLAN_CHECKPOINT_TOOL_NAME)
+			&& current.length === planned.length
+			&& current.every((name) => planned.includes(name));
+	}
+
 	function deactivatePlanMode(ctx: ExtensionContext): void {
 		if (!state?.active) return;
 		applyInactiveMode(ctx, true);
 		state.active = false;
 		state.approval = undefined;
 		state.previousThemeName = undefined;
-		state.previousToolNames = undefined;
+		// Keep the exact tool snapshot: /tree can replay the last planning
+		// transcript loadout before the restored tools reach a model request.
 		queuedRequest = undefined;
 		pendingAction = undefined;
 		boundLifecyclePrompt = undefined;
@@ -830,9 +838,9 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		if (completed.sessionName) trySetSessionName(ctx, completed.sessionName);
 		if (state) delete state.completedPublication;
 		if (completed.action === "exit" && state) {
+			applyInactiveMode(ctx, true);
 			state.active = false;
 			state.previousThemeName = undefined;
-			state.previousToolNames = undefined;
 		}
 		persistState();
 		notifyOrLog(
@@ -850,7 +858,14 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 
 	async function reconcileSession(ctx: ExtensionContext, clearApproval: boolean): Promise<void> {
 		lifecycleAgentRunActive = false;
-		if (state?.active) applyInactiveMode(ctx, true);
+		// Inspect Pi's incoming transcript loadout before outgoing branch cleanup
+		// replaces it with that branch's (potentially different) snapshot.
+		const incomingToolNames = pi.getActiveTools();
+		const replayedPlanTools = hasReplayedPlanTools(incomingToolNames);
+		if (state?.active) {
+			applyInactiveMode(ctx, true);
+			if (!replayedPlanTools) pi.setActiveTools(withoutInternalPlanTools(incomingToolNames));
+		}
 		stateBlocked = false;
 		const restored = reconstructPlanSession(
 			ctx.sessionManager.getEntries(),
@@ -904,7 +919,7 @@ export default function planTheme(pi: ExtensionAPI, dependencies: PlanThemeDepen
 		if (!clearApproval) await recoverApprovedPublication(ctx);
 		await finishPersistedPublicationTransition(ctx);
 		if (state.active) applyActiveMode(ctx, true);
-		else applyInactiveMode(ctx, false);
+		else applyInactiveMode(ctx, replayedPlanTools, false);
 	}
 
 	pi.registerTool({

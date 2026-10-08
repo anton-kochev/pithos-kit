@@ -361,7 +361,10 @@ export function reconstructPlanSession(
 		state.completedPublication = { ...branchCompletedPublication };
 	}
 	if (branchState?.previousThemeName) state.previousThemeName = branchState.previousThemeName;
-	if (branchState?.previousToolNames) state.previousToolNames = [...branchState.previousToolNames];
+	// Older inactive entries discarded the snapshot. Recover it only from
+	// this branch, never from the session-global state or a sibling branch.
+	const toolState = branchStates.findLast((entry) => entry.previousToolNames !== undefined);
+	if (toolState?.previousToolNames) state.previousToolNames = [...toolState.previousToolNames];
 
 	const checkpoint = branchEntries
 		.map(checkpointFromEntry)

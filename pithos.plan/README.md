@@ -194,7 +194,16 @@ spoofed-source, and unrelated custom tools stay blocked. Plan also blocks writes
 edits, shell tools, manual `!`/`!!` shell commands, delegation, mutating or
 untrusted custom tools, and same-named overrides of trusted built-ins. It applies
 the bundled Plan theme and planning footer while active, restoring the previous
-theme and exact tool selection on exit. If the visual distinction is ever absent
+theme and exact tool selection on exit. Use `/plan exit` before running shell
+commands (including `git` or `gh`) or implementing changes. Exiting restores
+previously enabled shell and custom tools; it does not enable tools that were
+excluded before entering Plan mode. The branch-local tool snapshot is retained
+so `/tree` can repair a replayed Plan loadout on an already-exited branch, even
+before a post-exit model request has declared the restored tools. Non-Plan tool
+selections remain unchanged. Completed exit recovery also restores tools and
+theme before marking Plan inactive.
+
+If the visual distinction is ever absent
 while `/plan status` reports active mode, run `/reload`; the reloaded runtime
 reconstructs state and reapplies the Plan presentation without relaxing tool
 restrictions.
