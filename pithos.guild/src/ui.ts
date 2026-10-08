@@ -33,12 +33,15 @@ function compact(value: string, maxLength = 100): string {
 	return text.length <= maxLength ? text : `${text.slice(0, maxLength - 1)}…`;
 }
 
-function styledPanelLine(line: string, theme: Theme): string {
+function styledPanelLine(line: string, theme: Theme, selected = false): string {
 	if (line.startsWith("⏳ ")) {
 		const [member = "guild member", ...metadata] = line.slice("⏳ ".length).split(" · ");
 		const queued = metadata[0] === "queued";
-		return theme.fg(queued ? "muted" : "warning", queued ? "○" : "●") +
-			` ${theme.fg("accent", member)}` +
+		const dot = queued ? "○" : "●";
+		const identity = selected
+			? theme.inverse(theme.fg("accent", `${dot} ${member}`))
+			: theme.fg(queued ? "muted" : "warning", dot) + ` ${theme.fg("accent", member)}`;
+		return identity +
 			(metadata.length > 0 ? theme.fg("dim", ` · ${metadata.join(" · ")}`) : "");
 	}
 	return theme.fg("muted", line);
@@ -93,7 +96,7 @@ export function createGuildPanel(lines: string[], theme: Theme, inspection?: { r
 			if (width <= 0) return [];
 			const summary = lines[0]?.replace(/^Guild\s*/, "") ?? "";
 			const title = theme.fg("accent", "Guild") + (summary ? theme.fg("muted", ` ${summary}`) : "") + theme.fg("dim", ` · ${hint}`);
-			const runs = lines.slice(1).map((line, index) => (index === selectedIndex ? theme.fg("accent", "›") : "") + styledPanelLine(line, theme));
+			const runs = lines.slice(1).map((line, index) => styledPanelLine(line, theme, index === selectedIndex));
 			const { background, foreground } = guildPanelAnsi(theme);
 			const edge = (block: "▄" | "▀") => `${foreground}${block.repeat(width)}\u001b[39m`;
 			const content = [title, ...runs].map((line) =>

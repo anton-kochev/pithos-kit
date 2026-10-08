@@ -16,6 +16,7 @@ const theme = {
   fg: (_color: string, text: string) => text,
   bg: (_color: string, text: string) => text,
   bold: (text: string) => text,
+  inverse: (text: string) => `\x1b[7m${text}\x1b[27m`,
 } as any;
 
 describe("Guild visual presentation", () => {
@@ -50,6 +51,38 @@ describe("Guild visual presentation", () => {
     assert.match(lines[4] ?? "", /^\u001b\[38;2;233;221;242m▀+/);
     assert.deepEqual(backgrounds, []);
     assert.doesNotMatch(rendered, /Design order cancellation|openai-codex|read, grep|built-in|read only/);
+  });
+
+  // Selection behavior: identity-only inversion, queued/running dots,
+  // unselected rows, clipped widths, and navigation release (inline tests).
+  it("inverts only the selected dot and identity instead of adding a pointer", () => {
+    const rows = ["Guild · 2 active", "⏳ explorer/typescript · running · 5s · Inspect sources", "⏳ reviewer/general · queued · 0s · Review sources"];
+    for (const selected of [0, 1]) {
+      const lines = createGuildPanel(rows, theme, undefined, undefined, selected).render(100);
+      const identity = selected === 0 ? "● explorer/typescript" : "○ reviewer/general";
+      const metadata = selected === 0 ? "running · 5s · Inspect sources" : "queued · 0s · Review sources";
+      assert.ok(lines[selected + 2].includes(` \x1b[7m${identity}\x1b[27m · ${metadata}`));
+      assert.doesNotMatch(lines[3 - selected], /\x1b\[7m/);
+      assert.doesNotMatch(lines.join("\n"), /›/);
+      assert.ok(lines.every(line => visibleWidth(line) === 100));
+    }
+    assert.doesNotMatch(createGuildPanel(rows, theme).render(100).join("\n"), /\x1b\[7m|›/);
+  });
+
+  it("closes selected styling when narrow widths clip the identity or Unicode preview", () => {
+    const rows = ["Guild · 1 active", "⏳ explorer/typescript · running · Inspect 中文🧪"];
+    const panel = createGuildPanel(rows, theme, undefined, undefined, 0);
+    for (const width of [1, 2, 4, 5, 10, 20, 22, 25, 40, 80]) {
+      const lines = panel.render(width);
+      assert.ok(lines.every(line => visibleWidth(line) === width));
+      let inverted = false;
+      for (const match of lines[2].matchAll(/\x1b\[(\d+)m/g)) {
+        if (match[1] === "7") inverted = true;
+        if (match[1] === "27" || match[1] === "0") inverted = false;
+      }
+      assert.equal(inverted, false, `selection must close at ${width} columns`);
+      assert.doesNotMatch(lines.join("\n"), /›/);
+    }
   });
 
   it("uses a dedicated Guild background for dark themes", () => {

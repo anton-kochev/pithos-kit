@@ -5,7 +5,8 @@ import { readFileSync } from "node:fs";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import { createInlineGuildPanel } from "../src/inline-panel.ts";
 import { LiveTranscriptStore } from "../src/live-transcript.ts";
-const theme = {fg: (_: string, text: string) => text} as any;
+const inverse = (text: string) => `\x1b[7m${text}\x1b[27m`;
+const theme = {fg: (_: string, text: string) => text, inverse} as any;
 const start = (store: LiveTranscriptStore, id: string) => store.start({id, role: "coder", profile: "typescript", task: id, phase: "running", startedAt: 0});
 it("uses the full available width for inline detail and rewraps on resize", () => {
  const store = new LiveTranscriptStore(); start(store, "wide");
@@ -39,7 +40,7 @@ it("removes terminal eviction, leaves neighboring runs collapsed, and bounds tin
  assert.match(expanded.join("\n"), /Task · 中文🧪/); assert.doesNotMatch(expanded.join("\n"), /F6|inspector/);
  // Detail should advertise expansion/navigation rather than duplicate a modal list.
  assert.match(expanded[1], /← collapse/);
- assert.match(expanded[2], /›.*coder\/typescript/);
+ assert.match(expanded[2], /\x1b\[7m● coder\/typescript\x1b\[27m/);
  store.finish("中文🧪", "completed");
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · 0s · neighbor"], ["neighbor"]);
  assert.doesNotMatch(panel.render(80).join("\n"), /unavailable|中文🧪|Task ·/);
@@ -59,9 +60,9 @@ it("marks the selected row with real ANSI themes, not just unstyled fixtures", (
  const store = new LiveTranscriptStore(); start(store, "a");
  let capture: any;
  const panel = createInlineGuildPanel(store, {requestRender() {}, terminal: {rows: 24}},
-  {fg: (_: string, text: string) => `\x1b[32m${text}\x1b[39m`} as any, handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
+  {fg: (_: string, text: string) => `\x1b[32m${text}\x1b[39m`, inverse} as any, handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · 0s"], ["a"]);
- capture("\x1b[A"); assert.match(panel.render(80)[2], /›/); panel.dispose();
+ capture("\x1b[A"); assert.match(panel.render(80)[2], /\x1b\[7m.*coder\/typescript.*\x1b\[27m/); panel.dispose();
 });
 
 // Behavior list: nearest activation, draft/history passthrough, bottom boundary,
@@ -81,15 +82,18 @@ it("activates only empty eligible editors at the nearest row and consumes the bo
  draft = ""; eligible = false; assert.equal(capture("\x1b[A"), undefined);
  eligible = true; assert.equal(capture("\x1b[B"), undefined);
  assert.deepEqual(capture("\x1b[A"), {consume: true});
- assert.match(panel.render(100).find(line => line.includes("last"))!, /›/);
+ assert.match(panel.render(100).find(line => line.includes("last"))!, /\x1b\[7m○ coder\/typescript\x1b\[27m/);
+ assert.doesNotMatch(panel.render(100).find(line => line.includes("first"))!, /\x1b\[7m/);
  assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(100).join("\n"), /Task · last/);
  assert.deepEqual(capture("\x1b[A"), {consume: true}); // detail scroll, not roster selection
  assert.deepEqual(capture("\x1b"), {consume: true});
  assert.deepEqual(capture("\x1b[B"), {consume: true}); assert.equal(panel.navigating, false);
  assert.equal(capture("\x1b[B"), undefined);
  capture("\x1b[A"); capture("\x1b[A");
- assert.match(panel.render(100).find(line => line.includes("first"))!, /›/);
+ assert.match(panel.render(100).find(line => line.includes("first"))!, /\x1b\[7m● coder\/typescript\x1b\[27m/);
+ assert.doesNotMatch(panel.render(100).find(line => line.includes("last"))!, /\x1b\[7m/);
  assert.equal(capture("x"), undefined); assert.equal(panel.navigating, false);
+ assert.doesNotMatch(panel.render(100).join("\n"), /\x1b\[7m/);
  capture("\x1b[A"); eligible = false;
  assert.equal(capture("\x1b"), undefined); assert.equal(panel.navigating, false);
  eligible = true; capture("\x1b[A"); draft = " ";
@@ -140,12 +144,12 @@ it("separates inline sessions with opaque breathing room, padded sections and a 
  store.ingest("first", {type: "message_end", message: {role: "assistant", content: [{type: "text", text: Array.from({length: 40}, (_, i) => `line ${i} 中文🧪`).join("\n")}]}});
  let capture: any;
  const tui = {requestRender() {}, terminal: {rows: 48}};
- const ansiTheme = {fg: (_: string, text: string) => `\x1b[32m${text}\x1b[39m`, name: "light", getColorMode: () => "256color"} as any;
+ const ansiTheme = {fg: (_: string, text: string) => `\x1b[32m${text}\x1b[39m`, inverse, name: "light", getColorMode: () => "256color"} as any;
  const panel = createInlineGuildPanel(store, tui, ansiTheme, handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
  panel.update(["Guild · 2 active", "⏳ coder/typescript · running · first", "⏳ coder/typescript · running · last"], ["first", "last"]);
  capture("\x1b[A"); capture("\x1b[A"); capture("\r");
  const output = panel.render(100); const plain = output.map(stripTerminalSequences);
- const selected = plain.findIndex(line => line.includes("›")); const title = plain.findIndex(line => /╭.*Session/.test(line));
+ const selected = output.findIndex(line => line.includes("\x1b[7m")); const title = plain.findIndex(line => /╭.*Session/.test(line));
  assert.equal(title, selected + 2, "opaque gap before session delimiter"); assert.equal(plain[selected + 1].trim(), "");
  assert.match(plain[title], /╭─.*✦ Session.*─╮/); assert.doesNotMatch(plain[title], /coder\/typescript|running/);
  assert.match(plain[title + 1], /^│  Task · first/); assert.match(plain[title + 2], /^├─.*Transcript.*─┤/);
@@ -189,7 +193,7 @@ it("inline paused anchors survive resize/preceding eviction and repeated Right; 
  capture("\x1b[F"); assert.match(panel.render(100).join("\n"), /newest/);
  append("latest"); assert.match(panel.render(100).join("\n"), /latest/); panel.dispose();
 });
-it("renders the selected marker and opaque session with actual Pi Theme ANSI in light/dark modes", () => {
+it("renders a uniformly colored selected identity and opaque session with actual Pi Theme ANSI in light/dark modes", () => {
  const colors = JSON.parse(readFileSync(new URL("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/dark.json", import.meta.url), "utf8")).colors;
  for (const name of ["light", "dark"]) for (const mode of ["truecolor", "256color"] as const) {
   const palette = Object.fromEntries(Object.keys(colors).map(key => [key, name === "light" ? "#303030" : "#dddddd"]));
@@ -199,8 +203,10 @@ it("renders the selected marker and opaque session with actual Pi Theme ANSI in 
    handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
   panel.update(["Guild · 1 active", "⏳ coder/typescript · running · a"], ["a"]);
   capture("\x1b[A"); capture("\x1b[C");
-  const lines = panel.render(80); assert.match(stripTerminalSequences(lines[2]), /›.*coder/);
-  assert.ok(lines[2].includes(realTheme.fg("accent", "›")));
+  const lines = panel.render(80); assert.match(stripTerminalSequences(lines[2]), /^ ● coder\/typescript · running/);
+  const identity = realTheme.fg("accent", "● coder/typescript");
+  assert.ok(lines[2].includes(realTheme.inverse(identity) + realTheme.fg("dim", " · running · a")));
+  assert.doesNotMatch(lines.join("\n"), /›/);
   assert.ok(lines.every(line => visibleWidth(line) === 80));
   const card = lines.find(line => line.includes("Session"))!;
   assert.ok(card.startsWith(mode === "256color" ? `\x1b[48;5;${name === "light" ? 189 : 236}m` : `\x1b[48;2;${name === "light" ? "233;221;242" : "45;37;56"}m`));
@@ -234,7 +240,10 @@ for (const terminal of ["completed", "failed", "cancelled"] as const) for (const
   panel.update(rows(["before", "after"]), ["before", "after"]);
   const output = panel.render(120).map(stripTerminalSequences).join("\n");
   assert.equal(subscriptions, 0); assert.doesNotMatch(output, /selected|Task ·|Session/);
-  assert.match(output, /›.*after/); assert.match(output, /before/);
+  assert.match(output, /coder\/typescript.*after/); assert.match(output, /before/);
+  const selectedRow = panel.render(120).find(line => line.includes("after"))!;
+  assert.match(selectedRow, /\x1b\[7m.*coder\/typescript.*\x1b\[27m/);
+  assert.doesNotMatch(panel.render(120).find(line => line.includes("before"))!, /\x1b\[7m/);
   // Esc racing removal releases compact navigation, rather than opening/cancelling a neighbor.
   assert.deepEqual(capture("\x1b"), {consume: true}); assert.equal(capture("\x1b"), undefined);
   capture("\x1b[A"); capture("\x1b[C"); assert.match(panel.render(120).join("\n"), /Task · after/);

@@ -1569,6 +1569,11 @@ it("disposes session transcripts before awaiting shutdown and rejects late resur
  assert.equal(store.list().active.length + store.list().recent.length, 0);
 });
 
+const inlineTheme = {
+ fg: (_: string, text: string) => text,
+ inverse: (text: string) => `\x1b[7m${text}\x1b[27m`,
+};
+
 // Inline dashboard contract: no custom screen and no editor replacement.
 it("focuses and expands the stable inline widget while busy, preserving draft and releasing capture", async () => {
  const pi = fakePi(); const store = new LiveTranscriptStore(); const gate = deferred<void>();
@@ -1582,7 +1587,7 @@ it("focuses and expands the stable inline widget while busy, preserving draft an
  (ctx.ui as any).setEditorComponent = () => {throw new Error("must not replace editor");};
  (ctx.ui as any).onTerminalInput = (listener: any) => {capture = listener; listeners++; return () => {capture = undefined; listeners--;};};
  ctx.ui.setWidget = ((_key: string, value: any) => {
-  if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false, getFocusedComponent: () => ({getText: () => (ctx.ui as any).getEditorText(), onAction() {}, onExtensionShortcut() {}})}, {fg: (_: string, text: string) => text});}
+  if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false, getFocusedComponent: () => ({getText: () => (ctx.ui as any).getEditorText(), onAction() {}, onExtensionShortcut() {}})}, inlineTheme);}
   else if (!value) panel = undefined;
  }) as any;
  const child = pi.tool.execute("inline-busy", {role: "coder", profile: "typescript", task: "Busy task"}, undefined, undefined, ctx);
@@ -1681,7 +1686,7 @@ it("fullscreen rows expand exact IDs beneath the panel with detail-aware click c
  let panel: any; let factories = 0;
  const ctx = context();
  (ctx.ui as any).onTerminalInput = () => () => {};
- ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 35}}, {fg: (_: string, text: string) => text});} else if (!value) panel = undefined;}) as any;
+ ctx.ui.setWidget = ((_key: string, value: any) => {if (typeof value === "function") {factories++; panel = value({requestRender() {}, terminal: {rows: 35}}, inlineTheme);} else if (!value) panel = undefined;}) as any;
  ctx.ui.custom = (() => {throw new Error("no modal");}) as any;
  const first = pi.tool.execute("row-first", {role: "coder", profile: "typescript", task: "First"}, undefined, undefined, ctx);
  const second = pi.tool.execute("row-second", {role: "coder", profile: "typescript", task: "Second"}, undefined, undefined, ctx);
@@ -1804,7 +1809,7 @@ for (const terminal of ["completed", "failed", "cancelled", "queued-cancelled"] 
  (ctx.ui as any).getEditorText = () => "";
  (ctx.ui as any).onTerminalInput = (handler: any) => {capture = handler; listeners++; return () => {listeners--;};};
  ctx.ui.setWidget = ((_key: string, value: any) => {panel = typeof value === "function" ? value({requestRender() {}, terminal: {rows: 48}, hasOverlay: () => false,
-  getFocusedComponent: () => ({getText: () => "", onAction() {}, onExtensionShortcut() {}})}, {fg: (_: string, text: string) => text}) : value;}) as any;
+  getFocusedComponent: () => ({getText: () => "", onAction() {}, onExtensionShortcut() {}})}, inlineTheme) : value;}) as any;
  const first = pi.tool.execute("queue-first", {role: "coder", profile: "typescript", task: "First"}, terminal === "cancelled" ? controller.signal : undefined, (update: any) => {if (update.details.phase === "running") ready.resolve();}, ctx);
  await ready.promise;
  const second = pi.tool.execute("queue-second", {role: "coder", profile: "typescript", task: "Second"}, terminal === "queued-cancelled" ? controller.signal : undefined, undefined, ctx);
