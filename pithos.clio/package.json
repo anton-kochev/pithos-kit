@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/clio",
-  "version": "0.0.3",
+  "version": "0.0.4",
   "description": "Clio: automatic evidence-backed documentation capture for Pi.",
   "type": "module",
   "license": "MIT",

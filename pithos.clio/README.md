@@ -1,6 +1,6 @@
 # Clio
 
-Automatic, evidence-backed documentation capture for Pi. Requires **Pi 1.0.3 or later** and Node.js **22.19.0 or later**. Package version: **0.0.3**.
+Automatic, evidence-backed documentation capture for Pi. Requires **Pi 1.0.3 or later** and Node.js **22.19.0 or later**. Package version: **0.0.4**.
 
 Clio turns useful code and investigation evidence into ordinary, unstaged documentation diffs. Installation **and loading** activate it: there is no enable flag or manual capture command.
 
@@ -27,7 +27,7 @@ Pithos configuration, if used:
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/clio": "npm:0.0.3"
+    "@pithos-kit/clio": "npm:0.0.4"
 ```
 
 ## Automatic scheduling, not forced execution
