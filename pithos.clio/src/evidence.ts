@@ -74,6 +74,25 @@ export async function safeFile(root: string, path: string, config: Config, doc =
     return {path, text, hash: createHash('sha256').update(text).digest('hex'), dev: stat.dev, ino: stat.ino, doc: isDoc(path, config)};
   } finally { await handle.close(); }
 }
+// Metadata carries no bodies and is tied to the original mutable snapshot array.
+interface SnapshotPool { omitted: number; provenance: Pick<Snapshot, 'path' | 'doc'>[] }
+const pools = new WeakMap<Snapshot[], SnapshotPool>();
+export function snapshotPool(files: Snapshot[]): SnapshotPool | undefined { return pools.get(files); }
+export function candidatePriority(observed: ReadonlySet<string>, config: Config): (path: string) => number {
+  const readmes = new Set<string>();
+  const docs = new Set<string>(['docs']);
+  for (const path of observed) {
+    let dir = dirname(path);
+    for (let depth = 0; depth < 12 && dir !== '..'; depth++) {
+      readmes.add(dir === '.' ? 'README.md' : `${dir}/README.md`);
+      docs.add(dir === '.' ? 'docs' : `${dir}/docs`);
+      if (dir === '.') break;
+      dir = dirname(dir);
+    }
+  }
+  return path => observed.has(path) ? (isDoc(path, config) ? 1 : 0) :
+    readmes.has(path) || [...docs].some(dir => path.startsWith(dir + '/')) ? 2 : 3;
+}
 export async function snapshot(root: string, observed: string[], config: Config): Promise<Snapshot[]> {
   const paths = new Set(observed.map(p => isAbsolute(p) ? relative(root, p) : p));
   const dirs = new Set<string>(['docs', ...config.docsDirs]);
@@ -100,16 +119,23 @@ export async function snapshot(root: string, observed: string[], config: Config)
   }
   for (const dir of dirs) await discover(dir, 0);
   const files: Snapshot[] = [];
-  let bytes = 0;
-  for (const path of paths) {
-    if (files.length >= config.maxFiles) break;
+  const original = new Set(observed.map(p => isAbsolute(p) ? relative(root, p) : p));
+  const priority = candidatePriority(original, config);
+  const pool: SnapshotPool = {omitted: 0, provenance: []};
+  let bytes = 2; // JSON array brackets; each later member also needs a comma.
+  // Load one whole file at a time. Rejects do not survive this iteration.
+  // Continue scanning after either cap, so smaller files and eligible original
+  // authorization provenance are not lost to a discovery-order cutoff.
+  for (const path of [...paths].sort((a, b) => priority(a) - priority(b))) {
     try {
       const file = await safeFile(root, path, config);
-      const size = Buffer.byteLength(JSON.stringify(file));
-      if (bytes + size > config.maxContextBytes) continue;
+      if (original.has(path)) pool.provenance.push({path: file.path, doc: file.doc});
+      const size = Buffer.byteLength(JSON.stringify(file)) + (files.length ? 1 : 0);
+      if (files.length >= config.maxFiles || bytes + size > config.maxContextBytes) { pool.omitted++; continue; }
       files.push(file); bytes += size;
     } catch { /* Ineligible evidence is not sent to the worker. */ }
   }
+  pools.set(files, pool);
   return files;
 }
 const text = Type.String({minLength: 1, maxLength: 4000});

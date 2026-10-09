@@ -138,7 +138,7 @@ export default function clio(pi: ExtensionAPI) {
         guard();
         if (files.length) {
           display.phase('checking evidence / drafting');
-          worker = await runWorker(ctx, files, config, controller.signal, {root: ctx.cwd, entries: branch, destinations});
+          worker = await runWorker(ctx, files, config, controller.signal, {root: ctx.cwd, entries: branch, destinations, observedPaths: run.paths});
           observed = files.map(f => f.path);
           if (worker.problem) applied.problems.push(worker.problem);
           if (worker.proposal) {
