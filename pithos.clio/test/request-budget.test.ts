@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { parseConfig } from '../src/config.ts';
 import { safeFile, snapshot, type Snapshot } from '../src/evidence.ts';
 import { runWorker } from '../src/worker.ts';
+import { completion } from '../src/ui.ts';
 import { model, answer, stream } from './worker.test.ts';
 
 const empty = () => answer([{type: 'text', text: '{"findings":[],"edits":[],"unresolved":[]}'}]);
@@ -60,6 +61,13 @@ test('impossible mandatory initial request makes no provider call and preserves 
   assert.equal(calls, 0);
   assert.match(result.problem!, /^Clio: initial request: request-context-bytes budget exceeded; current=0; requested=\d+; max=1000$/);
   assert.equal(files.length, 0, 'no citable evidence when initial admission is impossible');
+  assert.equal(result.budget?.providerRequests, 0);
+  assert.equal(result.budget?.initialRequestBytes, undefined);
+  assert.ok(result.budget!.initialGuardedRequestBytes! > 1000);
+  assert.equal(result.budget?.admittedFiles, 0);
+  assert.equal(result.budget?.omittedFiles, 1);
+  const summary = completion({changed: [], uncertain: [], documented: [], problems: [result.problem!]}, 0, result, [])!;
+  assert.match(summary, /not sent initial.*0 requests/);
 });
 
 test('projected batch continuation refuses bodies before registration and permits finalization', async () => {
@@ -96,6 +104,8 @@ test('projected batch continuation refuses bodies before registration and permit
     assert.equal(result.problem, undefined);
     assert.equal(calls, 2);
     assert.deepEqual(files.map(f => f.path), ['src/a.ts', 'src/b.ts']);
+    assert.deepEqual(result.budget?.capacityRefusals, {'request-context-bytes': 2});
+    assert.equal(result.budget?.providerRequests, calls);
   } finally { await rm(root, {recursive: true, force: true}); }
 });
 

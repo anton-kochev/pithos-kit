@@ -40,3 +40,16 @@ Supplemental tests are distinguished from the eight driving cycles in TDD.md.
 External hostile OS races, crash/power-loss durability, Windows, real-provider
 quality/cancellation, arbitrary extension code and installed CLI/UI matrices are
 not certified. No OS sandbox or overwrite fallback is provided.
+
+## Lean capture and observable outcomes
+
+- [x] Default limits: two observed test sources, 35 unrelated doc bodies, scoped listing/target read, exact assertion-only correction through real Pi edit.
+- [x] Optional bounded qualifications survive proposal/result/completion without unresolved inflation; actual unresolved strings are never reclassified.
+- [x] Policy distinguishes observed assertions from verified test execution or production behavior.
+- [x] Actual initial provider-context bytes vs hard-guard bytes; zero-call initial refusal; actual invocation count including synchronous provider failure.
+- [x] Initial checked candidates/admitted/pool omissions vs unread documentation; bounded discovered-directory counts, not invented discovered-file totals.
+- [x] Structured capacity counts, directory absence not capacity, no refused snapshots; parent details and concise completion retain diagnostics.
+- [x] Existing whole-file limits, stale baselines, exclusions, scopes, cancellation, no-retry and permission failures remain covered.
+
+See the resumed-implementation section of TDD.md for observed cycles and safe
+pin mutations, distinguished from inherited handover logs.

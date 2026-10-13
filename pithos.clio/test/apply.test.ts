@@ -60,7 +60,7 @@ test('parent apply revalidates baselines and permissions, honors hook errors and
     await writeFile(join(root, 'README.md'), 'Old');
     await writeFile(join(root, 'docs/cache.md'), 'Old');
     const config = parseConfig({});
-    const files = await snapshot(root, ['src/cache.ts'], config);
+    const files = await snapshot(root, ['src/cache.ts', 'README.md', 'docs/cache.md'], config);
     const proposal: Proposal = {findings: [{claim: 'ttl 30', kind: 'observed', sources: [{path: 'src/cache.ts', startLine: 1, endLine: 1}]}], edits: ['README.md', 'docs/cache.md'].map(path => ({path, oldText: 'Old', newText: 'ttl 30', findings: [0]})), unresolved: []};
     let calls = 0;
     const executeTool = async (name: string, args: any) => {

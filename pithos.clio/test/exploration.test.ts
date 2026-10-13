@@ -43,7 +43,10 @@ test('scoped list/read rounds register evidence and guard new source baselines',
     if (turns === 1) return call('list', 'src');
     if (turns === 2) {
       assert.match(JSON.stringify(ctx.messages.filter((m: any) => m.role === 'toolResult')), /src\/rules.ts/);
-      return call('read', 'src/rules.ts');
+      return message([
+        {type: 'toolCall', id: 'source', name: 'clio_evidence', arguments: {action: 'read', path: 'src/rules.ts'}},
+        {type: 'toolCall', id: 'destination', name: 'clio_evidence', arguments: {action: 'read', path: 'README.md'}},
+      ], 'toolUse');
     }
     assert.match(JSON.stringify(ctx.messages.filter((m: any) => m.role === 'toolResult')), /export const ttl = 30/);
     return message([{type: 'text', text: JSON.stringify({findings: [{claim: 'TTL is 30', kind: 'observed', sources: [{path: 'src/rules.ts', startLine: 1, endLine: 1}]}], edits: [{path: 'README.md', oldText: 'Old', newText: 'TTL is 30', findings: [0]}], unresolved: []})}]);
@@ -144,7 +147,7 @@ test('session evidence uses host IDs and exact excerpts; assistant inference and
   const userSource = {entryId: 'u-decision', startLine: 1, endLine: 1, quote: entries[0].message.content};
   const finding = {claim: 'User requested TTL 30 for downstream compatibility.', kind: 'observed', sources: [userSource]};
   const proposal = (f: unknown) => message([{type: 'text', text: JSON.stringify({findings: [f], edits: [{path: 'README.md', oldText: 'Old', newText: 'TTL 30 was requested for downstream compatibility.', findings: [0]}], unresolved: []})}]);
-  const files = await snapshot(root, ['src/cache.ts'], config);
+  const files = await snapshot(root, ['src/cache.ts', 'README.md'], config);
   const result = await runWorker(context(() => proposal(finding)), files, config, undefined, {root, entries});
   assert.equal(result.problem, undefined);
   assert.equal(result.sessionEvidence?.find(e => e.entryId === 'u-decision')?.role, 'user');
@@ -196,7 +199,7 @@ test('exploration refuses sensitive prose and unsafe paths without forwarding or
     const result = await runWorker(context(() => { turns++; return call(action, path); }), files, config, undefined, {root});
     assert.equal(turns, 1, path);
     assert.ok(result.problem, path);
-    assert.deepEqual(files.map(f => f.path).sort(), ['README.md', 'src/cache.ts']);
+    assert.deepEqual(files.map(f => f.path), ['src/cache.ts']);
   }
 }));
 
@@ -218,7 +221,7 @@ test('latest task user survives long assistant and tool traffic within the conte
 
 test('capacity refusal permits final proposal from prior snapshots only', async () => fixture(async root => {
   for (const citeRefused of [false, true]) {
-    const config = parseConfig({maxFiles: 2});
+    const config = parseConfig({maxFiles: 1});
     const files = await snapshot(root, ['src/cache.ts'], config);
     let turns = 0;
     const result = await runWorker(context(ctx => {
@@ -226,7 +229,7 @@ test('capacity refusal permits final proposal from prior snapshots only', async 
       const feedback = ctx.messages.filter((m: any) => m.role === 'toolResult').at(-1);
       assert.equal(feedback.isError, false);
       const body = JSON.parse(feedback.content[0].text);
-      assert.deepEqual(body.refusal, {limit: 'file-count', current: 2, requested: 1, max: 2});
+      assert.deepEqual(body.refusal, {limit: 'file-count', current: 1, requested: 1, max: 1});
       assert.equal(body.status, 'capacity');
       assert.doesNotMatch(feedback.content[0].text, /export const ttl/);
       return message([{type: 'text', text: JSON.stringify({findings: [{claim: 'Cache enabled', kind: 'observed', sources: [{path: citeRefused ? 'src/rules.ts' : 'src/cache.ts', startLine: 1, endLine: 1}]}], edits: [], unresolved: []})}]);

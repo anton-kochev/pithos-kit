@@ -29,6 +29,7 @@ export function completion(applied: Applied, elapsed: number, worker: WorkerResu
   const cost = typeof estimate === 'number' && Number.isFinite(estimate) && estimate > 0 ? `~$${estimate.toFixed(4)}${worker?.problem || worker?.usageStatus === 'partial' ? ' (partial)' : ''}` : 'cost unknown';
   const changes = applied.uncertain.length ? `${applied.changed.length} files confirmed changed · ${applied.uncertain.length} possibly modified` : `${applied.changed.length} files changed`;
   return [`Clio · ${Math.floor(elapsed / 1000)}s · ${cost} · ${applied.documented.length} findings captured · ${changes} · ${applied.problems.length} unresolved`,
+    ...(worker?.budget ? [`Budget: ${worker.budget.initialRequestBytes === undefined ? 'not sent' : `${worker.budget.initialRequestBytes}B`} initial · ${worker.budget.admittedFiles}/${worker.budget.candidateFiles} candidates admitted · ${worker.budget.omittedFiles} omitted · ${worker.budget.providerRequests} requests · ${Object.values(worker.budget.capacityRefusals).reduce((a, b) => a + b, 0)} capacity refusals`] : []),
     ...applied.documented.map(i => `- ${worker?.proposal?.findings[i]?.claim ?? 'Finding'} (${worker?.proposal?.findings[i]?.sources.map(s => `${'path' in s ? s.path : `session:${s.entryId}`}:${s.startLine}-${s.endLine}`).join(', ')})`),
     ...(applied.changed.length ? [`Changed: ${applied.changed.join(', ')}`] : []),
     ...(applied.uncertain.length ? [`Possibly modified (unverified): ${applied.uncertain.join(', ')}`] : []),
@@ -36,5 +37,6 @@ export function completion(applied: Applied, elapsed: number, worker: WorkerResu
     ...(applied.leftoverTemps?.length ? [`Leftover temporary files: ${applied.leftoverTemps.join(', ')}`] : []),
     ...(observed.length ? [`Observed: ${observed.join(', ')}`] : []),
     ...applied.problems.map(p => `Unresolved: ${p}`),
+    ...(applied.qualifications ?? []).map(q => `Qualification: ${q}`),
   ].join('\n');
 }

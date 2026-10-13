@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto';
-import { lstat, open, realpath, readdir } from 'node:fs/promises';
+import { lstat, open, realpath } from 'node:fs/promises';
 import { basename, dirname, extname, isAbsolute, join, relative, resolve } from 'node:path';
 import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
@@ -95,29 +95,8 @@ export function candidatePriority(observed: ReadonlySet<string>, config: Config)
 }
 export async function snapshot(root: string, observed: string[], config: Config): Promise<Snapshot[]> {
   const paths = new Set(observed.map(p => isAbsolute(p) ? relative(root, p) : p));
-  const dirs = new Set<string>(['docs', ...config.docsDirs]);
-  for (const path of [...paths]) {
-    let dir = dirname(path);
-    for (let depth = 0; depth < 12 && dir !== '..'; depth++) {
-      paths.add(dir === '.' ? 'README.md' : `${dir}/README.md`);
-      dirs.add(dir === '.' ? 'docs' : `${dir}/docs`);
-      if (dir === '.') break;
-      dir = dirname(dir);
-    }
-  }
-  let visited = 0;
-  async function discover(dir: string, depth: number): Promise<void> {
-    if (depth > 3 || excluded.test(dir) || dir.split('/').includes('..') || visited++ > 100) return;
-    try {
-      const stat = await lstat(join(root, dir));
-      if (!stat.isDirectory() || stat.isSymbolicLink()) return;
-      for (const ent of (await readdir(join(root, dir), {withFileTypes: true})).slice(0, 100)) {
-        if (ent.isDirectory()) await discover(`${dir}/${ent.name}`, depth + 1);
-        else if (ent.isFile() && ent.name.endsWith('.md')) paths.add(`${dir}/${ent.name}`);
-      }
-    } catch { /* Missing documentation is normal; never create it implicitly. */ }
-  }
-  for (const dir of dirs) await discover(dir, 0);
+  // Only original observations are body candidates. Documentation discovery is
+  // directory metadata plus on-demand scoped list/read, never a body preload.
   const files: Snapshot[] = [];
   const original = new Set(observed.map(p => isAbsolute(p) ? relative(root, p) : p));
   const priority = candidatePriority(original, config);
@@ -149,6 +128,7 @@ export const ProposalSchema = Type.Object({
   edits: Type.Array(Type.Object({path: text, oldText: Type.String({minLength: 1, maxLength: 20000}), newText: Type.String({maxLength: 20000}), findings: Type.Array(Type.Integer({minimum: 0}), {minItems: 1, maxItems: 20})}, {additionalProperties: false}), {maxItems: 20}),
   creates: Type.Optional(Type.Array(Type.Object({path: text, content: Type.String({minLength: 1, maxLength: 100000}), findings: Type.Array(Type.Integer({minimum: 0}), {minItems: 1, maxItems: 20})}, {additionalProperties: false}), {maxItems: 20})),
   unresolved: Type.Array(text, {maxItems: 20}),
+  qualifications: Type.Optional(Type.Array(text, {maxItems: 20})),
 }, {additionalProperties: false});
 export type Proposal = Static<typeof ProposalSchema>;
 export function validateProposal(raw: string, files: Snapshot[], config: Config, session: SessionObservation[] = [], destinations: Destination[] = []): Proposal {

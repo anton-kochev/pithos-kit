@@ -408,3 +408,67 @@ Final validation: Clio `npm test` **93 passed**, zero failed/skipped;
 `src/diagnostics.ts`); root `npm test` **3 passed**. No paid/live provider calls,
 manual capture, runtime reload/install, release/version changes, staging or
 commits were performed. Unrelated working-tree changes were preserved.
+
+## Lean evidence, qualifications and observable budgets (resumed implementation)
+
+The handover already contained observed-only collection, optional qualification
+validation/application, draft metrics and two regression fixtures. Saved
+`/tmp/clio-lean-red.log` and `/tmp/clio-qualifications-red.log` show the expected
+preload and invalid-shape failures; their green logs show passes. Their original
+commands/exit statuses were not independently observed during this resume, so
+these are inherited provenance, **not newly claimed driving cycles**.
+`/tmp/clio-metrics-green.log` actually contains a failure (9999 guarded bytes vs
+8764 actual provider-context bytes), not a green result.
+
+Resume test list: actual vs guarded bytes; capacity feedback counts; zero-call
+refusal output; assertion-only qualification guidance; parent result/error
+semantics; checked-candidate vs directory-discovery counts; no retries; existing
+scope/stale-baseline/whole-file guards. Baseline `npm test` failed 8/136 tests:
+seven preload-dependent fixtures needed explicit observed docs or scoped reads,
+and the metric fixture exposed the byte mismatch. No guard was relaxed.
+
+All focused commands below run from `pithos.clio` with
+`node --import tsx --test test/<name>.test.ts`; each red and green used the same
+command. Logs use `/tmp/clio-resume-<prefix>-{red,green}.log`.
+
+| Driving behavior | Test file / log prefix | Observed red (exit 1) | Observed green (exit 0) |
+|---|---|---|---|
+| Actual provider context vs guarded Agent request | `lean-capture` / `bytes` | 9999 != 8764 actual-context assertion | 3 tests passed; default-budget real edit and unchanged unrelated bodies |
+| Assertion-only missing execution is informational | `qualifications` / `policy` | Policy missing qualifications/nonblocking contract | 2 tests passed; optional field validation and explicit unresolved preservation |
+| Host-counted structured capacity feedback | `request-budget` / `capacity` | `{}` instead of two request-context refusals | 12 tests passed; refused bodies still unregistered |
+| Impossible initial request says not sent | `request-budget` / `zero` | `unknownB initial` instead of `not sent initial` | 12 tests passed; zero registry invocations, numeric guarded size retained |
+
+New intentional pins passed initially, then were proven using controlled changes
+to task-owned uncommitted diagnostic/qualification lines. Each backup was restored
+by a shell EXIT trap and the same focused command rerun to green. No runtime
+safety control was disabled.
+
+| Controlled mutation | Test that went red | Failure message / restoration |
+|---|---|---|
+| Remove application qualification propagation | `connected.test.ts` (`parent` logs) | `undefined` instead of qualification array in actual parent details; restore: 3 tests pass, including permission-denied still `isError: true` |
+| Omit pool candidates and undercount registry invocations | `budget-diagnostics.test.ts` (`counts` logs) | candidates 1 != 2, omitted 0 != 1, requests 2 != 3; thrown invocation 0 != 1; restore: 4 tests pass |
+
+The diagnostic fixture excludes unsafe/oversized observations from checked
+candidate counts, does not count unread docs as omitted, separates existing and
+missing destination directories, and distinguishes file capacity from ordinary
+directory absence. Byte measurements are registry-context JSON, not HTTP wire
+encoding. All provider behavior is deterministic/faux; live extraction quality
+and natural-language compliance with prompt guidance are not certified. Temporary
+logs are local evidence, not published artifacts. No dependencies/defaults,
+versions, retries, request limits, scopes or mutation guards were changed.
+
+Final resume verification (Node v24.20.0, npm 11.19.0, pinned Pi 1.0.3):
+
+- `cd pithos.clio && npm test`: exit 0, **141 passed**, none failed/skipped
+  (`/tmp/clio-resume-final-tests.log`).
+- `cd pithos.clio && npm run typecheck`: exit 0
+  (`/tmp/clio-resume-final-typecheck.log`).
+- `cd pithos.clio && npm pack --dry-run`: exit 0, **20 published files**,
+  no tests/logs/TDD artifacts packaged (`/tmp/clio-resume-final-pack.log`).
+- Root `npm test`: exit 0, **3 passed** (`/tmp/clio-resume-final-root.log`).
+- `git diff --check`: exit 0. New untracked test files were also checked for
+  trailing whitespace separately.
+
+No lint/build scripts are defined. No live provider, installed CLI/TUI, Windows,
+minimum-Node or later-Pi matrix was run. No install, commit, tag or publish;
+unrelated Guild/local working-tree changes were left untouched.

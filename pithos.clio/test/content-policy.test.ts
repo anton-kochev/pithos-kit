@@ -67,6 +67,6 @@ test('content policy admits the real Clio README as exact file and snapshot evid
   const file = await safeFile(root, 'README.md', config, true);
   assert.equal(file.text, text);
   assert.equal(file.doc, true);
-  const files = await snapshot(root, ['src/context.ts'], config);
+  const files = await snapshot(root, ['src/context.ts', 'README.md'], config);
   assert.equal(files.find(f => f.path === 'README.md')?.text, text);
 });

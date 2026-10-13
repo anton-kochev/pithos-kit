@@ -10,12 +10,26 @@ import { Value } from 'typebox/value';
 import { taskContext, type SessionObservation } from './context.ts';
 import type { Destination } from './destinations.ts';
 import { evidenceFailureReason, workerDiagnostic } from './diagnostics.ts';
-import { BudgetError, evidenceBudget, requestBytes, assertRequestBudget, continuationHeadroom, reservedFeedback, toolResultEnvelope } from './budget.ts';
+import { BudgetError, evidenceBudget, requestBytes, assertRequestBudget, continuationHeadroom, reservedFeedback, toolResultEnvelope, type Limit } from './budget.ts';
 
 type WorkerContext = Pick<ExtensionContext, 'model' | 'thinkingLevel'> & {
   modelRegistry: Pick<ExtensionContext['modelRegistry'], 'find' | 'getAvailable' | 'streamSimple'>;
 };
-export interface WorkerResult { sessionEvidence?: SessionObservation[]; proposal?: Proposal; usage?: Usage; usageStatus?: 'complete' | 'partial' | 'unknown'; problem?: string; model: string; thinking: string }
+export interface WorkerBudget {
+  // Actual context handed to streamSimple; not provider-specific HTTP encoding.
+  initialRequestBytes?: number;
+  // Hard guard also includes Agent execution-tool metadata. Present on refusal.
+  initialGuardedRequestBytes?: number;
+  candidateFiles: number;
+  admittedFiles: number;
+  omittedFiles: number;
+  poolOmittedFiles: number;
+  discoveredDirectories: number;
+  missingDestinationDirectories: number;
+  providerRequests: number;
+  capacityRefusals: Partial<Record<Limit, number>>;
+}
+export interface WorkerResult { budget?: WorkerBudget; sessionEvidence?: SessionObservation[]; proposal?: Proposal; usage?: Usage; usageStatus?: 'complete' | 'partial' | 'unknown'; problem?: string; model: string; thinking: string }
 const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
 function measured(usage: Usage | undefined): usage is Usage {
   return !!usage && ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'].every(k => finite(usage[k as keyof Usage])) && !!usage.cost && Object.values(usage.cost).length === 5 && ['input', 'output', 'cacheRead', 'cacheWrite', 'total'].every(k => finite(usage.cost[k as keyof Usage['cost']]));
@@ -58,12 +72,21 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
   const pool = snapshotPool(files);
   const candidates = [...files];
   const candidateCount = candidates.length;
+  const budget: WorkerBudget = result.budget = {
+    candidateFiles: candidateCount + (pool?.omitted ?? 0), admittedFiles: 0,
+    omittedFiles: candidateCount + (pool?.omitted ?? 0), poolOmittedFiles: pool?.omitted ?? 0,
+    discoveredDirectories: evidence?.destinations?.filter(d => !d.missing).length ?? 0,
+    missingDestinationDirectories: evidence?.destinations?.filter(d => d.missing).length ?? 0,
+    providerRequests: 0, capacityRefusals: {},
+  };
   const observed = new Set((evidence?.observedPaths ?? (pool?.provenance ?? candidates).map(f => f.path))
     .map(path => evidence?.root && isAbsolute(path) ? relative(evidence.root, path) : path));
   // Only original eligible observations grant directory scopes. Discovered
   // candidates never become authorization provenance merely by being found.
   const provenance = (pool?.provenance ?? candidates).filter(f => observed.has(f.path)).map(({path, doc}) => ({path, doc}));
-  const tools = evidence?.root ? [evidenceTool(evidence.root, files, config, provenance, admitResult)] : [];
+  const tools = evidence?.root ? [evidenceTool(evidence.root, files, config, provenance, admitResult, error => {
+    budget.capacityRefusals[error.limit] = (budget.capacityRefusals[error.limit] ?? 0) + 1;
+  })] : [];
   for (const tool of tools) {
     const execute = tool.execute;
     tool.execute = async (id, args, signal, onUpdate) => {
@@ -96,7 +119,12 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
       if (turns >= config.maxTurns && message.stopReason === 'toolUse') toolProblem ??= new BudgetError('request-turns', turns, 1, config.maxTurns).message;
       if (toolProblem || message.stopReason !== 'toolUse') return {action: 'end'};
     },
-    streamFn: (m, context, options) => ctx.modelRegistry.streamSimple(m, context, {...options, maxTokens: Math.min(model.maxTokens, Math.ceil(config.maxResultBytes / 3))}),
+    streamFn: (m, context, options) => {
+      if (turns === 0) budget.initialRequestBytes = requestBytes(context);
+      turns++;
+      budget.providerRequests = turns;
+      return ctx.modelRegistry.streamSimple(m, context, {...options, maxTokens: Math.min(model.maxTokens, Math.ceil(config.maxResultBytes / 3))});
+    },
     prepareRequest: ({context}) => {
       if (turns >= config.maxTurns) throw new BudgetError('request-turns', turns, 1, config.maxTurns);
       if (turns === 0) {
@@ -106,6 +134,7 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
         const setPrompt = () => { user.content = [{type: 'text', text: initialPrompt(admitted)}]; };
         files.splice(0, files.length);
         setPrompt();
+        budget.initialGuardedRequestBytes = requestBytes(context);
         guard(context);
         const admissionMax = Math.max(requestBytes(context), config.maxContextBytes - reserveBytes);
         for (const candidate of candidates) {
@@ -116,10 +145,12 @@ export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: C
           }
         }
         files.splice(0, files.length, ...admitted);
+        budget.initialGuardedRequestBytes = requestBytes(context);
+        budget.admittedFiles = admitted.length;
+        budget.omittedFiles = budget.candidateFiles - admitted.length;
         candidates.length = 0; // Drop rejected pool bodies before provider execution.
       }
       guard(context);
-      turns++;
     },
   });
   const abort = () => agent.abort();

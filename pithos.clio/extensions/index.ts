@@ -153,7 +153,6 @@ export default function clio(pi: ExtensionAPI) {
                 finally { authorization.revoke(); createOperation = undefined; }
               },
             });
-            applied.problems.push(...worker.proposal.unresolved);
           }
         }
         if (!files.some(f => f.doc) && !destinations.length) applied.problems.push('Clio: no eligible documentation destination; capture unmet.');
@@ -166,7 +165,7 @@ export default function clio(pi: ExtensionAPI) {
       }
       const summary = completion(applied, Date.now() - started, worker, observed);
       if (summary) report(summary);
-      return {content: [{type: 'text', text: JSON.stringify(applied)}], details: { ...applied, findings: worker?.proposal?.findings ?? [], sessionEvidence: worker?.sessionEvidence ?? [], usageStatus: worker?.usageStatus ?? 'unknown' }, usage: worker?.usage, isError: applied.problems.length > 0};
+      return {content: [{type: 'text', text: JSON.stringify(applied)}], details: { ...applied, budget: worker?.budget, findings: worker?.proposal?.findings ?? [], sessionEvidence: worker?.sessionEvidence ?? [], usageStatus: worker?.usageStatus ?? 'unknown' }, usage: worker?.usage, isError: applied.problems.length > 0};
     },
   });
 }

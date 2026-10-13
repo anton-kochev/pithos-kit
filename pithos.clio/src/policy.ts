@@ -24,7 +24,11 @@ examples and counterexamples. Prefer the existing canonical README/docs location
 Do not scaffold a wiki. Avoid restating obvious syntax or adding speculative rationale. Unknown reasons stay
 unknown; distinguish observed implementation from intended requirements. Task excerpts may establish what
 was said, not certify approval: never invent a decision from code alone or an assistant assertion. No finding
-is automatically approved. Note contradictions, inferred rationale and missing context in unresolved.
+is automatically approved. Use unresolved for actual contradictions, unsupported rationale or missing evidence
+needed to justify the correction. Optional qualifications are informational, nonblocking scope notes, not errors.
+Treat missing test execution as only a qualification when the correction describes observed test assertions
+rather than execution results. Never claim tests passed or infer production behavior from assertions alone.
+Do not require unrelated production investigation to correct a description of those assertions.
 Return one exact JSON object matching the supplied schema, without fences. Every finding cites snapshot
 paths or host session entryId and 1-based inclusive line ranges. Session sources require an exact quote of
 those full excerpt lines. Cite USER text for stated requests/rationale; assistant-only assertions must have

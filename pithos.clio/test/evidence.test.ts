@@ -20,7 +20,7 @@ test('host evidence bounds scope, canonical paths and exact source-backed patche
     await writeFile(join(root, 'docs/auth.json'), '{"secret":"no"}');
     await symlink(join(root, 'README.md'), join(root, 'docs/link.md'));
     const config = parseConfig({});
-    const files = await snapshot(root, ['src/cache.ts'], config);
+    const files = await snapshot(root, ['src/cache.ts', 'README.md'], config);
     assert.deepEqual(files.map(f => f.path).sort(), ['README.md', 'src/cache.ts']);
     for (const path of ['../README.md', '.pi/clio.json', 'docs/AGENTS.md', 'docs/instructions.md', 'docs/alias.md', 'docs/generated.md', 'docs/invalid.md', 'docs/auth.json', 'docs/link.md']) {
       await assert.rejects(safeFile(root, path, config, true));

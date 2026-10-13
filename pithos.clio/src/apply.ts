@@ -6,7 +6,7 @@ import { assertSafeContent, safeFile, type Proposal, type Snapshot } from './evi
 import { prepareCreate, type CreateOperation } from './create.ts';
 import type { Destination } from './destinations.ts';
 
-export interface Applied { changed: string[]; uncertain: string[]; problems: string[]; documented: number[]; createdDirectories?: string[]; leftoverTemps?: string[] }
+export interface Applied { changed: string[]; uncertain: string[]; problems: string[]; qualifications?: string[]; documented: number[]; createdDirectories?: string[]; leftoverTemps?: string[] }
 interface Creates { destinations: Destination[]; dispatch: (operation: CreateOperation) => Promise<{isError: boolean}>; guard: () => void }
 type Execute = (name: string, args: unknown) => Promise<{isError: boolean; result: unknown}>;
 export async function applyProposal(root: string, proposal: Proposal, files: Snapshot[], config: Config, execute: Execute, guard: () => void, creates?: Creates): Promise<Applied> {
@@ -76,5 +76,7 @@ export async function applyProposal(root: string, proposal: Proposal, files: Sna
     }
     if (result.problems.length) break;
   }
+  result.problems.push(...proposal.unresolved);
+  if (proposal.qualifications?.length) result.qualifications = [...proposal.qualifications];
   return result;
 }

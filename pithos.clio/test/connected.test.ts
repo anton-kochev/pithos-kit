@@ -7,6 +7,7 @@ import { fauxProvider, fauxAssistantMessage, fauxToolCall } from '@earendil-work
 import { createAgentSession, DefaultResourceLoader, ModelRuntime, SessionManager, SettingsManager, type AgentSession, type ExtensionFactory } from '@earendil-works/pi-coding-agent';
 import clio from '../extensions/index.ts';
 
+const qualification = 'Test execution was not verified; this correction describes assertions only.';
 async function checkScenarios(scenarios: readonly string[]) {
   for (const scenario of scenarios) {
     const sandbox = await mkdtemp(join(tmpdir(), 'clio-connected-'));
@@ -86,7 +87,7 @@ async function checkScenarios(scenarios: readonly string[]) {
             await wait;
             return fauxAssistantMessage('', {stopReason: 'aborted'});
           }
-          return fauxAssistantMessage(JSON.stringify({findings: [{claim: 'Cache ttl is 30.', kind: 'observed', sources: [{path: 'src/cache.ts', startLine: 1, endLine: 1}]}], edits: [{path: alias ?? 'README.md', oldText: 'Old description.', newText: 'Cache ttl is 30.', findings: [0]}], unresolved: []}));
+          return fauxAssistantMessage(JSON.stringify({findings: [{claim: 'Cache ttl is 30.', kind: 'observed', sources: [{path: 'src/cache.ts', startLine: 1, endLine: 1}]}], edits: [{path: alias ?? 'README.md', oldText: 'Old description.', newText: 'Cache ttl is 30.', findings: [0]}], unresolved: [], qualifications: [qualification]}));
         }
         parentCalls++;
         if (parentCalls === 1) return fauxAssistantMessage([fauxToolCall('read', {path: 'src/cache.ts'}), fauxToolCall('read', {path: scenario === 'no-destination' ? 'src/cache.ts' : alias ?? 'README.md'})]);
@@ -112,6 +113,13 @@ async function checkScenarios(scenarios: readonly string[]) {
         assert.equal(await readFile(join(root, alias), 'utf8'), 'Old description.', scenario + ' literal unchanged');
         assert.equal(nestedEdits, 0, 'normalization aliases never reach guarded edit');
       }
+      if (scenario === 'permission-denied') {
+        const capture = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'clio_capture');
+        assert.ok(capture && capture.role === 'toolResult');
+        assert.equal(capture.isError, true, 'a real permission problem remains an error alongside qualifications');
+        assert.deepEqual((capture.details as any).qualifications, [qualification]);
+        assert.match((capture.details as any).problems.join(), /denied/);
+      }
       if (scenario === 'no-destination') {
         await assert.rejects(readFile(join(root, 'README.md')), /ENOENT/);
         assert.ok(!manager.getBranch().some(e => e.type === 'custom_message' && e.customType === 'clio-result'), 'no proposed changes is quiet even when root docs is absent');
@@ -124,6 +132,25 @@ async function checkScenarios(scenarios: readonly string[]) {
         assert.ok(manager.getBranch().some(e => e.type === 'custom_message' && e.customType === 'clio-result'));
         const capture = session.messages.find(m => m.role === 'toolResult' && m.toolName === 'clio_capture');
         assert.ok(capture && capture.role === 'toolResult' && capture.usage, 'worker usage reaches parent tool result');
+        assert.equal(capture.isError, false, 'qualifications do not mark the parent result as an error');
+        const details = capture.details as any;
+        assert.deepEqual(details.qualifications, [qualification]);
+        assert.deepEqual(details.problems, []);
+        assert.deepEqual(JSON.parse((capture.content[0] as any).text).qualifications, [qualification]);
+        assert.ok(details.budget.initialRequestBytes > 0);
+        assert.ok(details.budget.initialGuardedRequestBytes >= details.budget.initialRequestBytes);
+        assert.equal(details.budget.candidateFiles, 2);
+        assert.equal(details.budget.admittedFiles, 2);
+        assert.equal(details.budget.omittedFiles, 0);
+        assert.equal(details.budget.discoveredDirectories, 0);
+        assert.equal(details.budget.missingDestinationDirectories, 1);
+        assert.equal(details.budget.providerRequests, workerCalls);
+        assert.deepEqual(details.budget.capacityRefusals, {});
+        const summary = manager.getBranch().find(e => e.type === 'custom_message' && e.customType === 'clio-result');
+        assert.ok(summary && summary.type === 'custom_message');
+        assert.match(String(summary.content), /0 unresolved/);
+        assert.ok(String(summary.content).includes(`Qualification: ${qualification}`));
+        assert.ok(String(summary.content).includes(`${details.budget.initialRequestBytes}B initial`));
         await session.reload();
         await session.sendCustomMessage({customType: 'fixture-resume', content: 'Continue without a new task.', display: false}, {triggerTurn: true});
         assert.equal(scheduled, 1, 'reload preserves branch-local once-only marker');

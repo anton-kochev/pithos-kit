@@ -7,7 +7,7 @@ import { DirectoryNotFoundError, safeDirectory, safeFile, type Snapshot } from '
 import { BudgetError, capacityText, evidenceBudget } from './budget.ts';
 
 const Parameters = Type.Object({action: Type.Union([Type.Literal('list'), Type.Literal('read')]), path: Type.String({minLength: 1, maxLength: 500})}, {additionalProperties: false});
-export function evidenceTool(root: string, files: Snapshot[], config: Config, provenance: readonly Pick<Snapshot, 'path' | 'doc'>[] = files, admit?: (id: string, text: string) => void): AgentTool<typeof Parameters> {
+export function evidenceTool(root: string, files: Snapshot[], config: Config, provenance: readonly Pick<Snapshot, 'path' | 'doc'>[] = files, admit?: (id: string, text: string) => void, onCapacity?: (error: BudgetError) => void): AgentTool<typeof Parameters> {
   const authorized = provenance.map(({path, doc}) => ({path, doc}));
   // Root-level observations permit root-level files, not arbitrary subtrees.
   const scopes = new Set([...authorized.filter(f => !f.doc).map(f => dirname(f.path)), ...authorized.filter(f => f.doc && dirname(f.path) !== '.').map(f => dirname(f.path)), 'docs', ...config.docsDirs]);
@@ -36,6 +36,7 @@ export function evidenceTool(root: string, files: Snapshot[], config: Config, pr
         const text = capacityText(error, files, config);
         // Feedback is counted too. If it cannot fit, the worker stops locally.
         admit?.(_id, text);
+        onCapacity?.(error);
         return response(text);
       };
       const admittedResponse = (text: string) => {
