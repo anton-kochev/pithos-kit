@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile, stat, readdir, mkdir, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { after, describe, it } from "node:test";
@@ -9,6 +9,7 @@ import {
 	parseArtifactText,
 	serializeArtifact,
 	taskFilePath,
+	writeTaskArtifact,
 } from "../src/artifact";
 import { createEmptyArtifact } from "../src/tasks";
 
@@ -89,4 +90,52 @@ describe("Telos task artifact", () => {
 		assert.equal(loaded.existed, false);
 		assert.deepEqual(loaded.artifact, createEmptyArtifact());
 	});
+});
+
+ it("validates before creating directories and atomically preserves permissions", async () => {
+ const file = await tempFile();
+ const invalid = join(file, "nested", "tasks.md");
+ await assert.rejects(() => writeTaskArtifact(invalid, {telos_version: 2, tasks: []} as any));
+ await assert.rejects(() => stat(file), {code: "ENOENT"});
+ await writeFile(file, "old", {mode: 0o640});
+ const before = await stat(file);
+ await writeTaskArtifact(file, createEmptyArtifact());
+ const after = await stat(file);
+ assert.notEqual(after.ino, before.ino);
+ assert.equal(after.mode & 0o777, 0o640);
+ assert.deepEqual(await readdir(join(file, "..")), ["telos-tasks.md"]);
+ });
+
+it("propagates non-missing read errors and rejects symlink write ancestors", async () => {
+ const file = await tempFile();
+ await writeFile(file, "not a directory");
+ await assert.rejects(() => loadTaskArtifact(join(file, "child.md")), {code: "ENOTDIR"});
+ const root = join(file, "..");
+ const target = join(root, "target");
+ const link = join(root, "link");
+ await mkdir(target);
+ await symlink(target, link);
+ await assert.rejects(() => writeTaskArtifact(join(link, "tasks.md"), createEmptyArtifact()), /symlink/);
+ assert.deepEqual(await readdir(target), []);
+});
+
+it("cleans the exclusive temporary file when atomic rename fails without changing the destination", async (t) => {
+ const fs = (await import("node:fs/promises")).default;
+ const {syncBuiltinESMExports} = await import("node:module");
+ const file = await tempFile();
+ await writeFile(file, "original");
+ const renameMock = t.mock.method(fs, "rename", async () => { throw Object.assign(new Error("injected rename failure"), {code: "EIO"}); });
+ syncBuiltinESMExports();
+ try {
+ await assert.rejects(() => writeTaskArtifact(file, createEmptyArtifact()), /injected rename failure/);
+ assert.equal(await readFile(file, "utf8"), "original");
+ assert.deepEqual(await readdir(join(file, "..")), ["telos-tasks.md"]);
+ } finally { renameMock.mock.restore(); syncBuiltinESMExports(); }
+});
+
+it("walks every native path ancestor including Windows backslashes", async () => {
+ const {pathAncestors} = await import("../src/artifact.ts");
+ const {win32, posix} = await import("node:path");
+ assert.deepEqual(pathAncestors("C:\\repo\\link\\tasks.md", win32), ["C:\\repo", "C:\\repo\\link", "C:\\repo\\link\\tasks.md"]);
+ assert.deepEqual(pathAncestors("/repo/link/tasks.md", posix), ["/repo", "/repo/link", "/repo/link/tasks.md"]);
 });

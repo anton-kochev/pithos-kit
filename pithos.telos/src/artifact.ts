@@ -1,5 +1,6 @@
-import { access, mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, join } from "node:path";
+import { lstat, mkdir, readFile, open, rename, unlink } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import { dirname, join, posix, sep, resolve, parse as parsePath } from "node:path";
 import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { parse, stringify } from "yaml";
 import {
@@ -77,18 +78,69 @@ export function renderMarkdownBody(tasks: Task[]): string {
 
 export async function loadTaskArtifact(filePath: string): Promise<ArtifactLoad> {
 	try {
-		await access(filePath);
-	} catch {
+		const text = await readFile(filePath, "utf8");
+		return { artifact: parseArtifactText(text), existed: true };
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
 		return { artifact: createEmptyArtifact(), existed: false };
 	}
+}
 
-	const text = await readFile(filePath, "utf8");
-	return { artifact: parseArtifactText(text), existed: true };
+export function pathAncestors(filePath: string, paths: Pick<typeof posix, "resolve" | "parse" | "join" | "sep"> = {resolve, parse: parsePath, join, sep}): string[] {
+	const absolute = paths.resolve(filePath);
+	let current = paths.parse(absolute).root;
+	return absolute.slice(current.length).split(paths.sep).filter(Boolean).map((component) => {
+		current = paths.join(current, component);
+		return current;
+	});
+}
+
+// Reject symlinks in every existing component, not merely at the leaf.
+export async function assertSafePath(filePath: string): Promise<void> {
+	for (const current of pathAncestors(filePath)) {
+		try {
+			if ((await lstat(current)).isSymbolicLink()) throw new Error(`Unsafe symlink: ${current}`);
+		} catch (error) {
+			if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+		}
+	}
+}
+
+export async function atomicWriteText(filePath: string, text: string): Promise<void> {
+	await assertSafePath(filePath);
+	await mkdir(dirname(filePath), { recursive: true });
+	await assertSafePath(filePath);
+	let mode = 0o600;
+	try {
+		const info = await lstat(filePath);
+		if (!info.isFile()) throw new Error("Destination is not a regular file");
+		mode = info.mode & 0o777;
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+	}
+	const temporary = join(dirname(filePath), `.telos-${randomUUID()}.tmp`);
+	let created = false;
+	try {
+		const handle = await open(temporary, "wx", mode);
+		created = true;
+		try {
+			await handle.chmod(mode);
+			await handle.writeFile(text, "utf8");
+		} finally {
+			await handle.close();
+		}
+		await assertSafePath(filePath);
+		await rename(temporary, filePath);
+	} finally {
+		if (created) await unlink(temporary).catch((error) => {
+			if (error.code !== "ENOENT") throw error;
+		});
+	}
 }
 
 export async function writeTaskArtifact(filePath: string, artifact: TaskArtifact): Promise<void> {
-	await mkdir(dirname(filePath), { recursive: true });
-	await writeFile(filePath, serializeArtifact(artifact), "utf8");
+	const text = serializeArtifact(artifact);
+	await atomicWriteText(filePath, text);
 }
 
 export async function mutateTaskArtifact(

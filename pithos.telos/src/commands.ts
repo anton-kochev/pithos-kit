@@ -2,6 +2,7 @@ import type { ListScope, TaskOperation, TaskPriority, TaskStatus } from "./tasks
 
 export type ParsedTasksCommand =
 	| { type: "interactive" }
+	| { type: "cleanup" }
 	| { type: "help"; text: string }
 	| { type: "operation"; operation: TaskOperation }
 	| { type: "error"; message: string };
@@ -11,7 +12,8 @@ export const TASKS_HELP = `Usage: /tasks [subcommand] [options]
 Run /tasks without a subcommand to open the interactive task navigator.
 
 Subcommands:
-  list [--archived|--all]                 List active tasks by default
+  list [--archived|--all]                 List this session's active tasks by default
+  cleanup                                Preview orphan task files and confirm removal
   create [options] <title>                Create a task
   show <id>                               Show one task
   update <id> [options]                   Update title, status, priority, notes, or dependencies
@@ -45,6 +47,10 @@ export function parseTasksCommand(rawArgs: string): ParsedTasksCommand {
 
 	try {
 		switch (subcommand) {
+			case "cleanup":
+				if (rest.length === 1 && (rest[0] === "--help" || rest[0] === "-h")) return { type: "help", text: TASKS_HELP };
+				if (rest.length) throw new Error("cleanup does not accept arguments or options; confirmation is required");
+				return { type: "cleanup" };
 			case "list":
 				return { type: "operation", operation: parseList(rest) };
 			case "create":

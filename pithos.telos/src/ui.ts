@@ -1,20 +1,59 @@
 import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-agent";
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
-import { formatArtifactList, loadTaskArtifact, taskFilePath } from "./artifact";
+import { formatArtifactList } from "./artifact";
+import { loadSessionTasks, captureTaskSession, EPHEMERAL_NOTICE, type TaskSession } from "./session-store";
+import { loadTelosConfig } from "./config";
+import { startTaskListRefresh } from "./task-list-refresh";
 import { filterTasks, type Task } from "./tasks";
 
-export async function showTaskList(ctx: ExtensionCommandContext): Promise<void> {
-	const loaded = await loadTaskArtifact(taskFilePath(ctx.cwd));
-	const tasks = filterTasks(loaded.artifact.tasks, "active");
-
-	await ctx.ui.custom<void>((tui, theme, _kb, done) => {
-		return new TaskListComponent(tasks, theme, () => done(), () => tui.requestRender());
-	});
+export async function showTaskList(
+	ctx: ExtensionCommandContext,
+	session: TaskSession = captureTaskSession(ctx),
+	openViews?: Set<() => void>,
+): Promise<void> {
+	let closed = false;
+	let component: TaskListComponent | undefined;
+	let stop = () => {};
+	let finish: (() => void) | undefined;
+	const close = () => {
+		if (closed) return;
+		closed = true;
+		stop();
+		component?.dispose();
+		finish?.();
+	};
+	openViews?.add(close);
+	try {
+		const loaded = await loadSessionTasks(session);
+		if (closed) return;
+		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
+			finish = () => done();
+			component = new TaskListComponent(filterTasks(loaded.artifact.tasks, "active"), theme, close,
+				() => tui.requestRender(), { ephemeral: session.ephemeral, onDispose: () => stop() });
+			if (closed) {
+				component.dispose();
+				done();
+				return component;
+			}
+			stop = startTaskListRefresh({
+				initial: loaded,
+				loadTasks: () => loadSessionTasks(session),
+				loadConfig: () => loadTelosConfig(session.cwd),
+				onTasks: (tasks) => component?.updateTasks(tasks),
+				onWarnings: (warnings) => component?.setWarnings(warnings),
+			});
+			return component;
+		});
+	} finally {
+		close();
+		openViews?.delete(close);
+	}
 }
 
-export async function activeTaskListText(cwd: string): Promise<string> {
-	const loaded = await loadTaskArtifact(taskFilePath(cwd));
-	return formatArtifactList(loaded.artifact, "active");
+export async function activeTaskListText(session: TaskSession): Promise<string> {
+	const loaded = await loadSessionTasks(session);
+	const text = formatArtifactList(loaded.artifact, "active");
+	return session.ephemeral ? `${text}\n\n${EPHEMERAL_NOTICE}` : text;
 }
 
 type TaskListMode = "list" | "detail";
@@ -23,17 +62,65 @@ export class TaskListComponent {
 	private cachedWidth?: number;
 	private cachedLines?: string[];
 	private selectedIndex = 0;
+	private viewportStart = 0;
+	private disposed = false;
 	private mode: TaskListMode = "list";
+	private warnings: { task?: string; config?: string } = {};
 
 	constructor(
-		private readonly tasks: Task[],
+		private tasks: Task[],
 		private readonly theme: Theme,
 		private readonly onClose: () => void,
 		private readonly requestRender: () => void = () => {},
-	) {}
+		private readonly options: { ephemeral?: boolean; onDispose?: () => void } = {},
+	) {
+		this.tasks = tasks.map((task) => ({ ...task, dependencies: [...task.dependencies] }));
+	}
+
+	updateTasks(tasks: Task[]): void {
+		if (this.disposed) return;
+		const unchanged = tasks.length === this.tasks.length && tasks.every((task, index) => {
+			const previous = this.tasks[index];
+			return task.id === previous.id && task.title === previous.title && task.status === previous.status
+				&& task.priority === previous.priority && task.notes === previous.notes
+				&& task.created === previous.created && task.updated === previous.updated
+				&& task.dependencies.length === previous.dependencies.length
+				&& task.dependencies.every((id, dependencyIndex) => id === previous.dependencies[dependencyIndex]);
+		});
+		if (unchanged) return;
+
+		const selectedId = this.tasks[this.selectedIndex]?.id;
+		const nextIndex = tasks.findIndex((task) => task.id === selectedId);
+		this.tasks = tasks.map((task) => ({ ...task, dependencies: [...task.dependencies] }));
+		if (nextIndex >= 0) {
+			this.selectedIndex = nextIndex;
+		} else {
+			this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, tasks.length - 1));
+			this.mode = "list";
+		}
+		this.clampViewport();
+		this.invalidate();
+		this.requestRender();
+	}
+
+	setWarnings(warnings: { task?: string; config?: string }): void {
+		if (this.disposed) return;
+		if (this.warnings.task === warnings.task && this.warnings.config === warnings.config) return;
+		this.warnings = { ...warnings };
+		this.invalidate();
+		this.requestRender();
+	}
+
+	dispose(): void {
+		if (this.disposed) return;
+		this.disposed = true;
+		this.options.onDispose?.();
+	}
 
 	handleInput(data: string): void {
+		if (this.disposed) return;
 		if (matchesKey(data, Key.escape) || matchesKey(data, Key.ctrl("c")) || matchesKey(data, "q")) {
+			this.dispose();
 			this.onClose();
 			return;
 		}
@@ -64,7 +151,7 @@ export class TaskListComponent {
 		const addWrapped = (text: string, indent = "") => {
 			const availableWidth = Math.max(1, width - visibleWidth(indent));
 			for (const line of wrapTextWithAnsi(text, availableWidth)) {
-				lines.push(`${indent}${line}`);
+				add(`${indent}${line}`);
 			}
 		};
 
@@ -77,17 +164,19 @@ export class TaskListComponent {
 
 		const activeCount = this.tasks.length;
 		const doneCount = this.tasks.filter((task) => task.status === "done").length;
+		const blockedCount = this.tasks.filter((task) => task.status === "blocked").length;
 
 		add("");
 		add(headerLine("Telos Tasks", width, th));
+		this.renderNotices(add);
 		add("");
-		add(`  ${th.fg("muted", `${activeCount} active task${activeCount === 1 ? "" : "s"}${doneCount ? ` · ${doneCount} done` : ""}`)}`);
+		add(`  ${th.fg("muted", `${doneCount}/${activeCount} done · ${blockedCount} blocked`)}`);
 		add("");
 
 		if (this.tasks.length === 0) {
 			add(`  ${th.fg("dim", "No active tasks. Create one with /tasks create \"Task title\".")}`);
 		} else {
-			for (let index = 0; index < this.tasks.length; index++) {
+			for (let index = this.viewportStart; index < Math.min(this.tasks.length, this.viewportStart + 10); index++) {
 				const task = this.tasks[index];
 				const selected = index === this.selectedIndex;
 				const isDone = task.status === "done";
@@ -104,6 +193,10 @@ export class TaskListComponent {
 			}
 		}
 
+		if (activeCount > 10) {
+			add(`  ${th.fg("muted", `${this.viewportStart + 1}–${Math.min(activeCount, this.viewportStart + 10)} of ${activeCount}`)}`);
+		}
+
 		add("");
 		add(`  ${th.fg("dim", "Use ↑/↓ to navigate, Enter/Space for details. Esc, Ctrl+C, or q closes.")}`);
 		add("");
@@ -118,6 +211,13 @@ export class TaskListComponent {
 		this.cachedLines = undefined;
 	}
 
+	private renderNotices(add: (line?: string) => void): void {
+		if (this.options.ephemeral) add(`  ${this.theme.fg("warning", "Ephemeral session · tasks are lost on exit")}`);
+		for (const warning of [this.warnings.task, this.warnings.config]) {
+			if (warning) add(`  ${this.theme.fg("warning", warning)}`);
+		}
+	}
+
 	private renderTaskDetails(add: (line?: string) => void, addWrapped: (text: string, indent?: string) => void, width: number): void {
 		const task = this.tasks[this.selectedIndex];
 		const th = this.theme;
@@ -125,6 +225,7 @@ export class TaskListComponent {
 
 		add("");
 		add(headerLine(task.id, width, th));
+		this.renderNotices(add);
 		add("");
 		add(`  ${th.fg("text", task.title)}`);
 		add(`  ${statusGlyph(task.status)} ${task.status} · ${priorityGlyph(task.priority)} ${task.priority}`);
@@ -158,8 +259,15 @@ export class TaskListComponent {
 		if (nextIndex === this.selectedIndex) return;
 
 		this.selectedIndex = nextIndex;
+		this.clampViewport();
 		this.invalidate();
 		this.requestRender();
+	}
+
+	private clampViewport(): void {
+		this.viewportStart = Math.max(0, Math.min(this.viewportStart, this.tasks.length - 10));
+		if (this.selectedIndex < this.viewportStart) this.viewportStart = this.selectedIndex;
+		if (this.selectedIndex >= this.viewportStart + 10) this.viewportStart = this.selectedIndex - 9;
 	}
 
 	private toggleDetails(): void {

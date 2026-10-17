@@ -26,6 +26,14 @@ describe("/tasks command parser", () => {
 		});
 	});
 
+	it("parses confirmed cleanup without accepting force or extra arguments", () => {
+		assert.deepEqual(parseTasksCommand("cleanup"), { type: "cleanup" });
+		for (const input of ["cleanup --force", "cleanup extra"]) {
+			assert.equal(parseTasksCommand(input).type, "error");
+		}
+		assert.equal(parseTasksCommand("cleanup --help").type, "help");
+	});
+
 	it("parses list scopes", () => {
 		assert.deepEqual(parseTasksCommand("list --archived"), {
 			type: "operation",

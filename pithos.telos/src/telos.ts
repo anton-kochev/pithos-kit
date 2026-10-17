@@ -2,12 +2,13 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-coding-agent";
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
-import { formatArtifactList, isMutatingOperation, loadTaskArtifact, mutateTaskArtifact, taskFilePath } from "./artifact";
+import { formatArtifactList } from "./artifact";
+import { captureTaskSession, runSessionOperation, releaseSessionTasks, EPHEMERAL_NOTICE, type TaskSession } from "./session-store";
 import { parseTasksCommand, TASKS_HELP } from "./commands";
+import { discoverCleanupCandidates, deleteCleanupCandidates, discardCleanupCandidates } from "./cleanup";
 import { activeTaskListText, showTaskList } from "./ui";
 import { createPithosLogger, errorMetadata } from "./logging";
 import {
-	applyTaskOperation,
 	TASK_PRIORITIES,
 	TASK_STATUSES,
 	type ListScope,
@@ -46,12 +47,18 @@ type TaskToolParams = {
 export default function telos(pi: ExtensionAPI) {
 	const log = createPithosLogger();
 	log.info("extension.register");
+	const openViews = new Set<() => void>();
+	pi.on("session_shutdown", async (event, ctx) => {
+		for (const close of openViews) close();
+		openViews.clear();
+		if (event.reason !== "reload") await releaseSessionTasks(captureTaskSession(ctx));
+	});
 	pi.registerTool({
 		name: TOOL_NAME,
 		label: "Telos Tasks",
 		description:
-			"Manage repo-scoped project tasks in .pi/telos-tasks.md when the user wants task tracking. Supports create, list, show, update, status changes, complete, reopen, block, archive, and delete rejection.",
-		promptSnippet: "Manage repo-scoped project tasks in .pi/telos-tasks.md when the user asks to track work.",
+			"Manage the current Pi session's task checklist when the user wants task tracking. Persisted sessions use .pi/telos/sessions/<session-key>.md; unsaved sessions are memory-only. Supports create, list, show, update, status changes, complete, reopen, block, archive, and delete rejection.",
+		promptSnippet: "Manage the current session's task checklist when the user asks to track work.",
 		promptGuidelines: [
 			"Use telos_tasks only when the user asks to manage, track, inspect, or update project tasks; do not create or update tasks proactively without that intent.",
 			"Use telos_tasks archive instead of physical deletion when a task should be removed from active work.",
@@ -63,7 +70,7 @@ export default function telos(pi: ExtensionAPI) {
 			const operation = operationFromToolParams(params as TaskToolParams);
 			log.info("tool.telos_tasks.start", { toolCallId, action: operation.action, id: "id" in operation ? operation.id : undefined });
 			try {
-			const result = await runOperation(ctx.cwd, operation);
+			const result = await runOperation(captureTaskSession(ctx), operation);
 			log.info("tool.telos_tasks.complete", { toolCallId, durationMs: Date.now() - started, action: operation.action, rejected: result.rejected });
 			return {
 				content: [{ type: "text", text: result.text }],
@@ -90,25 +97,23 @@ export default function telos(pi: ExtensionAPI) {
 	});
 
 	pi.registerCommand("tasks", {
-		description: "View and manage Telos project tasks",
+		description: "View and manage the current session's Telos checklist",
 		handler: async (args, ctx) => {
 			const parsed = parseTasksCommand(args ?? "");
 			log.info("command.tasks", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), type: parsed.type });
-
-			if (parsed.type === "interactive") {
-				if (ctx.hasUI) {
-					await showTaskList(ctx);
-					return;
-				}
-				return emitText(ctx, await activeTaskListText(ctx.cwd));
-			}
 
 			if (parsed.type === "help") return emitText(ctx, parsed.text);
 			if (parsed.type === "error") return emitText(ctx, `Error: ${parsed.message}`, "error");
 
 			try {
 				const started = Date.now();
-				const result = await runOperation(ctx.cwd, parsed.operation);
+				if (parsed.type === "interactive") {
+					const session = captureTaskSession(ctx);
+					if (ctx.mode === "tui") return await showTaskList(ctx, session, openViews);
+					return emitText(ctx, await activeTaskListText(session));
+				}
+				if (parsed.type === "cleanup") return await cleanupTasks(ctx);
+				const result = await runOperation(captureTaskSession(ctx), parsed.operation);
 				log.info("command.tasks.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, action: parsed.operation.action, rejected: result.rejected });
 				return emitText(ctx, result.text, result.rejected ? "warning" : "info");
 			} catch (error) {
@@ -119,14 +124,28 @@ export default function telos(pi: ExtensionAPI) {
 	});
 }
 
-async function runOperation(cwd: string, operation: TaskOperation): Promise<TaskOperationResult> {
-	const filePath = taskFilePath(cwd);
-	if (isMutatingOperation(operation) || operation.action === "delete") {
-		return mutateTaskArtifact(filePath, operation);
+async function cleanupTasks(ctx: ExtensionCommandContext): Promise<string> {
+	if (!ctx.hasUI) return emitText(ctx, "Cleanup requires interactive confirmation; no files were deleted.", "warning");
+	const session = captureTaskSession(ctx);
+	const candidates = await discoverCleanupCandidates(session.cwd, session);
+	if (!candidates.length) return emitText(ctx, "No eligible orphan task files found.");
+	try {
+		const preview = candidates.map((candidate) => `${candidate.filePath}\n  Session: ${candidate.sessionFile}`).join("\n\n");
+		const confirmed = await ctx.ui.confirm("Delete orphaned Telos task files?", `${preview}\n\nThese session files are missing, but may have been moved. Restoring a deleted session will not restore its task file. Delete these ${candidates.length} task file(s)?`);
+		const current = captureTaskSession(ctx);
+		if (!confirmed || current.sessionId !== session.sessionId || current.sessionFile !== session.sessionFile || current.cwd !== session.cwd) {
+			return emitText(ctx, "Cleanup cancelled; no files were deleted.");
+		}
+		const result = await deleteCleanupCandidates(session.cwd, current, candidates);
+		return emitText(ctx, `Cleanup: ${result.deleted} deleted, ${result.skipped} skipped, ${result.failed} failed.`, result.failed ? "warning" : "info");
+	} finally {
+		discardCleanupCandidates(candidates);
 	}
+}
 
-	const loaded = await loadTaskArtifact(filePath);
-	return applyTaskOperation(loaded.artifact, operation);
+async function runOperation(session: TaskSession, operation: TaskOperation): Promise<TaskOperationResult> {
+	const result = await runSessionOperation(session, operation);
+	return session.ephemeral ? { ...result, text: `${result.text}\n\n${EPHEMERAL_NOTICE}` } : result;
 }
 
 function operationFromToolParams(params: TaskToolParams): TaskOperation {

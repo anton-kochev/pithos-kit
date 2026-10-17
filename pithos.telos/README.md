@@ -1,8 +1,12 @@
 # telos
 
-Repo-scoped structured task tracking for pi.
+Session-scoped task checklists for pi.
 
-Telos adds a `/tasks` command and an agent-callable `telos_tasks` tool. Tasks persist in the current repository's `.pi/telos-tasks.md`, so they survive pi sessions and remain inspectable outside pi.
+Telos adds a `/tasks` command and an agent-callable `telos_tasks` tool. Each saved Pi session owns an independent checklist in the current project's `.pi/telos/sessions/<session-key>.md`. Tasks survive quitting and resuming that session and remain inspectable outside pi. New sessions, forks, and clones start with an empty checklist; renaming a session or navigating its `/tree` keeps the same checklist.
+
+With `--no-session`, tasks stay in memory only. They survive closing/reopening `/tasks` and extension reload, but are discarded when the session is replaced or Pi exits. Both the UI and command/tool output label this limitation. Opening the viewer never creates a task file.
+
+**Existing installations:** the old shared `.pi/telos-tasks.md` is left untouched, but is no longer used. Telos does not automatically import it into any session or delete it.
 
 ## Install
 
@@ -46,6 +50,7 @@ Inside pi:
 ```text
 /tasks
 /tasks list [--archived|--all]
+/tasks cleanup          # preview orphan task files and confirm removal
 /tasks create [--priority low|medium|high|urgent] [--status todo|in_progress|blocked|done|archived] [--notes <notes>] [--depends <id[,id...]>] <title>
 /tasks show <id>
 /tasks update <id> [--title <title>] [--priority low|medium|high|urgent] [--status todo|in_progress|blocked|done|archived] [--notes <notes>] [--depends <id[,id...]>]
@@ -71,7 +76,33 @@ Examples:
 /tasks archive TSK-abc123ef
 ```
 
-`/tasks` with no arguments opens a read-only interactive task list when pi has an interactive UI. Use `↑`/`↓` to move the chevron pointer between tasks, press `Enter` or `Space` to open/close details for the selected task, and press `Esc`, `Ctrl+C`, or `q` to exit without modifying tasks. In non-interactive modes it prints the active task list as text.
+`/tasks` opens a read-only interactive list with **at most 10 task rows** in TUI mode. Use `↑`/`↓` to move the chevron; the window scrolls one row when you cross its edge. Press `Enter` or `Space` for details, and `Esc`, `Ctrl+C`, or `q` to close. Text/JSON/RPC modes receive the active list as text rather than a terminal component.
+
+The header shows progress such as `7/12 done · 2 blocked`, counting all non-archived tasks. Lists longer than 10 also show the visible range, such as `11–20 of 24`. Task details are not subject to the 10-row cap.
+
+The open view refreshes automatically, including details, counts, and externally edited task data. Selection follows the same task ID across sorting changes. If the selected task is archived or removed, the view returns to the list and selects the nearest remaining row. Opening and closing details preserves the scroll position. Failed or incomplete file reads keep the last valid view with an inline warning until recovery; a valid empty task list intentionally clears the display. Refresh work stops when the view closes or the session changes.
+
+## Refresh configuration
+
+Optionally create `.pi/telos.json` in the project:
+
+```json
+{
+  "refreshIntervalMs": 1000
+}
+```
+
+`refreshIntervalMs` is an integer in milliseconds, from **250** to **2147483647**. The default is **1000**. Configuration is strict JSON: unknown settings, fractional values, comments, and wrong types are rejected.
+
+Config is rechecked about once per second, independently of the task refresh interval. Valid edits take effect while `/tasks` is open without reopening, reloading Pi, or redeploying. Missing/deleted config or `{}` restores the default. Invalid/unreadable config keeps the last valid interval (or the default initially) and displays a separate warning until recovery. Telos never creates or rewrites this config for you. Memory-only sessions also use this refresh setting.
+
+## Cleaning up deleted sessions
+
+Pi currently has no public session-deletion event, so deleting a session cannot immediately remove its separate task file. Run `/tasks cleanup` to preview eligible orphaned files and explicitly confirm their removal. Without confirmation UI, no files are deleted; there is no force option or agent-tool cleanup action.
+
+Cleanup only considers validated Telos artifacts whose session files were previously observed on disk and are now absent from the same accessible parent location. Active-session files, never-observed sessions, unknown/malformed ownership, unsafe paths, and symlinks are skipped. Candidates are checked again after confirmation; changed task files or reappeared sessions are skipped. The result reports deleted, skipped, and failed counts.
+
+A missing session might have been moved: review the displayed paths before confirming. Restoring a trashed session does **not** restore a separately deleted task file. Cleanup never deletes session files, the legacy shared task file, or memory-only tasks, and never runs automatically on quit or viewing. Sessions moved to a new location with the same ID and project can read their checklist; a successful mutation updates the cleanup locator. Cleanup observation metadata is refreshed on task mutations, so uncertain/unobserved artifacts may remain ineligible.
 
 ### Interactive list legend
 
@@ -132,11 +163,13 @@ Completed tasks are dimmed and sorted after incomplete active tasks. Dependency 
 
 Telos registers one LLM-callable tool: `telos_tasks`.
 
-The tool supports the same task operations as `/tasks`: create, list, show, update, status, complete, reopen, block, archive, and delete rejection. It also accepts `dependencies: string[]` for create and update operations. It is described neutrally so the agent can use it when the user asks to manage or track tasks; Telos does not add any automatic per-turn task creation or tracking hook.
+The tool supports create, list, show, update, status, complete, reopen, block, archive, and delete rejection for the **current session**. It also accepts `dependencies: string[]` for create/update. Its `scope` parameter (`active`, `archived`, `all`) filters that session's tasks, not other sessions. Cleanup is command-only. Telos adds no automatic per-turn task creation or plan-to-task generation.
 
-## `.pi/telos-tasks.md` artifact
+## Session task artifacts
 
-Telos stores canonical task data in YAML frontmatter under the repository's `.pi` directory:
+Saved sessions use `.pi/telos/sessions/<session-key>.md`, where the key is a SHA-256 hash of the session ID. The project directory provides a separate namespace. YAML frontmatter contains canonical task data and a generated `telos_owner` section binding the artifact to its session and cleanup location. Leave ownership metadata intact when editing tasks. It includes local absolute project/session paths and, when available, observed session-header and filesystem identity information; consider this before sharing artifacts.
+
+The task-data portion looks like this (ownership metadata omitted here):
 
 ```md
 ---
@@ -170,13 +203,15 @@ Task fields:
 - `created` — ISO 8601 timestamp
 - `updated` — ISO 8601 timestamp
 
-Archive is the MVP soft-delete mechanism. Physical deletion is rejected and leaves `.pi/telos-tasks.md` unchanged.
+Archive is the task soft-delete mechanism. Individual physical task deletion is rejected; `/tasks cleanup` removes only confirmed orphan artifacts, not individual task records.
+
+Successful persisted mutations write a complete validated artifact to an exclusive temporary file in the same directory, then atomically replace the destination. Existing file permissions are preserved and temporary files are cleaned up on failure. This avoids exposing a partially written canonical file; it does not provide cross-process compare-and-swap or power-loss durability guarantees. Telos serializes cooperating in-process mutations, but arbitrary external writers can still race.
 
 ## Local development
 
 ```bash
 cd pithos.telos
-npm install
+npm ci
 npm test
 ```
 

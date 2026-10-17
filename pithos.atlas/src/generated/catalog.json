@@ -460,7 +460,7 @@
     {
       "name": "@pithos-kit/telos",
       "version": "0.3.0",
-      "description": "Telos: repo-scoped structured task tracking for Pi.",
+      "description": "Telos: session-scoped task checklists with live progress for Pi.",
       "pi": {
         "extensions": [
           "./extensions"
@@ -468,19 +468,19 @@
       },
       "pithosKit": {
         "displayName": "Telos",
-        "summary": "Manage repo-scoped structured tasks through a command and agent tool.",
+        "summary": "Manage session-owned task checklists with live progress and confirmed orphan cleanup.",
         "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "tasks",
-            "summary": "Browse and manage project tasks.",
+            "summary": "Browse session tasks or confirm orphan cleanup with /tasks cleanup.",
             "usage": "/tasks [subcommand] [options]"
           }
         ],
         "tools": [
           {
             "name": "telos_tasks",
-            "summary": "Manage repo-scoped project tasks."
+            "summary": "Manage the current session's task checklist."
           }
         ],
         "prompts": [],
@@ -490,8 +490,13 @@
         "configuration": [
           {
             "kind": "file",
-            "key": ".pi/telos-tasks.md",
-            "summary": "Canonical task data and generated human-readable summary."
+            "key": ".pi/telos/sessions/<session-key>.md",
+            "summary": "Session-owned task data, ownership metadata, and generated summary; unsaved sessions use memory only."
+          },
+          {
+            "kind": "file",
+            "key": ".pi/telos.json",
+            "summary": "Hot-reloaded refreshIntervalMs setting, default 1000 ms and minimum 250 ms."
           }
         ]
       }
