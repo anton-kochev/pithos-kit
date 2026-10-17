@@ -14,6 +14,7 @@ export type TaskListRefreshOptions = {
 	initial: ArtifactLoad;
 	onTasks: (tasks: Task[]) => void;
 	onWarnings: (warnings: RefreshWarnings) => void;
+	onConfig?: (config: TelosConfig) => void;
 	scheduler?: RefreshScheduler;
 };
 
@@ -33,6 +34,7 @@ export function startTaskListRefresh(options: TaskListRefreshOptions): () => voi
 	let seenPersisted = options.initial.existed;
 	let tasksKey = activeTasksKey(filterTasks(options.initial.artifact.tasks, "active"));
 	let warnings: RefreshWarnings = {};
+	let lastConfig: TelosConfig | undefined;
 
 	function setWarning(stream: keyof RefreshWarnings, message?: string): void {
 		if (stopped || warnings[stream] === message) return;
@@ -102,8 +104,12 @@ export function startTaskListRefresh(options: TaskListRefreshOptions): () => voi
 				interval = config.refreshIntervalMs;
 				requestTasks();
 			}
+			if (!stopped && (lastConfig?.refreshIntervalMs !== config.refreshIntervalMs || lastConfig?.visibleTaskCount !== config.visibleTaskCount)) {
+				lastConfig = { ...config };
+				try { options.onConfig?.({ ...config }); } catch {}
+			}
 		} catch {
-			setWarning("config", "Unable to reload Telos config; keeping last valid refresh interval");
+			setWarning("config", "Unable to reload Telos config; keeping last valid settings");
 		} finally {
 			if (!stopped) configTimer = schedule(() => { void checkConfig(); }, CONFIG_CHECK_INTERVAL_MS);
 		}

@@ -102,6 +102,45 @@ describe("Telos command/tool integration", () => {
 		assert.deepEqual(await readdir(cwd), []);
 	});
 
+	it("applies the configured visible count to the open task screen", async (t) => {
+		const cwd = await directory();
+		const { command } = harness();
+		const ctx = context(cwd, "configured-view");
+		const owner = captureTaskSession(ctx);
+		for (let i = 0; i < 12; i++) await runSessionOperation(owner, { action: "create", title: `Task ${i}` });
+		const fs = (await import("node:fs/promises")).default;
+		const { syncBuiltinESMExports } = await import("node:module");
+		const originalRead = fs.readFile;
+		const mock = t.mock.method(fs, "readFile", async (...args: Parameters<typeof fs.readFile>) => {
+			if (args[0] === join(cwd, ".pi", "telos.json")) return '{"visibleTaskCount":3}';
+			return originalRead(...args);
+		});
+		syncBuiltinESMExports();
+		let component: any;
+		let mounted!: () => void;
+		const mounting = new Promise<void>((resolve) => { mounted = resolve; });
+		let running: Promise<unknown> | undefined;
+		try {
+			running = command.handler("", { ...ctx, hasUI: true, mode: "tui", ui: {
+				notify: () => {},
+				custom: (factory: any) => new Promise<void>((done) => {
+					component = factory({ requestRender: () => {} }, { fg: (_: string, text: string) => text }, {}, done);
+					mounted();
+				}),
+			} });
+			await mounting;
+			await new Promise<void>((resolve) => setImmediate(resolve));
+			const lines = component.render(120);
+			assert.equal(lines.filter((line: string) => line.includes("TSK-")).length, 3);
+			assert(lines.join("\n").includes("1–3 of 12"));
+		} finally {
+			component?.handleInput("q");
+			await running;
+			mock.mock.restore();
+			syncBuiltinESMExports();
+		}
+	});
+
 	it("uses text output instead of a terminal screen for RPC clients", async () => {
 		const cwd = await directory();
 		const { command } = harness();

@@ -47,6 +47,42 @@ describe("interactive task list", () => {
 		}
 	});
 
+	it("resizes the visible window without losing selection or open details", () => {
+		const many = Array.from({ length: 24 }, (_, i) => makeTask(`TSK-${i}`, `Task ${i}`));
+		let renders = 0;
+		const component = new TaskListComponent(many, theme, () => {}, () => renders++);
+		for (let i = 0; i < 14; i++) component.handleInput("\u001b[B");
+		component.setVisibleTaskCount(3);
+		assert.equal(taskRows(component).length, 3);
+		assert(component.render(120).join("\n").includes("13–15 of 24"));
+		assert(taskRows(component)[2].startsWith("› □ TSK-14 "));
+		const resized = component.render(120);
+		const requests = renders;
+		component.setVisibleTaskCount(3);
+		assert.strictEqual(component.render(120), resized);
+		assert.equal(renders, requests);
+		component.handleInput("\u001b[B");
+		assert(component.render(120).join("\n").includes("14–16 of 24"));
+		component.handleInput("\r");
+		component.setVisibleTaskCount(1);
+		assert(component.render(120).includes("  Task 15"));
+		component.handleInput(" ");
+		assert.equal(taskRows(component).length, 1);
+		assert(taskRows(component)[0].startsWith("› □ TSK-15 "));
+		component.handleInput("\u001b[A");
+		assert(taskRows(component)[0].startsWith("› □ TSK-14 "));
+		component.setVisibleTaskCount(25);
+		assert.equal(taskRows(component).length, 24);
+		assert(taskRows(component)[14].startsWith("› □ TSK-14 "));
+		assert(!component.render(120).join("\n").includes("of 24"));
+		component.updateTasks([]);
+		assert(!component.render(120).join("\n").includes("1–0"));
+		component.dispose();
+		const count = renders;
+		component.setVisibleTaskCount(10);
+		assert.equal(renders, count);
+	});
+
 	it("replaces snapshots preserving ID, details and viewport, and clamps removed selection", () => {
 		let renders = 0;
 		const many = Array.from({ length: 12 }, (_, i) => makeTask(`TSK-${i}`, `Task ${i}`));

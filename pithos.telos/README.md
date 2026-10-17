@@ -76,25 +76,29 @@ Examples:
 /tasks archive TSK-abc123ef
 ```
 
-`/tasks` opens a read-only interactive list with **at most 10 task rows** in TUI mode. Use `↑`/`↓` to move the chevron; the window scrolls one row when you cross its edge. Press `Enter` or `Space` for details, and `Esc`, `Ctrl+C`, or `q` to close. Text/JSON/RPC modes receive the active list as text rather than a terminal component.
+`/tasks` opens a read-only interactive list with **at most 10 task rows by default** in TUI mode (configurable with `visibleTaskCount`). Use `↑`/`↓` to move the chevron; the window scrolls one row when you cross its edge. Press `Enter` or `Space` for details, and `Esc`, `Ctrl+C`, or `q` to close. Text/JSON/RPC modes receive the active list as text rather than a terminal component.
 
-The header shows progress such as `7/12 done · 2 blocked`, counting all non-archived tasks. Lists longer than 10 also show the visible range, such as `11–20 of 24`. Task details are not subject to the 10-row cap.
+The header shows progress such as `7/12 done · 2 blocked`, counting all non-archived tasks. Lists longer than the configured visible count also show the visible range, such as `11–20 of 24` with the default of 10. Task details are not subject to this row cap.
 
 The open view refreshes automatically, including details, counts, and externally edited task data. Selection follows the same task ID across sorting changes. If the selected task is archived or removed, the view returns to the list and selects the nearest remaining row. Opening and closing details preserves the scroll position. Failed or incomplete file reads keep the last valid view with an inline warning until recovery; a valid empty task list intentionally clears the display. Refresh work stops when the view closes or the session changes.
 
-## Refresh configuration
+## View configuration
 
 Optionally create `.pi/telos.json` in the project:
 
 ```json
 {
-  "refreshIntervalMs": 1000
+  "refreshIntervalMs": 1000,
+  "visibleTaskCount": 10
 }
 ```
 
-`refreshIntervalMs` is an integer in milliseconds, from **250** to **2147483647**. The default is **1000**. Configuration is strict JSON: unknown settings, fractional values, comments, and wrong types are rejected.
+- `refreshIntervalMs` is an integer in milliseconds, from **250** to **2147483647**. The default is **1000**.
+- `visibleTaskCount` is a positive safe integer (1–9007199254740991). The default is **10**. It caps visible task rows, not the total tasks stored. Increasing or decreasing it keeps the selected task visible and preserves open details.
 
-Config is rechecked about once per second, independently of the task refresh interval. Valid edits take effect while `/tasks` is open without reopening, reloading Pi, or redeploying. Missing/deleted config or `{}` restores the default. Invalid/unreadable config keeps the last valid interval (or the default initially) and displays a separate warning until recovery. Telos never creates or rewrites this config for you. Memory-only sessions also use this refresh setting.
+Both settings are optional and default independently, so existing refresh-only config files still work. Configuration is strict JSON: unknown settings, fractional values, comments, and wrong types are rejected.
+
+Config is rechecked about once per second, independently of the task refresh interval. Valid edits to either setting take effect while `/tasks` is open without reopening, reloading Pi, or redeploying. Missing/deleted config or `{}` restores both defaults. Invalid/unreadable config keeps the last valid settings (or the defaults initially) and displays a separate warning until recovery. Telos never creates or rewrites this config for you. Memory-only sessions use these settings too.
 
 ## Cleaning up deleted sessions
 

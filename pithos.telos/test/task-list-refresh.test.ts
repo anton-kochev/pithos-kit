@@ -13,6 +13,7 @@ const task = (title = "First", status: Task["status"] = "todo"): Task => ({
 	created: "2026-06-02T12:00:00.000Z", updated: "2026-06-02T12:00:00.000Z",
 });
 const load = (tasks: Task[] = [], existed = true): ArtifactLoad => ({ artifact: { telos_version: 1, tasks }, existed });
+const settings = (refreshIntervalMs = 1000, visibleTaskCount = 10): TelosConfig => ({ refreshIntervalMs, visibleTaskCount });
 function deferred<T>() {
 	let resolve!: (value: T) => void;
 	let reject!: (error: unknown) => void;
@@ -72,7 +73,7 @@ it("immediately rechecks both streams without remounting initial tasks; defaults
 	assert.deepEqual(warnings, []);
 	assert.ok(clock.unrefs > 0);
 	stop(); stop();
-	config.resolve({ refreshIntervalMs: 250 });
+	config.resolve(settings(250));
 	await flush();
 	assert.equal(clock.jobs.size, 0);
 	await clock.advance(10000);
@@ -88,7 +89,7 @@ it("polls config independently of long task cadence and coalesces in-flight inte
 	const stop = startTaskListRefresh({
 		initial: load(), scheduler: clock.scheduler,
 		loadTasks: async () => { reads++; return pending ? pending.promise : load(); },
-		loadConfig: async () => { configReads++; return { refreshIntervalMs: interval }; },
+		loadConfig: async () => { configReads++; return settings(interval); },
 		onTasks: () => {}, onWarnings: () => {},
 	});
 	await flush();
@@ -134,7 +135,7 @@ it("waits for initial creation, emits normalized active changes, and retains tas
 	const stop = startTaskListRefresh({
 		initial: next, scheduler: clock.scheduler,
 		loadTasks: async () => { if (failure) throw new Error("private task contents"); return next; },
-		loadConfig: async () => ({ refreshIntervalMs: 1000 }),
+		loadConfig: async () => settings(),
 		onTasks: (tasks) => updates.push(tasks), onWarnings: (value) => warnings.push(value),
 	});
 	await flush();
@@ -185,7 +186,7 @@ it("keeps independent deduplicated warnings and the last valid interval until co
 	const stop = startTaskListRefresh({
 		initial: load([task()]), scheduler: clock.scheduler,
 		loadTasks: async () => { reads++; if (taskFailure) throw new Error("bad task"); return load([task()]); },
-		loadConfig: async () => { if (configFailure) throw new Error("private config"); return { refreshIntervalMs: interval }; },
+		loadConfig: async () => { if (configFailure) throw new Error("private config"); return settings(interval); },
 		onTasks: () => assert.fail("same data must not emit"), onWarnings: (value) => warnings.push(value),
 	});
 	await flush();
@@ -217,6 +218,41 @@ it("keeps independent deduplicated warnings and the last valid interval until co
 	stop();
 });
 
+it("publishes visible-count edits independently and retains the last config on failure", async () => {
+	const clock = new Clock();
+	let next = settings(10000, 3);
+	let invalid = false;
+	let taskReads = 0;
+	const configurations: TelosConfig[] = [];
+	const warnings: RefreshWarnings[] = [];
+	const stop = startTaskListRefresh({
+		initial: load(), scheduler: clock.scheduler,
+		loadTasks: async () => { taskReads++; return load(); },
+		loadConfig: async () => { if (invalid) throw new Error("bad config"); return next; },
+		onTasks: () => {}, onWarnings: (value) => warnings.push(value),
+		onConfig: (value) => configurations.push(value),
+	});
+	await flush();
+	assert.deepEqual(configurations, [settings(10000, 3)]);
+	const reads = taskReads;
+	next.visibleTaskCount = 5;
+	await clock.advance(1000);
+	assert.deepEqual(configurations, [settings(10000, 3), settings(10000, 5)]);
+	assert.equal(taskReads, reads, "view-only config changes do not restart task polling");
+	await clock.advance(1000);
+	assert.equal(configurations.length, 2, "unchanged config is not re-emitted");
+	invalid = true;
+	await clock.advance(1000);
+	assert.equal(configurations.length, 2);
+	assert.ok(warnings.at(-1)?.config);
+	invalid = false;
+	next = settings(); // Missing config resets both settings to defaults.
+	await clock.advance(1000);
+	assert.deepEqual(configurations.at(-1), settings());
+	assert.deepEqual(warnings.at(-1), {});
+	stop();
+});
+
 it("discards resolved and rejected pending reads after idempotent disposal", async () => {
 	for (const reject of [false, true]) {
 		const clock = new Clock();
@@ -227,7 +263,7 @@ it("discards resolved and rejected pending reads after idempotent disposal", asy
 		const stop = startTaskListRefresh({
 			initial: load(), scheduler: clock.scheduler,
 			loadTasks: () => { reads++; return tasks.promise; }, loadConfig: () => config.promise,
-			onTasks: () => { callbacks++; }, onWarnings: () => { callbacks++; },
+			onTasks: () => { callbacks++; }, onWarnings: () => { callbacks++; }, onConfig: () => { callbacks++; },
 		});
 		stop(); stop();
 		if (reject) {
@@ -235,7 +271,7 @@ it("discards resolved and rejected pending reads after idempotent disposal", asy
 			config.reject(new Error("late config rejection"));
 		} else {
 			tasks.resolve(load([task()]));
-			config.resolve({ refreshIntervalMs: 250 });
+			config.resolve(settings(250));
 		}
 		await flush();
 		assert.equal(callbacks, 0, "pending results cannot notify after stop");

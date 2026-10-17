@@ -2,7 +2,7 @@ import type { ExtensionCommandContext, Theme } from "@earendil-works/pi-coding-a
 import { Key, matchesKey, truncateToWidth, visibleWidth, wrapTextWithAnsi } from "@earendil-works/pi-tui";
 import { formatArtifactList } from "./artifact";
 import { loadSessionTasks, captureTaskSession, EPHEMERAL_NOTICE, type TaskSession } from "./session-store";
-import { loadTelosConfig } from "./config";
+import { DEFAULT_VISIBLE_TASK_COUNT, loadTelosConfig } from "./config";
 import { startTaskListRefresh } from "./task-list-refresh";
 import { filterTasks, type Task } from "./tasks";
 
@@ -41,6 +41,7 @@ export async function showTaskList(
 				loadConfig: () => loadTelosConfig(session.cwd),
 				onTasks: (tasks) => component?.updateTasks(tasks),
 				onWarnings: (warnings) => component?.setWarnings(warnings),
+				onConfig: (config) => component?.setVisibleTaskCount(config.visibleTaskCount),
 			});
 			return component;
 		});
@@ -63,6 +64,7 @@ export class TaskListComponent {
 	private cachedLines?: string[];
 	private selectedIndex = 0;
 	private viewportStart = 0;
+	private visibleTaskCount = DEFAULT_VISIBLE_TASK_COUNT;
 	private disposed = false;
 	private mode: TaskListMode = "list";
 	private warnings: { task?: string; config?: string } = {};
@@ -98,6 +100,14 @@ export class TaskListComponent {
 			this.selectedIndex = Math.max(0, Math.min(this.selectedIndex, tasks.length - 1));
 			this.mode = "list";
 		}
+		this.clampViewport();
+		this.invalidate();
+		this.requestRender();
+	}
+
+	setVisibleTaskCount(count: number): void {
+		if (this.disposed || this.visibleTaskCount === count) return;
+		this.visibleTaskCount = count;
 		this.clampViewport();
 		this.invalidate();
 		this.requestRender();
@@ -176,7 +186,7 @@ export class TaskListComponent {
 		if (this.tasks.length === 0) {
 			add(`  ${th.fg("dim", "No active tasks. Create one with /tasks create \"Task title\".")}`);
 		} else {
-			for (let index = this.viewportStart; index < Math.min(this.tasks.length, this.viewportStart + 10); index++) {
+			for (let index = this.viewportStart; index < Math.min(this.tasks.length, this.viewportStart + this.visibleTaskCount); index++) {
 				const task = this.tasks[index];
 				const selected = index === this.selectedIndex;
 				const isDone = task.status === "done";
@@ -193,8 +203,8 @@ export class TaskListComponent {
 			}
 		}
 
-		if (activeCount > 10) {
-			add(`  ${th.fg("muted", `${this.viewportStart + 1}–${Math.min(activeCount, this.viewportStart + 10)} of ${activeCount}`)}`);
+		if (activeCount > this.visibleTaskCount) {
+			add(`  ${th.fg("muted", `${this.viewportStart + 1}–${Math.min(activeCount, this.viewportStart + this.visibleTaskCount)} of ${activeCount}`)}`);
 		}
 
 		add("");
@@ -265,9 +275,9 @@ export class TaskListComponent {
 	}
 
 	private clampViewport(): void {
-		this.viewportStart = Math.max(0, Math.min(this.viewportStart, this.tasks.length - 10));
+		this.viewportStart = Math.max(0, Math.min(this.viewportStart, this.tasks.length - this.visibleTaskCount));
 		if (this.selectedIndex < this.viewportStart) this.viewportStart = this.selectedIndex;
-		if (this.selectedIndex >= this.viewportStart + 10) this.viewportStart = this.selectedIndex - 9;
+		if (this.selectedIndex >= this.viewportStart + this.visibleTaskCount) this.viewportStart = this.selectedIndex - this.visibleTaskCount + 1;
 	}
 
 	private toggleDetails(): void {

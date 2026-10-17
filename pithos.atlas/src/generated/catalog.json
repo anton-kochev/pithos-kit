@@ -496,7 +496,7 @@
           {
             "kind": "file",
             "key": ".pi/telos.json",
-            "summary": "Hot-reloaded refreshIntervalMs setting, default 1000 ms and minimum 250 ms."
+            "summary": "Hot-reloaded refreshIntervalMs (default 1000 ms, minimum 250 ms) and visibleTaskCount (default 10, positive integer)."
           }
         ]
       }

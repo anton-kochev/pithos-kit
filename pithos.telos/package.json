@@ -48,7 +48,7 @@
     "agents": [],
     "configuration": [
       { "kind": "file", "key": ".pi/telos/sessions/<session-key>.md", "summary": "Session-owned task data, ownership metadata, and generated summary; unsaved sessions use memory only." },
-      { "kind": "file", "key": ".pi/telos.json", "summary": "Hot-reloaded refreshIntervalMs setting, default 1000 ms and minimum 250 ms." }
+      { "kind": "file", "key": ".pi/telos.json", "summary": "Hot-reloaded refreshIntervalMs (default 1000 ms, minimum 250 ms) and visibleTaskCount (default 10, positive integer)." }
     ]
   },
   "pi": {
