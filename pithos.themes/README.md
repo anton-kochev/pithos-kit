@@ -32,7 +32,7 @@ If global files named `auric-dark.json` or `auric-light.json` already exist unde
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/themes": "npm:0.1.0"
+    "@pithos-kit/themes": "npm:0.2.0"
 ```
 
 ## Usage

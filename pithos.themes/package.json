@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/themes",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Accessible Auric light and dark themes for Pi.",
   "keywords": [
     "pi-package",

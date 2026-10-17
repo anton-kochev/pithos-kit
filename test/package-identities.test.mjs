@@ -7,20 +7,20 @@ const root = resolve(import.meta.dirname, "..");
 const repositoryUrl = "git+https://github.com/anton-kochev/pithos-kit.git";
 const minimumPi = ">=1.0.0";
 const packages = [
-  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.6.0" },
-  { directory: "pithos.echo", shortName: "echo", version: "0.5.0" },
-  { directory: "pithos.answer", shortName: "answer", version: "0.3.0" },
-  { directory: "pithos.telos", shortName: "telos", version: "0.3.0" },
-  { directory: "pithos.aegis", shortName: "aegis", version: "0.2.0" },
-  { directory: "pithos.guild", shortName: "guild", version: "0.7.0" },
-  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.2.0" },
+  { directory: "pithos.squiggle", shortName: "squiggle", version: "0.7.0" },
+  { directory: "pithos.echo", shortName: "echo", version: "0.6.0" },
+  { directory: "pithos.answer", shortName: "answer", version: "0.4.0" },
+  { directory: "pithos.telos", shortName: "telos", version: "0.4.0" },
+  { directory: "pithos.aegis", shortName: "aegis", version: "0.3.0" },
+  { directory: "pithos.guild", shortName: "guild", version: "0.8.0" },
+  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.3.0" },
   { directory: "pithos.plan", shortName: "plan", version: "0.5.4" },
-  { directory: "pithos.themes", shortName: "themes", version: "0.1.0" },
-  { directory: "pithos.translate", shortName: "translate", version: "2.0.0" },
-  { directory: "pithos.web", shortName: "web", version: "0.2.0" },
+  { directory: "pithos.themes", shortName: "themes", version: "0.2.0" },
+  { directory: "pithos.translate", shortName: "translate", version: "3.0.0" },
+  { directory: "pithos.web", shortName: "web", version: "0.3.0" },
   // Clio relies on the guarded nested-tool and settlement contracts verified on 1.0.3.
   { directory: "pithos.clio", shortName: "clio", version: "0.0.5", minimumPi: ">=1.0.3" },
-  { directory: "pithos.atlas", shortName: "atlas", version: "0.9.0" },
+  { directory: "pithos.atlas", shortName: "atlas", version: "0.9.1" },
 ];
 
 const capabilityKinds = ["commands", "tools", "prompts", "skills", "themes", "agents"];

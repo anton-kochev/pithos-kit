@@ -40,7 +40,7 @@ pi install npm:@pithos-kit/web
 Pin an exact version when reproducibility matters:
 
 ```bash
-pi install npm:@pithos-kit/squiggle@0.4.1
+pi install npm:@pithos-kit/squiggle@0.7.0
 ```
 
 In `.pithos`, Pi packages live under `pi.extensions`:
@@ -49,12 +49,12 @@ In `.pithos`, Pi packages live under `pi.extensions`:
 pi:
   version: "1.0.0"
   extensions:
-    "@pithos-kit/atlas": "npm:0.7.1"
-    "@pithos-kit/guild": "npm:0.3.0"
-    "@pithos-kit/plan": "npm:0.4.1"
-    "@pithos-kit/squiggle": "npm:0.4.1"
-    "@pithos-kit/translate": "npm:2.0.0"
-    "@pithos-kit/web": "npm:0.1.1"
+    "@pithos-kit/atlas": "npm:0.9.1"
+    "@pithos-kit/guild": "npm:0.8.0"
+    "@pithos-kit/plan": "npm:0.5.4"
+    "@pithos-kit/squiggle": "npm:0.7.0"
+    "@pithos-kit/translate": "npm:3.0.0"
+    "@pithos-kit/web": "npm:0.3.0"
 ```
 
 Atlas can validate and interactively manage toolchain versions, `pi.version`, and `@pithos-kit/*` entries while preserving third-party configuration. Its changes describe a future rebuilt Pithos environment; they do not replace the active Pi process. Run `/pithos help` after installing it.

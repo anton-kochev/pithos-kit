@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/telos",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "Telos: session-scoped task checklists with live progress for Pi.",
   "keywords": [
     "pi-package",

@@ -41,7 +41,7 @@ pi -e ./pithos.echo
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/echo": "npm:0.5.0"
+    "@pithos-kit/echo": "npm:0.6.0"
 ```
 
 ## Commands
