@@ -73,3 +73,20 @@ test('uncaptured ancestor README still passes safeFile checks and shared evidenc
   await assert.rejects(tool.execute('hardlink', {action: 'read', path}, undefined), /file budget exceeded/);
   assert.deepEqual(files.map(f => f.path), observed);
 }));
+
+test('missing ancestor READMEs are not advertised or authorized as readable', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'clio-ancestor-missing-'));
+  try {
+    await mkdir(join(root, 'scripts/lib'), {recursive: true});
+    await writeFile(join(root, 'scripts/lib/validate_kb.py'), 'print("validate")');
+    await writeFile(join(root, 'scripts/README.md'), 'Scripts documentation');
+    const config = parseConfig({});
+    const files = [await safeFile(root, 'scripts/lib/validate_kb.py', config)];
+    const tool = evidenceTool(root, files, config);
+    const readPaths = JSON.parse(tool.description.match(/Authorization: (\{.*?\})\. /)![1]).readPaths;
+    assert.deepEqual(readPaths, ['scripts/lib/validate_kb.py', 'scripts/README.md']);
+    await assert.rejects(tool.execute('missing', {action: 'read', path: 'README.md'}, undefined), /outside observed scope/);
+    const result = await tool.execute('existing', {action: 'read', path: 'scripts/README.md'}, undefined);
+    assert.match(JSON.stringify(result.content), /Scripts documentation/);
+  } finally { await rm(root, {recursive: true, force: true}); }
+});

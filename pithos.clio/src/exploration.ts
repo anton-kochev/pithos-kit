@@ -1,5 +1,6 @@
+import { lstatSync } from 'node:fs';
 import { opendir } from 'node:fs/promises';
-import { dirname } from 'node:path';
+import { dirname, join } from 'node:path';
 import { Type } from 'typebox';
 import type { AgentTool } from '@earendil-works/pi-agent-core';
 import type { Config } from './config.ts';
@@ -13,11 +14,16 @@ export function evidenceTool(root: string, files: Snapshot[], config: Config, pr
   const scopes = new Set([...authorized.filter(f => !f.doc).map(f => dirname(f.path)), ...authorized.filter(f => f.doc && dirname(f.path) !== '.').map(f => dirname(f.path)), 'docs', ...config.docsDirs]);
   // Discovery considers ancestor READMEs even when they do not fit the initial
   // snapshots. Authorize exact paths, never the surrounding ancestor trees.
+  // Advertise only regular files: missing reads are fatal, so listing an
+  // absent README would end capture for a worker that followed the list.
+  // Root failures stay fatal at execution, not at construction.
+  const isRegularFile = (path: string) => { try { return lstatSync(join(root, path)).isFile(); } catch { return false; } };
   const ancestorReadmes = new Set<string>();
   for (const file of authorized) {
     let dir = dirname(file.path);
     for (let depth = 0; depth < 12 && dir !== '..'; depth++) {
-      ancestorReadmes.add(dir === '.' ? 'README.md' : `${dir}/README.md`);
+      const readme = dir === '.' ? 'README.md' : `${dir}/README.md`;
+      if (isRegularFile(readme)) ancestorReadmes.add(readme);
       scopes.add(dir === '.' ? 'docs' : `${dir}/docs`);
       if (dir === '.') break;
       dir = dirname(dir);
