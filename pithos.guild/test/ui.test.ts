@@ -430,3 +430,19 @@ it("direct inspection opens/back/scroll without abort, and disposal releases eac
  const cancellable = createGuildHandoverProgress({role: "coder", profile: "general", source: "package", task: "Work", startedAt: 0}, {requestRender() {}}, theme, {matches: () => true});
  cancellable.handleInput("escape"); assert.equal(cancellable.signal.aborted, true); cancellable.dispose();
 });
+
+it("shows code-comments receipts by ID only in tool and direct results", () => {
+ const details = {status: "completed", taskOutcome: "succeeded", role: "coder", profile: "typescript", output: "Done", selectedSkills: [
+  {id: "tdd", source: "package", path: "private/tdd", bytes: 12, sha256: "privatehash"},
+  {id: "code-comments", source: "package", path: "private/comments", bytes: 34, sha256: "privatehash"},
+  {id: "unrecognized", source: "package"},
+ ]};
+ for (const expanded of [false, true]) {
+  const tool = renderGuildResult({details}, {expanded}, theme).render(120).join("\n");
+  const direct = renderGuildLifecycleMessage({details}, {expanded}, theme).render(120).join("\n");
+  for (const text of [tool, direct]) {
+   assert.match(text, /tdd, code-comments/);
+   assert.doesNotMatch(text, /private\/|privatehash|unrecognized/);
+  }
+ }
+});

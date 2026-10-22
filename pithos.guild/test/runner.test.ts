@@ -53,6 +53,7 @@ async function captureCanonicalRun(
   options: Parameters<typeof runGuildRole>[0],
   protocol = true,
   tail = "",
+  packageRoot?: string,
 ): Promise<{ capture: CapturedCanonicalRun; result: Awaited<ReturnType<typeof runGuildRole>> }> {
   const directory = temporaryDirectory();
   const childPath = join(directory, "capture-child.mjs");
@@ -111,7 +112,7 @@ emit({type: "agent_settled"});
   process.argv[1] = childPath;
   process.env.GUILD_RUNNER_CAPTURE_PATH = capturePath;
   try {
-    const result = await runGuildRole(options);
+    const result = await (packageRoot ? runGuildRoleWithPackageRootForTest(options, packageRoot) : runGuildRole(options));
     return {
       capture: JSON.parse(readFileSync(capturePath, "utf8")) as CapturedCanonicalRun,
       result,
@@ -301,25 +302,28 @@ describe("canonical role/profile child invocation", () => {
 
   it("injects only the selected complete package core after role/profile guidance with receipts and unchanged ceilings", async () => {
     const required = [{id: "tdd" as const, policy: "required" as const}];
-    for (const [role, practices, id] of [["coder", required, "tdd"], ["reviewer", [], "code-review-standards"], ["coder", [], undefined]] as const) {
+    for (const [role, practices, ids] of [["coder", required, ["tdd", "code-comments"]], ["reviewer", [], ["code-review-standards"]], ["coder", [], ["code-comments"]], ["explorer", [], []], ["architect", [], []]] as const) {
       const events: any[] = [], telemetry = channel("pithos.guild.child"), collect = (e: unknown) => events.push(e);
       telemetry.subscribe(collect);
       try {
         const {capture, result} = await captureCanonicalRun({role, profile: "rust", task: "Work", practices: [...practices], cwd: process.cwd(), projectTrusted: false});
         assert.ok(capture.args.includes("--no-skills"));
         assert.equal(capture.args[capture.args.indexOf("--tools") + 1], [...GUILD_ROLE_DEFINITIONS[role].tools, "guild_submit_result"].join(","));
-        assert.deepEqual(result.selectedSkills?.map(s => s.id), id ? [id] : []);
+        assert.deepEqual(result.selectedSkills?.map(s => s.id), ids);
         assert.deepEqual(events.at(-1)?.selectedSkills, result.selectedSkills);
-        if (id) {
+        let previousStart = 0;
+        for (const id of ids) {
           const relative = `skills/${id}/SKILL.md`, source = resolve(import.meta.dirname, `../${relative}`);
           const content = readFileSync(source);
-          assert.deepEqual(result.selectedSkills, [{id, source: "package", path: relative, bytes: content.length, sha256: createHash("sha256").update(content).digest("hex")}]);
+          assert.deepEqual(result.selectedSkills?.find(skill => skill.id === id), {id, source: "package", path: relative, bytes: content.length, sha256: createHash("sha256").update(content).digest("hex")});
           const prefix = `# Package skill core: ${id}\nSource: ${source}\nReferences: ${dirname(source)}/references/\n\n`;
           const start = capture.roleProfilePrompt.indexOf(prefix);
-          assert.ok(start > 0);
-          assert.equal(capture.roleProfilePrompt.slice(start + prefix.length, start + prefix.length + content.length), content.toString("utf8"));
+          assert.ok(start > previousStart);
+          previousStart = start;
+          assert.equal(capture.roleProfilePrompt.slice(start + prefix.length, start + prefix.length + content.toString("utf8").length), content.toString("utf8"));
           assert.match(capture.roleProfilePrompt.slice(0, start), /# (?:Coder|Reviewer)/);
-        } else assert.doesNotMatch(capture.roleProfilePrompt, /# Package skill core:/);
+        }
+        assert.deepEqual([...capture.roleProfilePrompt.matchAll(/^# Package skill core: (.+)$/gm)].map(match => match[1]), ids);
         assert.doesNotMatch(capture.roleProfilePrompt, /# Package skill core: (?:dotnet-cqrs|conventional-commit)/);
         assert.doesNotMatch(result.output, /# Package skill core:/);
       } finally {telemetry.unsubscribe(collect);}
@@ -331,7 +335,7 @@ describe("canonical role/profile child invocation", () => {
       const rolePrompt = readFileSync(resolve(import.meta.dirname, `../agents/roles/${role}.md`), "utf8");
       for (const profile of GUILD_PROFILES) {
         const profilePrompt = readFileSync(resolve(import.meta.dirname, `../agents/profiles/${profile}.md`), "utf8");
-        const { capture } = await captureCanonicalRun({
+        const { capture, result } = await captureCanonicalRun({
           role,
           profile,
           task: `Exercise ${role}/${profile}`,
@@ -351,8 +355,9 @@ describe("canonical role/profile child invocation", () => {
         );
         assert.ok(capture.roleProfilePrompt.startsWith(`${rolePrompt.trimEnd()}\n\n${profilePrompt.trimEnd()}`), `${role}/${profile} appended prompt`);
         assert.deepEqual((capture.envelope as any).practices, []);
-        assert.equal(capture.roleProfilePrompt.includes("# Package skill core:"), role === "reviewer", `${role}/${profile} selected core`);
-        if (role === "coder") assert.deepEqual((await captureCanonicalRun({role, profile, task: "Required", practices: [{id: "tdd", policy: "required"}], cwd: process.cwd(), projectTrusted: true})).result.selectedSkills?.map(s => s.id), ["tdd"], `${profile} required TDD`);
+        assert.equal(capture.roleProfilePrompt.includes("# Package skill core:"), role === "reviewer" || role === "coder", `${role}/${profile} selected core`);
+        assert.deepEqual(result.selectedSkills?.map(skill => skill.id), role === "coder" ? ["code-comments"] : role === "reviewer" ? ["code-review-standards"] : [], `${role}/${profile} receipts`);
+        if (role === "coder") assert.deepEqual((await captureCanonicalRun({role, profile, task: "Required", practices: [{id: "tdd", policy: "required"}], cwd: process.cwd(), projectTrusted: true})).result.selectedSkills?.map(s => s.id), ["tdd", "code-comments"], `${profile} required TDD`);
         const toolsFlag = capture.args.indexOf("--tools");
         assert.equal(
           capture.args[toolsFlag + 1],
@@ -367,8 +372,33 @@ describe("canonical role/profile child invocation", () => {
     }
   });
 
-  it("fails setup before spawn for missing, oversized and substituted fixture package cores", async () => {
-    const root = temporaryDirectory(), skills = join(root, "skills", "tdd"), core = join(skills, "SKILL.md");
+  it("embeds fixture comment bytes and ordered receipts for every coder profile without ambient discovery", async () => {
+    const root = temporaryDirectory();
+    const comments = "# Fixture comments\nExplain π and 🙂.\r\n", tdd = "# Fixture TDD\nTest first.\n";
+    for (const [id, content] of [["code-comments", comments], ["tdd", tdd]]) {
+      mkdirSync(join(root, "skills", id), {recursive: true});
+      writeFileSync(join(root, "skills", id, "SKILL.md"), content);
+    }
+    for (const profile of GUILD_PROFILES) {
+      for (const required of [false, true]) {
+        const {capture, result} = await captureCanonicalRun({role: "coder", profile, task: "Work", practices: required ? [{id: "tdd", policy: "required"}] : [], cwd: process.cwd(), projectTrusted: true}, true, "", root);
+        assert.equal(result.status, "completed", `${profile}: ${required}`);
+        const ids = required ? ["tdd", "code-comments"] : ["code-comments"];
+        assert.deepEqual(result.selectedSkills?.map(core => core.id), ids);
+        assert.deepEqual([...capture.roleProfilePrompt.matchAll(/^# Package skill core: (.+)$/gm)].map(match => match[1]), ids);
+        for (const id of ids) {
+          const content = id === "tdd" ? tdd : comments, source = join(root, "skills", id, "SKILL.md");
+          assert.ok(capture.roleProfilePrompt.includes(`# Package skill core: ${id}\nSource: ${source}\nReferences: ${dirname(source)}/references/\n\n${content}`));
+          assert.deepEqual(result.selectedSkills?.find(skill => skill.id === id), {id, source: "package", path: `skills/${id}/SKILL.md`, bytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex")});
+        }
+        assert.ok(capture.args.includes("--no-skills"));
+        assert.equal(capture.args[capture.args.indexOf("--tools") + 1], [...GUILD_ROLE_DEFINITIONS.coder.tools, "guild_submit_result"].join(","));
+      }
+    }
+  });
+
+  it("fails setup before spawn for missing, oversized, invalid and substituted comment cores", async () => {
+    const root = temporaryDirectory(), skills = join(root, "skills", "code-comments"), core = join(skills, "SKILL.md");
     mkdirSync(skills, {recursive: true});
     const child = join(root, "child.mjs"), marker = join(root, "spawned");
     writeFileSync(child, `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "spawned");`);
@@ -376,12 +406,13 @@ describe("canonical role/profile child invocation", () => {
     const telemetry = channel("pithos.guild.child"), events: any[] = [], collect = (e: unknown) => events.push(e);
     telemetry.subscribe(collect);
     try {
-      for (const variant of ["missing", "oversize", "symlink"]) {
+      for (const variant of ["missing", "oversize", "invalid UTF-8", "symlink"]) {
         if (variant === "oversize") writeFileSync(core, Buffer.alloc(32769, 65));
+        if (variant === "invalid UTF-8") writeFileSync(core, Buffer.from([0xff]));
         if (variant === "symlink") {rmSync(core); const outside = join(root, "outside.md"); writeFileSync(outside, "substituted"); symlinkSync(outside, core);}
-        const result = await runGuildRoleWithPackageRootForTest({role: "coder", profile: "general", task: "Work", practices: [{id: "tdd", policy: "required"}], cwd: process.cwd(), projectTrusted: true}, root);
+        const result = await runGuildRoleWithPackageRootForTest({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true}, root);
         assert.equal(result.status, "failed", variant);
-        assert.match(getRunFailure(result) ?? "", /ENOENT|limit|regular|canonical|symlink/i, variant);
+        assert.match(getRunFailure(result) ?? "", /ENOENT|limit|UTF-8|regular|canonical|symlink/i, variant);
         assert.equal(existsSync(marker), false, variant);
         assert.deepEqual(events.slice(-2).map(e => e.type), ["start", "end"]);
         assert.equal(events.at(-1).exitCode, null);

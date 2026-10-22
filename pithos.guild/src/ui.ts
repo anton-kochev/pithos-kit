@@ -512,7 +512,7 @@ function selectedSkillIds(details: unknown): string[] {
 	const skills = recordOf(details)?.selectedSkills;
 	return Array.isArray(skills) ? skills.flatMap(skill => {
 		const id = stringField(skill, "id");
-		return id === "tdd" || id === "code-review-standards" ? [id] : [];
+		return id === "tdd" || id === "code-review-standards" || id === "code-comments" ? [id] : [];
 	}) : [];
 }
 

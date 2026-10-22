@@ -8,6 +8,7 @@ const CORE_LIMIT = 32 * 1024;
 const CORE_PATHS = {
  tdd: "skills/tdd/SKILL.md",
  "code-review-standards": "skills/code-review-standards/SKILL.md",
+ "code-comments": "skills/code-comments/SKILL.md",
 } as const;
 export interface GuildSkillReceipt {
  id: keyof typeof CORE_PATHS;
@@ -25,8 +26,14 @@ export interface GuildSkillCore {
 /** root is injected only for offline fixture tests; production always supplies this module's package root. */
 export async function loadGuildSkillCores(root: string, role: GuildRole, practices: readonly GuildPractice[]): Promise<GuildSkillCore[]> {
  if (!GUILD_ROLES.includes(role)) throw new Error("Invalid Guild role for skill selection");
- const id = role === "reviewer" ? "code-review-standards" : role === "coder" && practices.some(p => p.id === "tdd" && p.policy === "required") ? "tdd" : undefined;
- if (!id) return [];
+ const ids: GuildSkillReceipt["id"][] = role === "reviewer" ? ["code-review-standards"] : role === "coder"
+  ? [...(practices.some(p => p.id === "tdd" && p.policy === "required") ? ["tdd" as const] : []), "code-comments"] : [];
+ const cores: GuildSkillCore[] = [];
+ for (const id of ids) cores.push(await loadGuildSkillCore(root, id));
+ return cores;
+}
+
+async function loadGuildSkillCore(root: string, id: GuildSkillReceipt["id"]): Promise<GuildSkillCore> {
  const relative = CORE_PATHS[id], rootPath = path.resolve(root), sourcePath = path.join(rootPath, relative);
  if (await fs.promises.realpath(rootPath) !== rootPath) throw new Error("Guild skill package root is not canonical");
  // Reject path substitution at every path component, not just the final file.
@@ -52,6 +59,6 @@ export async function loadGuildSkillCores(root: string, role: GuildRole, practic
   if (count > CORE_LIMIT) throw new Error("Guild skill core size limit exceeded");
   const raw = bytes.subarray(0, count);
   const content = new TextDecoder("utf-8", {fatal: true}).decode(raw);
-  return [{sourcePath, content, receipt: {id, source: "package", path: relative, bytes: count, sha256: createHash("sha256").update(raw).digest("hex")}}];
+  return {sourcePath, content, receipt: {id, source: "package", path: relative, bytes: count, sha256: createHash("sha256").update(raw).digest("hex")}};
  } finally { await file.close(); }
 }

@@ -233,7 +233,7 @@
     {
       "name": "@pithos-kit/guild",
       "version": "0.8.0",
-      "description": "Software-development Guild members plus repository-aware .NET Clean Architecture, CQRS, code-review, Conventional Commit, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
+      "description": "Software-development Guild members plus repository-aware .NET Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
       "pi": {
         "extensions": [
           "./extensions"
@@ -266,6 +266,11 @@
             "name": "skill:conventional-commit",
             "summary": "Load the confirmed, context-aware Conventional Commit workflow explicitly.",
             "usage": "/skill:conventional-commit [instructions]"
+          },
+          {
+            "name": "skill:code-comments",
+            "summary": "Load accurate, concise code-comment guidance explicitly.",
+            "usage": "/skill:code-comments [task or scope]"
           },
           {
             "name": "skill:tdd",
@@ -304,6 +309,10 @@
           {
             "name": "conventional-commit",
             "summary": "Context-aware staging and confirmed Conventional Commit generation."
+          },
+          {
+            "name": "code-comments",
+            "summary": "Accurate, useful comments preserving intent, contracts, and non-obvious constraints."
           },
           {
             "name": "tdd",

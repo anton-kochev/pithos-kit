@@ -1,6 +1,6 @@
 # guild
 
-A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, CQRS, code-review, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
@@ -82,6 +82,18 @@ Guild owns the language-neutral `code-review-standards` skill for focused, evide
 The methodology honors explicit commits and ranges or inspects staged, unstaged, and relevant untracked changes; detects supported languages, frameworks, and runtimes from repository evidence; and complements the canonical `reviewer` role's findings-first report. It never treats an inspected scope as proof of perfect code or claims verification that was not run.
 
 Use `pi config` or `pi config -l` to disable this resource, then run `/reload`. The canonical `reviewer` role remains self-contained without the skill: its package role prompt retains a hard read-only boundary, findings-first evidence, and a deterministic verdict.
+
+## Code-comments skill
+
+Guild's language-neutral `code-comments` skill guides accurate, concise comments that prevent misunderstandings and plausible wrong edits. It preserves intent, contracts, constraints, and non-obvious mechanisms rather than imposing comment-count targets or a why-only rule. Load it directly with optional task context:
+
+```text
+/skill:code-comments [task or scope]
+```
+
+Pi-native discovery exposes the skill to the main agent when enabled. Every **coder** child, across all profiles and both handover entry paths, automatically receives the same fixed package-owned core. Required-TDD coders receive TDD followed by code-comments; explorer, architect, and reviewer children do not receive code-comments. Guidance stays within the assigned task and does not authorize unrelated cleanup or behavior changes.
+
+Use `pi config` or `pi config -l`, then `/reload`, to toggle the parent-session resource. That toggle does not disable fixed coder injection. Children retain disabled ambient discovery and unchanged tool permissions. A missing or invalid code-comments core fails coder setup before launch; other roles do not load it. Core receipts record selection, not proof that a child followed the recommendations.
 
 ## Test-driven development skill
 
@@ -234,7 +246,7 @@ code-reviewer → reviewer/general
 
 Aliases cannot change prompts, profiles, or role tool ceilings, and no sunset is promised. Direct commands accept aliases visibly; resumed old `{ member, task }` tool calls are normalized before the strict canonical schema is validated.
 
-Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. Only the fixed reviewer core and explicitly required coder TDD core are injected into child prompts; other ambient skills and profile-selected resources remain unavailable.
+Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. The fixed reviewer core, coder code-comments core, and explicitly required coder TDD core are injected into their respective child prompts; other ambient skills and profile-selected resources remain unavailable.
 
 ## Isolation and resources
 
@@ -266,7 +278,7 @@ Empty findings and unperformed checks are legitimate when reported honestly. Eac
 
 A malformed submission or prose-only completion gets **one shared corrective opportunity in the same child**. The next assistant response must submit the result alone; there is no respawn, queue re-entry, or reset on continued agent runs. Identity mismatch, mixed batches, duplicates, post-submission work, exhausted repair, missing handshake/settlement, process/provider errors, and cleanup failures fail closed. Cancellation and failure override a previously valid submission. Mixed-batch rejection is not a claim that sibling work never happened or was rolled back.
 
-Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: required-TDD coder selects `skills/tdd/SKILL.md`, reviewer always selects `skills/code-review-standards/SKILL.md`, all other cases select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
+Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: every coder selects `skills/code-comments/SKILL.md`, with `skills/tdd/SKILL.md` first when required TDD is requested; reviewer selects only `skills/code-review-standards/SKILL.md`; explorer and architect select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
 
 
 ## Development
