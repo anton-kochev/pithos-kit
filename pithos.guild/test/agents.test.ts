@@ -44,7 +44,7 @@ describe("canonical Guild role/profile registry", () => {
       const definition = GUILD_ROLE_DEFINITIONS[role];
       const expectedTools = role === "coder"
         ? ["read", "grep", "find", "ls", "edit", "write", "bash"]
-        : ["read", "grep", "find", "ls"];
+        : ["read", "grep", "find", "ls", "git_read"];
 
       assert.deepEqual(Object.keys(definition).sort(), ["description", "tools"]);
       assert.ok(definition.description.length > 0);
@@ -173,7 +173,7 @@ describe("canonical Guild role/profile registry", () => {
       assert.ok(isGuildRole(role));
       const expectedTools = role === "coder"
         ? ["read", "grep", "find", "ls", "edit", "write", "bash"]
-        : ["read", "grep", "find", "ls"];
+        : ["read", "grep", "find", "ls", "git_read"];
       assert.deepEqual(GUILD_ROLE_DEFINITIONS[role].tools, expectedTools);
     }
 

@@ -47,7 +47,8 @@ export interface GuildProfileDefinition {
 	readonly expertise: string;
 }
 
-const CANONICAL_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "find", "ls"] as const);
+// git_read is the child-registered read-only git tool; shell access stays coder-only.
+const CANONICAL_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "find", "ls", "git_read"] as const);
 const CANONICAL_CODER_TOOLS = Object.freeze(["read", "grep", "find", "ls", "edit", "write", "bash"] as const);
 
 export const GUILD_ROLE_DEFINITIONS = Object.freeze({

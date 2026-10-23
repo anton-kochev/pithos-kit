@@ -2,8 +2,10 @@
 import { openSync, fstatSync, readSync, closeSync } from "node:fs";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import { validateTask, LIMITS, childTools, hasIdentityMismatch, PROTOCOL, resultSchema, SUBMIT_TOOL, validateResult, type GuildTask } from "./protocol.ts";
+import { GIT_READ_TOOL, registerGitReadTool } from "./git-read.ts";
 
 export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask): void {
+ if (childTools(task.role).includes(GIT_READ_TOOL)) registerGitReadTool(pi);
  let accepted = false;
  let repairUsed = false;
  let violation: string | undefined;

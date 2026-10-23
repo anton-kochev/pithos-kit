@@ -195,6 +195,7 @@ function toolActivity(toolName: string): string {
 		case "edit":
 		case "write": return "Editing files";
 		case "bash": return "Running verification";
+		case "git_read": return "Inspecting git";
 		default: return toolName ? `Using ${toolName}` : "Working";
 	}
 }

@@ -271,7 +271,7 @@ describe("canonical role/profile child invocation", () => {
       capture.roleProfilePromptPath,
       `Task: ${task}`,
     ]);
-    assert.deepEqual(GUILD_ROLE_DEFINITIONS.reviewer.tools, ["read", "grep", "find", "ls"]);
+    assert.deepEqual(GUILD_ROLE_DEFINITIONS.reviewer.tools, ["read", "grep", "find", "ls", "git_read"]);
     assert.equal(GUILD_ROLE_DEFINITIONS.reviewer.tools.includes("bash"), false);
     assert.equal(capture.basePrompt.includes(overrideSentinel), false);
     assert.equal(capture.roleProfilePrompt.includes(overrideSentinel), false);

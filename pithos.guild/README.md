@@ -53,10 +53,10 @@ Roles own responsibility and the repository tool ceiling. Every child additional
 
 | Role | Responsibility | Tools |
 |---|---|---|
-| `explorer` | Inspect repository structure, behavior, versions, conventions, dependencies, and relevant paths | `read`, `grep`, `find`, `ls` |
-| `architect` | Compare designs and define contracts, invariants, test strategy, and an implementation handoff | `read`, `grep`, `find`, `ls` |
+| `explorer` | Inspect repository structure, behavior, versions, conventions, dependencies, and relevant paths | `read`, `grep`, `find`, `ls`, `git_read` |
+| `architect` | Compare designs and define contracts, invariants, test strategy, and an implementation handoff | `read`, `grep`, `find`, `ls`, `git_read` |
 | `coder` | Implement one coherent scope, own relevant tests, and verify it | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
-| `reviewer` | Independently inspect a focused change and return severity-ranked evidence and a verdict | `read`, `grep`, `find`, `ls` |
+| `reviewer` | Independently inspect a focused change and return severity-ranked evidence and a verdict | `read`, `grep`, `find`, `ls`, `git_read` |
 
 Profiles select package-owned technical guidance and never add tools:
 
@@ -69,7 +69,7 @@ Profiles select package-owned technical guidance and never add tools:
 | `dotnet` | .NET, C#, projects, persistence, dependency injection, async behavior, and tests |
 | `rust` | Rust, Cargo, ownership, errors, concurrency, unsafe boundaries, and tests |
 
-All 24 role/profile pairs are valid. Only `coder` can edit, write, or invoke shell commands; explorer, architect, and reviewer are mechanically read-only. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
+All 24 role/profile pairs are valid. Only `coder` can edit, write, or invoke shell commands; explorer, architect, and reviewer are mechanically read-only. Their `git_read` tool runs only `status`, `diff`, `log`, `show`, `ls-files`, and `blame` without a shell, accepts an exact allowlist of read-only options (no `--output`, external diff, textconv, or signature checks), disables fsmonitor and optional index locks, and caps output at 50 KiB. It never changes staged content, refs, or the working tree; like any plain `git diff`, `diff` may refresh the index stat cache, and repository-configured clean filters still run. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
 
 ## Code-review standards skill
 
