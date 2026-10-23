@@ -6,6 +6,18 @@ export interface GuildTerminal {
  diagnostic?: string;
 }
 
+// agent_end and turn_end only repeat messages and tool results already streamed one by one.
+// agent_end carries the whole child conversation, so long runs used to hit the line and stdout
+// limits on it right after submitting. Pi serializes `type` first; skipped lines are never parsed.
+const AGGREGATE_PREFIXES = [`{"type":"agent_end"`, `{"type":"turn_end"`].map(prefix => Buffer.from(prefix));
+const EMPTY = Buffer.alloc(0);
+
+/** True once the bytes seen so far prove an aggregate line; a shorter prefix stays undecided. */
+function isAggregateLine(bytes: Buffer): boolean {
+ return AGGREGATE_PREFIXES.some(prefix => bytes.length > prefix.length && bytes.subarray(0, prefix.length).equals(prefix)
+  && (bytes[prefix.length] === 0x2c || bytes[prefix.length] === 0x7d));
+}
+
 /** Bounded cooperative transport validation, not authentication of a hostile child. */
 export class ResultStream {
  failure?: string;
@@ -17,7 +29,9 @@ export class ResultStream {
  private readonly submissionIds = new Set<string>();
  private repairUsed = false;
  private total = 0;
- private buffer = Buffer.alloc(0);
+ private buffer = EMPTY;
+ /** Discarding the rest of an aggregate line until its newline. */
+ private skipping = false;
  private terminal?: GuildTerminal;
  constructor(readonly task: GuildTask) {}
  fail(reason: string): void { if (!this.terminal) this.failure ??= reason.slice(0, 2048); }
@@ -37,7 +51,10 @@ export class ResultStream {
   }
   if (event.type === "message_end" && event.message?.role === "assistant") {
    if (!this.ready) this.fail("Missing Guild protocol handshake");
-   if (["error", "aborted", "length", "deferred"].includes(event.message.stopReason)) this.fail(`Child terminal outcome: ${event.message.stopReason}`);
+   if (["error", "aborted", "length", "deferred"].includes(event.message.stopReason)) {
+    const detail = typeof event.message.errorMessage === "string" ? event.message.errorMessage.trim() : "";
+    this.fail(`Child terminal outcome: ${event.message.stopReason}${detail ? `: ${detail}` : ""}`);
+   }
    if (this.report) this.fail("Assistant work after submission");
    const calls = Array.isArray(event.message.content) ? event.message.content.filter((p: any) => p?.type === "toolCall") : [];
    this.soleCall = calls.length === 1 && calls[0].name === SUBMIT_TOOL && typeof calls[0].id === "string" ? calls[0].id : undefined;
@@ -73,21 +90,31 @@ export class ResultStream {
  }
  push(chunk: Buffer, observe: (event: any) => void): void {
   if (this.terminal || this.failure) return;
-  this.total += chunk.length;
-  if (this.total > LIMITS.stdout) { this.fail("Guild stdout byte limit exceeded"); return; }
-  this.buffer = Buffer.concat([this.buffer, chunk]);
-  let newline: number;
-  while ((newline = this.buffer.indexOf(10)) >= 0) {
-   const line = this.buffer.subarray(0, newline);
-   this.buffer = this.buffer.subarray(newline + 1);
+  let rest = chunk;
+  while (rest.length) {
+   const newline = rest.indexOf(10);
+   const part = newline < 0 ? rest : rest.subarray(0, newline);
+   rest = newline < 0 ? EMPTY : rest.subarray(newline + 1);
+   if (!this.skipping) {
+    this.buffer = Buffer.concat([this.buffer, part]);
+    if (isAggregateLine(this.buffer)) { this.skipping = true; this.buffer = EMPTY; }
+   }
+   if (newline < 0) break;
+   if (this.skipping) { this.skipping = false; continue; }
+   const line = this.buffer;
+   this.buffer = EMPTY;
+   // Aggregates are excluded: the limit bounds the events the host actually parses.
+   this.total += line.length + 1;
+   if (this.total > LIMITS.stdout) { this.fail("Guild stdout byte limit exceeded"); return; }
    this.line(line, observe);
-   if (this.failure) { this.buffer = Buffer.alloc(0); return; }
+   if (this.failure) return;
   }
-  if (this.buffer.length > LIMITS.line) { this.buffer = Buffer.alloc(0); this.fail("Guild JSON line byte limit exceeded"); }
+  if (this.buffer.length > LIMITS.line) { this.buffer = EMPTY; this.fail("Guild JSON line byte limit exceeded"); }
  }
  end(observe: (event: any) => void): void {
-  if (this.buffer.length && !this.failure) this.line(this.buffer, observe);
-  this.buffer = Buffer.alloc(0);
+  if (this.buffer.length && !this.failure && !this.skipping) this.line(this.buffer, observe);
+  this.buffer = EMPTY;
+  this.skipping = false;
  }
  private line(line: Buffer, observe: (event: any) => void): void {
   if (line.length > LIMITS.line) { this.fail("Guild JSON line byte limit exceeded"); return; }

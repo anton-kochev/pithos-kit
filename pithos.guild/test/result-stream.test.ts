@@ -45,6 +45,43 @@ it("bounds and decodes fragmented UTF-8 JSON and fails closed on malformed/overs
  assert.match(g.stream.failure ?? "", /JSON/);
 });
 
+it("skips aggregate agent_end/turn_end lines beyond the line and stdout limits without parsing them", () => {
+ const h = streamFixture();
+ const events: any[] = [];
+ const push = (value: string) => h.stream.push(Buffer.from(value), e => events.push(e));
+ for (const event of [h.ready, h.batch]) push(JSON.stringify(event) + "\n");
+ // Fragmented, oversized and deliberately not JSON after the prefix: parsing it would fail.
+ push(`{"type":"turn_end","message":"${"t".repeat(LIMITS.line)}`);
+ push(`${"t".repeat(LIMITS.line)}\n`);
+ for (const event of [h.start, h.end]) push(JSON.stringify(event) + "\n");
+ const big = `{"type":"agent_end","messages":"${"a".repeat(LIMITS.stdout)}"}\n`;
+ for (let index = 0; index < big.length; index += 4 * 1024 * 1024) push(big.slice(index, index + 4 * 1024 * 1024));
+ push(JSON.stringify({type: "agent_settled"}) + "\n");
+ assert.equal(h.stream.failure, undefined);
+ assert.deepEqual(events.map(e => e.type), ["message_end", "message_end", "tool_execution_start", "tool_execution_end", "agent_settled"]);
+ assert.equal(h.stream.finish(0, false).status, "completed");
+});
+it("still parses small aggregates' neighbours and bounds every other oversized line", () => {
+ const h = streamFixture();
+ const events: any[] = [];
+ h.stream.push(Buffer.from(`{"type":"agent_end"}\n{"type":"agent_endless"}\n{"type":"turn_end","message":{}}`), e => events.push(e));
+ h.stream.end(e => events.push(e));
+ assert.deepEqual(events.map(e => e.type), ["agent_endless"]);
+ const g = streamFixture();
+ g.stream.push(Buffer.from(`{"type":"tool_execution_end","result":"${"x".repeat(LIMITS.line)}"}\n`), () => {});
+ assert.match(g.stream.failure ?? "", /line byte limit/);
+});
+it("keeps the provider error message in terminal-outcome diagnostics", () => {
+ const h = streamFixture();
+ h.stream.event(h.ready);
+ h.stream.event({type: "message_end", message: {role: "assistant", stopReason: "error", errorMessage: " 429 rate limit reached ", content: []}});
+ assert.equal(h.stream.finish(0, false).diagnostic, "Child terminal outcome: error: 429 rate limit reached");
+ const g = streamFixture();
+ g.stream.event(g.ready);
+ g.stream.event({type: "message_end", message: {role: "assistant", stopReason: "aborted", content: []}});
+ assert.equal(g.stream.finish(0, false).diagnostic, "Child terminal outcome: aborted");
+});
+
 it("rejects reusing a failed submission call identity for the repaired submission", () => {
  const h = streamFixture();
  for (const event of [h.ready, h.batch, h.start, {...h.end, isError: true}]) h.stream.event(event);
