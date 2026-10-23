@@ -33,7 +33,7 @@ Translate registers exactly one command. Its management arguments are flat, sing
 | `/translate` | Translate the latest completed assistant prose into a context-free card |
 | `/translate input-on` | Configure input translation if needed, then enable it |
 | `/translate input-off` | Disable input translation without requiring setup |
-| `/translate input-status` | Show the input scope, fixed English target, exact model, mode, and timeout |
+| `/translate input-status` | Show the input scope, fixed English target, exact model, mode, timeout, and optional English check |
 | `/translate input-config` | Choose the authenticated exact input-translation model |
 | `/translate output-on` | Configure output translation if needed, then enable automatic display translation |
 | `/translate output-off` | Disable automatic output translation; bare manual translation remains available |
@@ -83,12 +83,46 @@ Input translation is opt-in and off by default. When enabled, Translate supports
 
 1. Pi dispatches extension commands first.
 2. Translate receives raw prompt text through Pi's `input` event, before skill and prompt-template expansion.
-3. Translate protects byte-sensitive Markdown regions and asks the configured exact model for a faithful English translation.
+3. Translate protects byte-sensitive Markdown regions, optionally checks whether the input already needs no English translation, and otherwise asks the configured exact translator for a faithful English translation.
 4. On success it returns Pi's `transform` result. Pi expands any preserved directive and creates one user message containing the translated text.
 
-The original source is not persisted and does not enter the main model context. It necessarily exists transiently in the local Pi runtime and is sent to the configured translation provider because that provider must read it to translate it. Diagnostics record only source-free operational metadata such as character count, selected model, duration, outcome, and usage; they never record raw inbound text or provider error text.
+When translation is performed, the original source is not persisted and does not enter the main model context. When the optional English check approves, the original prompt continues unchanged into the normal main-model flow. It necessarily exists transiently in the local Pi runtime and is sent to the configured translation provider because that provider must read it to translate it. Diagnostics record only source-free operational metadata such as character count, selected model, duration, outcome, and usage; they never record raw inbound text or provider error text.
 
-Image attachments are preserved on the transformed prompt. English or language-neutral text still passes through the same guarded model boundary and may return unchanged.
+Image attachments are preserved on the transformed prompt. Without an English check, English or language-neutral text still passes through the same guarded translator boundary and may return unchanged.
+
+### Optional file-only English check
+
+To avoid a translation request for already-English or language-neutral input, add `englishCheck` inside the existing `input` section of the active user or project `translate.json` file:
+
+```json
+{
+  "input": {
+    "mode": "on",
+    "model": "openai-codex/gpt-5.4-mini",
+    "timeoutMs": 60000,
+    "englishCheck": {
+      "model": "openai/gpt-6-luna",
+      "threshold": 0.98,
+      "timeoutMs": 10000
+    }
+  }
+}
+```
+
+Keep any existing `output` section. Use `~/.pi/agent/translate.json` (or the configured agent directory) for a user installation, or `<cwd>/.pi/translate.json` for a project installation. Run `/reload` after editing; there is no file watcher. Temporary installations have no file-backed setup for this option. The input wizard does not prompt for the check and preserves it when reconfiguring; mode toggles also preserve it. `/translate input-status` reports the check's exact model, effective threshold, and timeout. Remove `englishCheck` to disable it.
+
+- `model` is required and names an exact registered **classifier**, initially `openai/gpt-6-luna`, independently of the translation model. No codemode or MCP setup is needed.
+- `threshold` defaults to `0.98`; it must be a finite number greater than zero and at most one.
+- `timeoutMs` defaults to `10000`; it must be an integer from `1000` through `300000`. This budget is separate from the translator's timeout, so a fallback can take the sum of both budgets.
+- The setting is input-only; `output.englishCheck` and unknown nested fields are rejected.
+
+OpenAI's Decisions API requires OpenAI **API-key authentication**, for example `OPENAI_API_KEY` or `/login openai`. ChatGPT/Codex subscription authentication is not sufficient. Credentials remain in Pi's authentication setup, never in `translate.json`. The classifier must be available in the installed Pi registry; older Pi versions without classifier APIs safely use the translator instead, without requiring a package compatibility bump.
+
+The check receives the **complete protected argument text**, without silent truncation. Code and URLs use the same Markdown placeholders as translation. For recognized directives only the argument suffix is classified; attachments are not sent to the classifier. Enabling the check sends this protected prose to the classifier provider even if no translation is ultimately needed; its privacy, pricing, and limits apply.
+
+Only a successful, valid boolean answer with a finite probability at or above the threshold approves skipping. Approval returns Pi's original `continue` result, preserving text, directive spacing, and attachments exactly. Non-English, mixed-language, uncertain, invalid, missing-model, unauthenticated, errored, provider-aborted, and timed-out checks all fall back to the configured translator. Caller cancellation instead stops processing and restores the original draft. Translator failures still fail closed. Checking and translating have distinct footer messages, cleared on completion or cancellation.
+
+The threshold is provisional, not a language-detection correctness guarantee. A model can confidently misclassify short, mixed-language, or adversarial text. No live accuracy evaluation is included in the automated tests.
 
 ### Skills and prompt templates
 
@@ -98,7 +132,7 @@ Extension-originated input is explicitly bypassed to prevent loops and unintende
 
 ### Unsupported paths and failures
 
-While input translation is on, RPC, print, JSON, steering, follow-up, and otherwise non-idle user-input paths are blocked without a translation request. They are never passed untranslated to the main agent. Extension-originated messages remain the sole explicit bypass.
+While input translation is on, RPC, print, JSON, steering, follow-up, and otherwise non-idle user-input paths are blocked without a translation request. They are never passed untranslated to the main agent. Extension-originated messages bypass this processing entirely. The optional English check runs only after these eligibility guards.
 
 Inbound translation fails closed. Missing or unauthenticated models, unavailable exact models, timeout, cancellation, provider failure, truncated or empty output, altered Markdown placeholders, and unexpected translator errors all stop the prompt. In the interactive TUI, Translate restores the original draft to the editor and shows a source-free error so the user can retry without losing the text. A keyed footer status names English and the configured model while translation is active and is cleared on every outcome and session lifecycle change.
 
@@ -153,7 +187,7 @@ Translate should precede other display-transforming extensions in Pi's extension
 
 ## Diagnostics
 
-With Pithos Kit's opt-in JSONL diagnostics enabled, Translate records source-free lifecycle and translation events. It also records each completed main assistant-model response's provider, model, API, stop reason, and available token/spend usage so translation overhead can be distinguished from the coding turn. It never records assistant response text. Inbound completion, failure, exception, and unsupported-path records contain only operational dimensions; raw inbound text and inbound provider error text are excluded.
+With Pithos Kit's opt-in JSONL diagnostics enabled, Translate records source-free lifecycle and translation events. English-check events record model, source character count, duration, skip/fallback/cancelled outcome, and available `classifierUsage` (input/output/total tokens and cost), separately from chat translation usage; they contain neither source text nor raw provider errors. It also records each completed main assistant-model response's provider, model, API, stop reason, and available token/spend usage so translation overhead can be distinguished from the coding turn. It never records assistant response text. Inbound completion, failure, exception, and unsupported-path records contain only operational dimensions; raw inbound text and inbound provider error text are excluded.
 
 ## Troubleshooting
 
@@ -163,7 +197,7 @@ Use `/translate input-status` or `/translate output-status` to verify the active
 
 - Inbound translation supports only ordinary idle interactive TUI prompts; unsupported user paths are deliberately blocked while enabled.
 - A model-based translator cannot guarantee semantic correctness or language detection when the model returns an apparently valid but inaccurate result. Translate can guarantee fail-closed control flow only for detectable request and validation failures.
-- There is no selected-text translation, history browser, side-by-side view, or independent source-language detector.
+- There is no selected-text translation, history browser, side-by-side view, or general-purpose source-language detector beyond the optional English precheck.
 - Display substitutions use a collision-checked SHA-256 source fingerprint plus exact source text because Markdown transformers receive no session-entry ID.
 - Translation-provider pricing, privacy terms, and limits apply.
 

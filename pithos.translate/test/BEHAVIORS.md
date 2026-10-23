@@ -25,7 +25,19 @@
 - [x] Bypass extension-originated input to prevent loops.
 - [x] Block RPC, print, JSON, steering, follow-up, and non-idle user paths without a translation-model call while input mode is on.
 - [x] Fail closed on every detectable translation failure, restore the original interactive TUI draft, clear keyed progress, and emit only source-free feedback.
-- [x] Append no session entry and expose no original inbound text to the main-model conversation.
+- [x] Append no session entry for inbound processing; transformed input replaces original prose, while approved English input continues unchanged into the normal main-model flow.
+
+## Optional English precheck
+- [x] Strictly validate input-only file settings: required exact classifier model, finite threshold in `(0, 1]` (default `0.98`), bounded integer timeout (default `10000ms`). Absence retains the existing translator path.
+- [x] Preserve the check across input wizard reconfiguration and mode toggles without new prompts; report effective settings in input status.
+- [x] Run the real registry helper only after eligibility and directive preparation, passing complete protected source without truncation or attachments.
+- [x] Only a successful valid bool probability at or above threshold returns original `continue`; preserve directive spacing and attachments without a transform.
+- [x] Route negative/mixed/uncertain results, malformed probabilities, missing APIs/models/auth, exceptions, provider errors and provider-only aborts to the configured translator.
+- [x] Bound even ignored-signal classification with a separate timeout; abort the request, release timer/listener resources, and give the translator its independent budget.
+- [x] Prioritize caller cancellation, restore the draft, do not invoke the translator, and clear checking status.
+- [x] Retain translator fail-closed draft restoration after classifier fallback; keep output behavior unchanged.
+- [x] Emit source-free classifier outcomes and a distinct numeric classifier usage shape, never raw provider error text.
+- [x] Document provider disclosure, API-key requirements, file locations, reload, compatibility fallback, and provisional accuracy limits.
 
 ## Markdown safety and model boundary
 - [x] Protect and byte-exactly restore backtick/tilde LF/CRLF fenced code, inline code, inline/reference/defined-shortcut links, autolinks, and bare URLs.

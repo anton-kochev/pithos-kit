@@ -8,6 +8,8 @@ import {
   ScopedConfigStore,
   sourceIdentity,
   DEFAULT_TRANSLATION_TIMEOUT_MS,
+  DEFAULT_ENGLISH_CHECK_THRESHOLD,
+  DEFAULT_ENGLISH_CHECK_TIMEOUT_MS,
   TRANSLATE_COMMAND_DESCRIPTION,
   type ConfigScope,
   type InputTranslateConfig,
@@ -22,6 +24,7 @@ import {
   type AutomaticTranslationSuccess,
   type TranslationUsageRecord,
 } from "./display-cache.ts";
+import { checkEnglish } from "./english-check.ts";
 import { containsMermaidFence } from "./markdown-protection.ts";
 import {
   getEligibleTextBlocks,
@@ -142,6 +145,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   const startInputIndicator = (
     ctx: ExtensionContext,
     activeConfig: InputTranslateConfig,
+    checking = false,
   ): (() => void) => {
     clearInputIndicator();
     if (ctx.mode !== "tui" || !ctx.hasUI) return () => {};
@@ -152,7 +156,9 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     const render = (): void => {
       const theme = ctx.ui.theme;
       const spinner = theme.fg("accent", AUTOMATIC_STATUS_FRAMES[frame]!);
-      const text = theme.fg("dim", ` Translating prompt into English with ${activeConfig.model}...`);
+      const text = theme.fg("dim", checking
+        ? ` Checking prompt English with ${activeConfig.englishCheck!.model}...`
+        : ` Translating prompt into English with ${activeConfig.model}...`);
       ctx.ui.setStatus(INPUT_STATUS_KEY, spinner + text);
       frame = (frame + 1) % AUTOMATIC_STATUS_FRAMES.length;
     };
@@ -276,7 +282,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
             notify(
               ctx,
               config?.input
-                ? `Translation scope: ${store!.scope}\nLanguage: English\nModel: ${config.input.model}\nMode: ${config.input.mode}\nTimeout: ${formatTimeout(config.input.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}`
+                ? `Translation scope: ${store!.scope}\nLanguage: English\nModel: ${config.input.model}\nMode: ${config.input.mode}\nTimeout: ${formatTimeout(config.input.timeoutMs ?? DEFAULT_TRANSLATION_TIMEOUT_MS)}\nEnglish check: ${config.input.englishCheck ? `${config.input.englishCheck.model} (threshold ${config.input.englishCheck.threshold ?? DEFAULT_ENGLISH_CHECK_THRESHOLD}, timeout ${formatTimeout(config.input.englishCheck.timeoutMs ?? DEFAULT_ENGLISH_CHECK_TIMEOUT_MS)})` : "off"}`
                 : `Translation scope: ${store!.scope}\nNot configured. Run /translate input-config.`,
               "info",
             );
@@ -443,10 +449,28 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     const prepared = prepareInboundPrompt(event.text, pi.getCommands());
     if (!prepared) return { action: "continue" };
 
-    const stopIndicator = startInputIndicator(ctx, activeConfig);
+    let stopIndicator = startInputIndicator(ctx, activeConfig, !!activeConfig.englishCheck);
     const started = Date.now();
     let result: TranslationResult;
     try {
+      if (activeConfig.englishCheck) {
+        const check = await checkEnglish(prepared.source, activeConfig.englishCheck, ctx.modelRegistry, ctx.signal);
+        log.info("translation.input.english-check", {
+          model: activeConfig.englishCheck.model,
+          sourceChars: prepared.source.length,
+          durationMs: Date.now() - started,
+          outcome: check.outcome,
+          classifierUsage: check.classifierUsage,
+        });
+        if (check.outcome === "cancelled" || ctx.signal?.aborted) {
+          restoreInputDraft(event.text, event.source, ctx);
+          notify(ctx, inputFailureMessage("cancelled"), "warning");
+          return { action: "handled" };
+        }
+        if (check.outcome === "skip") return { action: "continue" };
+        stopIndicator();
+        stopIndicator = startInputIndicator(ctx, activeConfig);
+      }
       result = await translateInput(prepared.source, activeConfig, ctx.modelRegistry, ctx.signal);
     } catch {
       log.error("translation.input.error", {

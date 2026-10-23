@@ -215,3 +215,42 @@ describe("translate configuration", () => {
     assert.equal(await runConfigWizard(context as never), undefined);
   });
 });
+
+it("round-trips strict input-only English check settings", async () => {
+  const englishCheck = { model: "openai/gpt-6-luna", threshold: 0.98, timeoutMs: 10_000 };
+  const input = { mode: "on" as const, model: "provider/translator", englishCheck };
+  assert.deepEqual(parseConfig({ input }), { input });
+  assert.deepEqual(parseConfig({ input: { ...input, englishCheck: { model: englishCheck.model } } }),
+    { input: { ...input, englishCheck: { model: englishCheck.model } } });
+  for (const invalid of [null, {}, [], { ...englishCheck, extra: true },
+    { ...englishCheck, model: "missing" }, { ...englishCheck, model: " openai/gpt-6-luna" },
+    ...[0, -1, 1.01, NaN, Infinity, "0.98"].map(threshold => ({ ...englishCheck, threshold })),
+    ...[999, 300001, 1000.5, NaN, "10000"].map(timeoutMs => ({ ...englishCheck, timeoutMs }))]) {
+    assert.equal(parseConfig({ input: { ...input, englishCheck: invalid } }), undefined);
+  }
+  for (const threshold of [0.01, 1]) {
+    assert.ok(parseConfig({ input: { ...input, englishCheck: { ...englishCheck, threshold } } }));
+  }
+  assert.equal(parseConfig({ output: { ...input, language: "French" } }), undefined);
+  const root = await mkdtemp(join(tmpdir(), "translate-check-"));
+  const store = new ScopedConfigStore("project", root);
+  await store.save({ input });
+  assert.deepEqual(await store.load(), { input });
+  assert.deepEqual(await readdir(join(root, ".pi")), ["translate.json"]);
+});
+
+it("preserves file-only English check without adding wizard prompts", async () => {
+  const englishCheck = { model: "openai/gpt-6-luna", threshold: 0.99, timeoutMs: 1234 };
+  const prompts: string[] = [];
+  const context = {
+    hasUI: true,
+    ui: { select: async (title: string, choices: string[]) => { prompts.push(title); return choices[0]; } },
+    modelRegistry: {
+      getAvailable: () => [{ provider: "p", id: "new", name: "New" }],
+      hasConfiguredAuth: () => true,
+    },
+  };
+  const current = { mode: "on" as const, model: "p/old", timeoutMs: 2000, englishCheck };
+  assert.deepEqual(await runInputConfigWizard(context as never, current), { ...current, model: "p/new" });
+  assert.deepEqual(prompts, ["Exact input translation model"]);
+});

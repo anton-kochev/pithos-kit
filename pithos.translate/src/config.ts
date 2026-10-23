@@ -11,13 +11,23 @@ import {
 export type ConfigScope = "user" | "project" | "temporary";
 export type TranslationMode = "on" | "off";
 
-export interface InputTranslateConfig {
+interface CommonTranslateConfig {
   mode: TranslationMode;
   model: string;
   timeoutMs?: number;
 }
 
-export interface OutputTranslateConfig extends InputTranslateConfig {
+export interface EnglishCheckConfig {
+  model: string;
+  threshold?: number;
+  timeoutMs?: number;
+}
+
+export interface InputTranslateConfig extends CommonTranslateConfig {
+  englishCheck?: EnglishCheckConfig;
+}
+
+export interface OutputTranslateConfig extends CommonTranslateConfig {
   language: string;
 }
 
@@ -30,8 +40,11 @@ export const DEFAULT_TRANSLATION_TIMEOUT_MS = 60_000;
 export const MIN_TRANSLATION_TIMEOUT_MS = 1_000;
 export const MAX_TRANSLATION_TIMEOUT_MS = 300_000;
 const ROOT_CONFIG_KEYS = ["input", "output"];
-const INPUT_CONFIG_KEYS = ["mode", "model", "timeoutMs"];
-const OUTPUT_CONFIG_KEYS = ["language", ...INPUT_CONFIG_KEYS];
+const COMMON_CONFIG_KEYS = ["mode", "model", "timeoutMs"];
+const INPUT_CONFIG_KEYS = [...COMMON_CONFIG_KEYS, "englishCheck"];
+const OUTPUT_CONFIG_KEYS = ["language", ...COMMON_CONFIG_KEYS];
+export const DEFAULT_ENGLISH_CHECK_THRESHOLD = 0.98;
+export const DEFAULT_ENGLISH_CHECK_TIMEOUT_MS = 10_000;
 
 export function parseLanguage(value: unknown): string | undefined {
   if (typeof value !== "string" || /[\r\n]/u.test(value)) return undefined;
@@ -57,7 +70,21 @@ export function parseConfig(value: unknown): TranslateConfig | undefined {
 function parseInputConfig(value: unknown): InputTranslateConfig | undefined {
   if (!isRecord(value) || !hasExactRequiredKeys(value, INPUT_CONFIG_KEYS, ["mode", "model"])) return undefined;
   const common = parseCommonConfig(value);
-  return common;
+  if (!common) return undefined;
+  if (value.englishCheck === undefined) return common;
+  const check = value.englishCheck;
+  if (!isRecord(check) || !hasExactRequiredKeys(check, ["model", "threshold", "timeoutMs"], ["model"])) return undefined;
+  if (typeof check.model !== "string" || !parseModelSpec(check.model)) return undefined;
+  if (check.threshold !== undefined && (typeof check.threshold !== "number" ||
+    !Number.isFinite(check.threshold) || check.threshold <= 0 || check.threshold > 1)) return undefined;
+  if (check.timeoutMs !== undefined && (!Number.isInteger(check.timeoutMs) ||
+    (check.timeoutMs as number) < MIN_TRANSLATION_TIMEOUT_MS ||
+    (check.timeoutMs as number) > MAX_TRANSLATION_TIMEOUT_MS)) return undefined;
+  return { ...common, englishCheck: {
+    model: check.model,
+    ...(check.threshold !== undefined ? { threshold: check.threshold as number } : {}),
+    ...(check.timeoutMs !== undefined ? { timeoutMs: check.timeoutMs as number } : {}),
+  } };
 }
 
 function parseOutputConfig(value: unknown): OutputTranslateConfig | undefined {
@@ -68,7 +95,7 @@ function parseOutputConfig(value: unknown): OutputTranslateConfig | undefined {
   return { ...common, language };
 }
 
-function parseCommonConfig(value: Record<string, unknown>): InputTranslateConfig | undefined {
+function parseCommonConfig(value: Record<string, unknown>): CommonTranslateConfig | undefined {
   if (value.mode !== "on" && value.mode !== "off") return undefined;
   if (typeof value.model !== "string" || !parseModelSpec(value.model)) return undefined;
   if (value.timeoutMs !== undefined && (

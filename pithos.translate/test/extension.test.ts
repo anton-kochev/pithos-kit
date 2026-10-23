@@ -1208,3 +1208,162 @@ describe("translate extension", () => {
     assert.match(harness.notifications.at(-1)?.message ?? "", /cancelled/i);
   });
 });
+
+it("approves original input through the real English helper before translation and reports check status", async () => {
+  let translations = 0;
+  const logs: CapturedLog[] = [];
+  const stored: TranslateConfig = { input: { mode: "on", model: "provider/translator", englishCheck: { model: "openai/gpt-6-luna" } } };
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "project", load: async () => stored }) as never,
+    translateInput: async () => { translations++; return { ok: true, markdown: "changed", usage }; },
+    logger: capturingLogger(logs),
+  }, undefined, [{ name: "review", source: "prompt" }]);
+  const sources: string[] = [];
+  harness.context.modelRegistry = {
+    findOfType: (type: string, provider: string, id: string) => {
+      assert.deepEqual([type, provider, id], ["classifier", "openai", "gpt-6-luna"]);
+      return {};
+    },
+    classify: async (_model: unknown, context: any) => {
+      sources.push(context.state.source);
+      assert.match(harness.statuses.at(-1)?.text ?? "", /Checking.*openai\/gpt-6-luna/);
+      return { stopReason: "stop", answers: { english: { type: "bool", probability: 0.98 } } };
+    },
+  };
+  await emit(harness, "session_start");
+  for (const text of ["/review   PRIVATE English `code`", "```ts\nprivateCode()\n```", "Hello"] ) {
+    const event = { source: "interactive", text, images: [{ type: "image", data: "private" }] };
+    const before = structuredClone(event);
+    assert.deepEqual(await emit(harness, "input", event), [{ action: "continue" }]);
+    assert.deepEqual(event, before);
+    assert.equal(harness.statuses.at(-1)?.text, undefined);
+  }
+  assert.equal(translations, 0);
+  assert.equal(sources.length, 3);
+  assert.match(sources[0]!, /^PRIVATE English ⟦PITHOS_TRANSLATE_/);
+  assert.doesNotMatch(sources.join("\n"), /\/review|privateCode/);
+  assert.doesNotMatch(JSON.stringify(logs), /PRIVATE|privateCode/);
+  assert.equal(logs.filter((entry) => entry.event === "translation.input.english-check").length, 3);
+  await harness.commands.get("translate")!.handler("input-status", harness.context);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /English check: openai\/gpt-6-luna.*0\.98.*10s/);
+});
+
+it("cancels checking without translating, restores the original draft and clears status", async () => {
+  const controller = new AbortController();
+  let translations = 0;
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "project", load: async () => ({ input: { mode: "on", model: "p/m", englishCheck: { model: "openai/gpt-6-luna" } } }) }) as never,
+    translateInput: async () => { translations++; return { ok: true, markdown: "wrong", usage }; },
+  });
+  harness.context.signal = controller.signal;
+  harness.context.modelRegistry = {
+    findOfType: () => ({}),
+    classify: () => { controller.abort(); return new Promise(() => {}); },
+  };
+  await emit(harness, "session_start");
+  assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Restore me" }), [{ action: "handled" }]);
+  assert.equal(translations, 0);
+  assert.deepEqual(harness.editorTexts, ["Restore me"]);
+  assert.equal(harness.statuses.at(-1)?.text, undefined);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /cancelled/);
+});
+
+it("falls back conservatively through the helper and logs classifier usage separately", async () => {
+  const logs: CapturedLog[] = [];
+  let translations = 0;
+  let classification: unknown = { stopReason: "stop", answers: { english: { type: "bool", probability: 0.1 } }, usage: { input: 3, output: 1, totalTokens: 4, cost: { total: 0 } } };
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "project", load: async () => ({ input: { mode: "on", model: "p/m", englishCheck: { model: "openai/gpt-6-luna" } } }) }) as never,
+    translateInput: async (source) => {
+      translations++;
+      assert.equal(source, "PRIVATE Bonjour English");
+      assert.match(harness.statuses.at(-1)?.text ?? "", /Translating/);
+      return { ok: false, kind: "request-failed", error: "PRIVATE" };
+    },
+    logger: capturingLogger(logs),
+  }, undefined, [{ name: "review", source: "prompt" }]);
+  harness.context.modelRegistry = { findOfType: () => ({}), classify: async () => classification };
+  await emit(harness, "session_start");
+  const event = { source: "interactive", text: "/review   PRIVATE Bonjour English", images: [] };
+  assert.deepEqual(await emit(harness, "input", event), [{ action: "handled" }]);
+  assert.deepEqual(logs.find((entry) => entry.event === "translation.input.english-check")?.metadata?.classifierUsage,
+    { inputTokens: 3, outputTokens: 1, totalTokens: 4, costUsd: 0 });
+  for (classification of [null, { stopReason: "aborted" }, { stopReason: "error", errorMessage: "PRIVATE" }]) {
+    assert.deepEqual(await emit(harness, "input", event), [{ action: "handled" }]);
+  }
+  harness.context.modelRegistry = {};
+  assert.deepEqual(await emit(harness, "input", event), [{ action: "handled" }]);
+  assert.equal(translations, 5);
+  assert.deepEqual(harness.editorTexts, Array(5).fill(event.text));
+  assert.equal(harness.statuses.at(-1)?.text, undefined);
+  assert.doesNotMatch(JSON.stringify(logs), /PRIVATE/);
+  assert.doesNotMatch(JSON.stringify(harness.notifications), /PRIVATE/);
+});
+
+it("times out the real check before starting the independent translator budget", async (t) => {
+  t.mock.timers.enable({ apis: ["setTimeout"] });
+  let classifierSignal: AbortSignal | undefined;
+  let translationSignal: AbortSignal | undefined;
+  let completions = 0;
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "project", load: async () => ({ input: { mode: "on", model: "p/m", timeoutMs: 1000, englishCheck: { model: "openai/gpt-6-luna", timeoutMs: 2000 } } }) }) as never,
+  }, undefined, [{ name: "review", source: "prompt" }]);
+  harness.context.modelRegistry = {
+    findOfType: () => ({}),
+    classify: (_m: unknown, _c: unknown, options: any) => {
+      classifierSignal = options.signal;
+      return new Promise(() => {});
+    },
+    find: () => ({}),
+    getApiKeyAndHeaders: async () => ({ ok: true }),
+    complete: async (_m: unknown, _c: unknown, options: any) => {
+      completions++;
+      translationSignal = options.signal;
+      return assistant("Review this code");
+    },
+  };
+  await emit(harness, "session_start");
+  const images = [{ type: "image", data: "private" }];
+  const pending = emit(harness, "input", { source: "interactive", text: "/review   Révise ce code", images });
+  assert.ok(classifierSignal);
+  t.mock.timers.tick(1999);
+  assert.equal(classifierSignal.aborted, false);
+  assert.equal(completions, 0);
+  t.mock.timers.tick(1);
+  assert.equal(classifierSignal.aborted, true);
+  assert.deepEqual(await pending, [{ action: "transform", text: "/review   Review this code", images }]);
+  assert.equal(translationSignal?.aborted, false);
+  assert.equal(harness.statuses.at(-1)?.text, undefined);
+});
+
+it("keeps classifier behind input eligibility guards and preserves it across mode toggles", async () => {
+  let calls = 0;
+  let stored: TranslateConfig = { input: { mode: "on", model: "p/m", englishCheck: { model: "openai/gpt-6-luna" } } };
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "project", load: async () => stored, save: async (next: TranslateConfig) => { stored = next; } }) as never,
+    translateInput: async () => { calls++; return { ok: true, markdown: "unexpected", usage }; },
+  }, undefined, [{ name: "review", source: "prompt" }]);
+  harness.context.modelRegistry = { findOfType: () => { calls++; return {}; }, classify: async () => ({}) };
+  await emit(harness, "session_start");
+  for (const event of [
+    { source: "extension", text: "Hello" },
+    { source: "interactive", text: "  " },
+    { source: "interactive", text: "/review   " },
+  ]) assert.deepEqual(await emit(harness, "input", event), [{ action: "continue" }]);
+  for (const streamingBehavior of ["steer", "followUp"] ) {
+    assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello", streamingBehavior }), [{ action: "handled" }]);
+  }
+  for (const mode of ["rpc", "print", "json"]) {
+    harness.context.mode = mode;
+    assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello" }), [{ action: "handled" }]);
+  }
+  harness.context.mode = "tui";
+  harness.context.isIdle = () => false;
+  assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello" }), [{ action: "handled" }]);
+  harness.context.isIdle = () => true;
+  await harness.commands.get("translate")!.handler("input-off", harness.context);
+  assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello" }), [{ action: "continue" }]);
+  await harness.commands.get("translate")!.handler("input-on", harness.context);
+  assert.deepEqual(stored.input?.englishCheck, { model: "openai/gpt-6-luna" });
+  assert.equal(calls, 0);
+});

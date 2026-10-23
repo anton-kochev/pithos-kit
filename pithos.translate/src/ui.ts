@@ -83,6 +83,7 @@ export async function runInputConfigWizard(
   const model = await chooseAuthenticatedModel(ctx, "Exact input translation model");
   if (!model) return undefined;
   return {
+    ...(current?.englishCheck ? { englishCheck: current.englishCheck } : {}),
     model,
     mode: current?.mode ?? "off",
     ...(current?.timeoutMs !== undefined ? { timeoutMs: current.timeoutMs } : {}),
