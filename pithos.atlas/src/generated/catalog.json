@@ -233,7 +233,7 @@
     {
       "name": "@pithos-kit/guild",
       "version": "0.10.0",
-      "description": "Software-development Guild members plus repository-aware .NET Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and TDD guidance for .NET, Angular, TypeScript, and Rust.",
+      "description": "Bounded software-development and writing Guild roles with content-craft, repository-aware architecture, review, comments, Conventional Commit, and TDD guidance.",
       "pi": {
         "extensions": [
           "./extensions"
@@ -244,7 +244,7 @@
       },
       "pithosKit": {
         "displayName": "Guild",
-        "summary": "Delegate focused software work through bounded role/profile handovers and repository-aware development guidance.",
+        "summary": "Delegate focused software and writing work through bounded role/profile handovers and reusable craft guidance.",
         "minimumPi": ">=1.0.0",
         "commands": [
           {
@@ -266,6 +266,11 @@
             "name": "skill:conventional-commit",
             "summary": "Load the confirmed, context-aware Conventional Commit workflow explicitly.",
             "usage": "/skill:conventional-commit [instructions]"
+          },
+          {
+            "name": "skill:content-craft",
+            "summary": "Load audience-focused writing craft for articles, tutorials, stories, and scripts.",
+            "usage": "/skill:content-craft [writing brief]"
           },
           {
             "name": "skill:code-comments",
@@ -306,6 +311,10 @@
         ],
         "prompts": [],
         "skills": [
+          {
+            "name": "content-craft",
+            "summary": "Audience-focused writing, format-sensitive structure, voice, and factual grounding."
+          },
           {
             "name": "conventional-commit",
             "summary": "Context-aware staging and confirmed Conventional Commit generation."
@@ -348,6 +357,10 @@
           {
             "name": "reviewer",
             "summary": "Read-only findings-first review."
+          },
+          {
+            "name": "writer",
+            "summary": "Scoped writing artifacts from a supplied brief and sources; general profile only, no shell or web."
           }
         ],
         "configuration": []

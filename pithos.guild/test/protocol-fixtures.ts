@@ -11,6 +11,7 @@ export function report(task: ReturnType<typeof buildTask>) {
   architect: { decisions: [], contracts: [], handoff: [] },
   coder: { changes: [], verification: [] },
   reviewer: { scope: [], findings: [], verdict: "Approve" },
+  writer: { artifacts: [{path: "docs/article.md", description: "Draft"}], sources: [], checks: [] },
  };
  return { ...header, taskOutcome: "succeeded", compliance: [], summary: "Honest report", blockers: [], limitations: [], payload: payloads[task.role] };
 }

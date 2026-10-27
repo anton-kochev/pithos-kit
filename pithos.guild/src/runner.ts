@@ -306,6 +306,7 @@ const GUILD_ROLE_PROMPT_URLS = {
 	architect: new URL("../agents/roles/architect.md", import.meta.url),
 	coder: new URL("../agents/roles/coder.md", import.meta.url),
 	reviewer: new URL("../agents/roles/reviewer.md", import.meta.url),
+	writer: new URL("../agents/roles/writer.md", import.meta.url),
 } satisfies Record<GuildRole, URL>;
 
 const GUILD_PROFILE_PROMPT_URLS = {

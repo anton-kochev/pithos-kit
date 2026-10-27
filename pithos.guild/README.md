@@ -1,12 +1,12 @@
 # guild
 
-A standalone bounded Guild with stable exploration, architecture, implementation, and review roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and repository-aware Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, review, and writing roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and content-craft, repository-aware Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
 ## At a glance
 
-Guild hands **one focused task** to an isolated child: choose a role for its permissions and a profile for its technical guidance. Explorer and architect investigate or plan, coder can edit and run tests, and reviewer inspects changes without writing. Guild queues handovers, returns a bounded structured report, and leaves verification and final decisions to the main agent. It does not run an automatic multi-agent pipeline or prove a child's claims.
+Guild hands **one focused task** to an isolated child: choose a role for its permissions and a supported profile for its guidance. Explorer and architect investigate or plan, coder can edit and run tests, reviewer inspects changes without writing, and writer creates scoped prose artifacts without shell access. Guild queues handovers, returns a bounded structured report, and leaves verification and final decisions to the main agent. It does not run an automatic multi-agent pipeline or prove a child's claims.
 
 For example, in Pi's interactive TUI:
 
@@ -57,19 +57,42 @@ Roles own responsibility and the repository tool ceiling. Every child additional
 | `architect` | Compare designs and define contracts, invariants, test strategy, and an implementation handoff | `read`, `grep`, `find`, `ls`, `git_read` |
 | `coder` | Implement one coherent scope, own relevant tests, and verify it | `read`, `grep`, `find`, `ls`, `edit`, `write`, `bash` |
 | `reviewer` | Independently inspect a focused change and return severity-ranked evidence and a verdict | `read`, `grep`, `find`, `ls`, `git_read` |
+| `writer` | Create or revise articles, tutorials, stories, and scripts from a supplied brief and evidence; `general` only | `read`, `grep`, `find`, `ls`, `git_read`, `edit`, `write` |
 
-Profiles select package-owned technical guidance and never add tools:
+Profiles select package-owned guidance and never add tools:
 
 | Profile | Focus |
 |---|---|
-| `general` | Technology-neutral software engineering |
+| `general` | Task-grounded general guidance; software engineering only when relevant |
 | `frontend` | Browser UI, components, state, rendering, accessibility, and performance |
 | `angular` | Angular applications, templates, reactivity, forms, and tests |
 | `typescript` | TypeScript, JavaScript, Node.js, modules, runtime boundaries, and async behavior |
 | `dotnet` | .NET, C#, projects, persistence, dependency injection, async behavior, and tests |
 | `rust` | Rust, Cargo, ownership, errors, concurrency, unsafe boundaries, and tests |
 
-All 24 role/profile pairs are valid. Only `coder` can edit, write, or invoke shell commands; explorer, architect, and reviewer are mechanically read-only. Their `git_read` tool runs only `status`, `diff`, `log`, `show`, `ls-files`, and `blame` without a shell, accepts an exact allowlist of read-only options (no `--output`, external diff, textconv, or signature checks), disables fsmonitor and optional index locks, and caps output at 50 KiB. It never changes staged content, refs, or the working tree; like any plain `git diff`, `diff` may refresh the index stat cache, and repository-configured clean filters still run. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
+There are 25 supported role/profile pairs: all 24 existing engineering pairs plus `writer/general`. Unsupported writer pairs are rejected, not silently mapped to general. Writer can edit or write assigned artifacts; only `coder` can invoke shell commands. Explorer, architect, and reviewer remain mechanically read-only. Their `git_read` tool, also available to writer, runs only `status`, `diff`, `log`, `show`, `ls-files`, and `blame` without a shell, accepts an exact allowlist of read-only options (no `--output`, external diff, textconv, or signature checks), disables fsmonitor and optional index locks, and caps output at 50 KiB. It never changes staged content, refs, or the working tree; like any plain `git diff`, `diff` may refresh the index stat cache, and repository-configured clean filters still run. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
+
+## Writer and content-craft skill
+
+Use `writer/general` for technical or nontechnical writing. General does not mean nontechnical: put domain and topic requirements in the brief rather than selecting a technology profile. Supply the audience, purpose, format, voice/tone, length, source material, explicit output path, and acceptance criteria. For example:
+
+```text
+/guild-handover writer/general Write a 900-word article for junior developers about database indexes. Use docs/index-notes.md as the factual source. Save to docs/articles/indexes.md. Use an approachable tone, explain the limits of analogies, and flag gaps rather than inventing evidence.
+```
+
+Writer requires an explicit destination in the task. If it is absent, unsafe, outside scope, or would overwrite conflicting content without authorization, the child should report blocked instead of choosing a path. Existing assigned documents may be revised when authorized; preserve unrelated edits. This is prompt guidance, not host-enforced path confinement or a filesystem sandbox. The host validates the report, not the existence, accuracy, or ownership of reported artifacts.
+
+Clarify requirements and research in the parent before handing over. Writer has no shell, web, user-question, publishing, or delegation tools. Supply local source paths or source contents; URLs alone are not read evidence. A writer should report missing essential information, unverified claims, and checks it could not perform honestly. Fiction may invent within its stated frame but must not fabricate factual sourcing or endorsements. Shell-based content builds and executable tutorial checks remain parent/coder responsibilities.
+
+The package-owned `content-craft` skill covers audience-first writing, structure and voice, analogies and concrete examples, factual grounding, revision, and proportionate guidance for articles, tutorials, stories, podcasts, videos, screenplays, and documentary scripts. Load it in the parent with optional context:
+
+```text
+/skill:content-craft [writing brief]
+```
+
+Pi-native discovery exposes the skill to the parent when enabled. Every writer child receives the fixed content-craft core through both handover entry paths, independent of that toggle; no other role receives it automatically. Writer does not receive code-comments, review, or TDD cores, and required TDD remains coder-only. A missing or invalid craft core fails writer setup before launch. Receipts attest selected bytes, not editorial quality or factual verification. Use `pi config` or `pi config -l`, then `/reload`, to toggle parent discovery.
+
+Long-form prose goes into the assigned files, not bounded report strings. The report contains `artifacts` (path/description), `sources` (reference/usage), and `checks` (check/outcome), with common blockers and limitations. A succeeded writer report requires at least one artifact; blocked work may have none. Both are child-reported claims. A parent can read the artifact to present or verify it. No automatic publication or reviewer pipeline is installed.
 
 ## Code-review standards skill
 
@@ -91,7 +114,7 @@ Guild's language-neutral `code-comments` skill guides accurate, concise comments
 /skill:code-comments [task or scope]
 ```
 
-Pi-native discovery exposes the skill to the main agent when enabled. Every **coder** child, across all profiles and both handover entry paths, automatically receives the same fixed package-owned core. Required-TDD coders receive TDD followed by code-comments; explorer, architect, and reviewer children do not receive code-comments. Guidance stays within the assigned task and does not authorize unrelated cleanup or behavior changes.
+Pi-native discovery exposes the skill to the main agent when enabled. Every **coder** child, across all profiles and both handover entry paths, automatically receives the same fixed package-owned core. Required-TDD coders receive TDD followed by code-comments; explorer, architect, reviewer, and writer children do not receive code-comments. Guidance stays within the assigned task and does not authorize unrelated cleanup or behavior changes.
 
 Use `pi config` or `pi config -l`, then `/reload`, to toggle the parent-session resource. That toggle does not disable fixed coder injection. Children retain disabled ambient discovery and unchanged tool permissions. A missing or invalid code-comments core fails coder setup before launch; other roles do not load it. Core receipts record selection, not proof that a child followed the recommendations.
 
@@ -157,6 +180,7 @@ Use architect/frontend to define state ownership for checkout.
 Use coder/angular to add checkout loading and error states.
 Use coder/rust to resolve the parser ownership defect.
 Use reviewer/general to review the focused change for merge-blocking defects.
+Use writer/general to draft an article from supplied notes at an explicit output path.
 ```
 
 The main agent invokes the canonical API. Most tasks need no practice option; required TDD is an explicit coder-only choice:
@@ -177,7 +201,7 @@ Delegate directly from the interactive TUI:
 /guild-handover --help
 ```
 
-With no target, the command opens a role picker followed by a profile picker. With no task for a coder, it asks **No requirement** or **TDD required** before opening the multiline editor; other roles open the editor directly. Selection/editor cancellation creates no handover. `--json` must be the leading standalone option followed by one complete canonical JSON object, with no trailing data. Other command tasks (including embedded `--json` or TDD text) remain literal and never select practices. Only coder can request required TDD; omission and `[]` mean no requirement. Tool arguments, direct JSON and editor input share strict validation: exact keys, nonblank/NUL-free task, task <=32 KiB UTF-8, canonical input <=40 KiB, host envelope <=48 KiB. Accepted practices are copied before queue admission. The command waits for the main agent to become idle and applies the same Plan-mode gate, inherited trust decision, queue, tools, and child runner as the agent tool. Direct execution is intentionally TUI-only.
+With no target, the command opens a role picker followed by a supported-profile picker; choosing writer automatically selects general without a redundant profile picker. With no task for a coder, it asks **No requirement** or **TDD required** before opening the multiline editor; other roles open the editor directly. Selection/editor cancellation creates no handover. `--json` must be the leading standalone option followed by one complete canonical JSON object, with no trailing data. Other command tasks (including embedded `--json` or TDD text) remain literal and never select practices. Only coder can request required TDD; omission and `[]` mean no requirement. Tool arguments, direct JSON and editor input share strict validation: exact keys, nonblank/NUL-free task, task <=32 KiB UTF-8, canonical input <=40 KiB, host envelope <=48 KiB. Accepted practices are copied before queue admission. The command waits for the main agent to become idle and applies the same Plan-mode gate, inherited trust decision, queue, tools, and child runner as the agent tool. Direct execution is intentionally TUI-only.
 
 List the fixed package roles, profiles, permissions, and aliases without launching a child:
 
@@ -246,7 +270,7 @@ code-reviewer → reviewer/general
 
 Aliases cannot change prompts, profiles, or role tool ceilings, and no sunset is promised. Direct commands accept aliases visibly; resumed old `{ member, task }` tool calls are normalized before the strict canonical schema is validated.
 
-Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. The fixed reviewer core, coder code-comments core, and explicitly required coder TDD core are injected into their respective child prompts; other ambient skills and profile-selected resources remain unavailable.
+Guild no longer reads `~/.pi/agent/agents` or `.pi/agents` and has no user/global configuration layer. The migration does not delete those directories or their files, and arbitrary prompt overrides are not converted. Repository guidance may remain in `AGENTS.md`, but Guild children do not inherit ambient context files; delegated tasks must be self-contained or explicitly ask the child to inspect relevant repository guidance. The fixed reviewer core, coder code-comments core, writer content-craft core, and explicitly required coder TDD core are injected into their respective child prompts; other ambient skills and profile-selected resources remain unavailable.
 
 ## Isolation and resources
 
@@ -272,13 +296,16 @@ Children must submit `guild_submit_result` **alone in its tool batch**, once. Co
 - explorer: referenced `observations` and `unknowns`;
 - architect: `decisions`, `contracts`, and `handoff`;
 - coder: reported `changes` and `verification` commands/outcomes;
-- reviewer: `scope`, severity-ranked `findings`, and `verdict`.
+- reviewer: `scope`, severity-ranked `findings`, and `verdict`;
+- writer: `artifacts` with `path`/`description`, `sources` with `reference`/`usage`, and `checks` with `check`/`outcome`. Succeeded requires at least one artifact; each supplied writer record field must be nonblank and NUL-free. No article body is carried in the report.
+
+The new role retains `guild/2` version 2: reports are bound to one host-selected role and validated by the same-package parent/child schema, and existing role payloads are unchanged. Older packages do not understand the writer target.
 
 Empty findings and unperformed checks are legitimate when reported honestly. Each string is at most 2048 UTF-8 bytes, each list at most 32 items, and the serialized result at most 48 KiB. Oversized or extra-key results are rejected, never truncated into apparent completion. Parent ingestion permits at most 1 MiB per JSON line, 16 MiB total stdout, and 64 KiB stderr. Pi's `agent_end` and `turn_end` events only repeat messages and tool results already streamed individually, so they are skipped unparsed and excluded from both limits. Exceeding transport bounds fails the run, including unusually large ordinary tool events. A child that stops on a provider error reports the provider's message in its failure diagnostic.
 
 A malformed submission or prose-only completion gets **one shared corrective opportunity in the same child**. The next assistant response must submit the result alone; there is no respawn, queue re-entry, or reset on continued agent runs. Identity mismatch, mixed batches, duplicates, post-submission work, exhausted repair, missing handshake/settlement, process/provider errors, and cleanup failures fail closed. Cancellation and failure override a previously valid submission. Mixed-batch rejection is not a claim that sibling work never happened or was rolled back.
 
-Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: every coder selects `skills/code-comments/SKILL.md`, with `skills/tdd/SKILL.md` first when required TDD is requested; reviewer selects only `skills/code-review-standards/SKILL.md`; explorer and architect select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
+Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: every coder selects `skills/code-comments/SKILL.md`, with `skills/tdd/SKILL.md` first when required TDD is requested; reviewer selects only `skills/code-review-standards/SKILL.md`; writer selects only `skills/content-craft/SKILL.md`; explorer and architect select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
 
 
 ## Development

@@ -1,12 +1,12 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
-import { GUILD_ROLES, GUILD_PROFILES } from "../src/agents.ts";
+import { GUILD_ROLES, GUILD_ROLE_PROFILES } from "../src/agents.ts";
 import { buildTask, validateResult } from "../src/protocol.ts";
 
 import { report } from "./protocol-fixtures.ts";
 
-it("builds one original-text task and validates all 24 role/profile result contracts", () => {
- for (const role of GUILD_ROLES) for (const profile of GUILD_PROFILES) {
+it("builds one original-text task and validates all 25 supported role/profile result contracts", () => {
+ for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
   const task = buildTask({ role, profile, task: " original task ", runId: "run", taskId: "task" });
   assert.equal(task.task, " original task ");
   assert.equal(task.protocol, "guild/2");
@@ -34,6 +34,7 @@ it("rejects unknown nested record fields and out-of-contract role payloads", () 
   architect: {decisions: [], contracts: [], handoff: [], lease: true},
   coder: {changes: [], verification: [{command: "not run", outcome: "not run", passed: true}]},
   reviewer: {scope: [], findings: [{severity: "Medium", reference: "src/a.ts:1", finding: "Issue", verified: true}], verdict: "Approve"},
+  writer: {artifacts: [{path: "article.md", description: "Draft", certified: true}], sources: [], checks: []},
  };
  for (const role of GUILD_ROLES) {
   const task = buildTask({role, profile: "general", task: "Work", runId: "run", taskId: "task"});

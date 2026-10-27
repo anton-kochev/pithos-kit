@@ -1,7 +1,7 @@
 import { Type, type Static } from "typebox";
 import { StringEnum } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
-import { GUILD_MEMBER_ALIASES, isGuildMemberAlias, GUILD_ROLE_DEFINITIONS, isGuildProfile, isGuildRole, type GuildRole, type GuildProfile } from "./agents.ts";
+import { GUILD_MEMBER_ALIASES, isGuildMemberAlias, GUILD_ROLE_DEFINITIONS, isGuildProfile, isGuildRole, createGuildTarget, type GuildRole, type GuildProfile } from "./agents.ts";
 
 export const SUBMIT_TOOL = "guild_submit_result";
 export const PROTOCOL = "guild/2";
@@ -20,6 +20,7 @@ export function validateInput(value: unknown): GuildInput {
  }
  exactKeys(value, ["role", "profile", "task"], ["practices"]);
  if (!isGuildRole(value.role) || !isGuildProfile(value.profile) || typeof value.task !== "string") throw new Error("Invalid Guild input");
+ createGuildTarget(value.role, value.profile);
  const practices = Object.hasOwn(value, "practices") ? value.practices : [];
  if (!Array.isArray(practices) || practices.length > 1 || (practices.length && value.role !== "coder")) throw new Error("Invalid Guild practices");
  for (const practice of practices) {
@@ -67,6 +68,7 @@ const payloads = {
  architect: object({ decisions: list(text), contracts: list(text), handoff: list(text) }, exact),
  coder: object({ changes: list(object({ path: text, change: text }, exact)), verification: list(object({ command: text, outcome: text }, exact)) }, exact),
  reviewer: object({ scope: list(text), findings: list(object({ severity: Type.String({ enum: ["Critical", "High", "Medium", "Low"] }), reference: text, finding: text }, exact)), verdict: Type.String({ enum: ["Request changes", "Comment", "Approve"] }) }, exact),
+ writer: object({ artifacts: list(object({ path: text, description: text }, exact)), sources: list(object({ reference: text, usage: text }, exact)), checks: list(object({ check: text, outcome: text }, exact)) }, exact),
 };
 export function resultSchema(task: GuildTask) {
  return object({
@@ -87,6 +89,13 @@ export function validateResult(value: unknown, task: GuildTask): GuildReport {
  };
  checkBytes(value);
  const report = value as GuildReport;
+ if (task.role === "writer") {
+  const payload = report.payload as Static<typeof payloads.writer>;
+  if ((report.taskOutcome === "succeeded" && !payload.artifacts.length)
+   || [...payload.artifacts, ...payload.sources, ...payload.checks].some(record => Object.values(record).some(value => !value.trim() || value.includes("\0")))) {
+   throw new Error("Invalid writer artifacts, sources or checks");
+  }
+ }
  if (report.blockers.some(blocker => !blocker.trim()) || (report.taskOutcome === "blocked" ? !report.blockers.length : report.blockers.length > 0 || report.compliance.some(claim => claim.status !== "satisfied"))) throw new Error("Inconsistent Guild task outcome and blockers/compliance");
  for (const claim of report.compliance) {
   if (claim.status === "blocked" && !claim.reason.trim()) throw new Error("Blocked TDD requires a reason");

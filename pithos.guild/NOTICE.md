@@ -10,4 +10,6 @@ The `code-review-standards` skill is adapted from the corresponding MIT-licensed
 
 The `dotnet-clean-architecture` skill is adapted from the corresponding MIT-licensed Grimoire guidance. The Guild adaptation removes time-sensitive framework and package assumptions, detects repository capabilities before recommending patterns, treats clean, layered, vertical-slice, and hybrid structures proportionally, and preserves architect and coder role boundaries.
 
+The `content-craft` skill and `writer` role adapt the content-crafter guidance from the MIT-licensed Grimoire project. The Guild adaptation removes Claude-specific invocation and unavailable research or publishing capabilities, and makes supplied-source grounding, explicit destinations, role-owned tools, and truthful reporting central to the workflow.
+
 The `conventional-commit` skill and controlled commit workflow were transferred from `@pithos-kit/atlas` to keep software-development workflows under Guild ownership. Commit messages follow the Conventional Commits 1.0.0 specification.

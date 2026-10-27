@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import * as protocol from "../src/protocol.ts";
-import { GUILD_ROLES, GUILD_PROFILES } from "../src/agents.ts";
+import { GUILD_ROLES, GUILD_ROLE_PROFILES } from "../src/agents.ts";
 import { Check } from "typebox/value";
 
 it("exposes provider-compatible child schema without losing exact identity and enum validation", () => {
@@ -43,7 +43,7 @@ it("normalizes exact canonical and legacy inputs with copied coder-only practice
  const accepted = protocol.validateInput({...base, practices});
  practices[0].id = "changed";
  assert.deepEqual(accepted.practices, [{id: "tdd", policy: "required"}]);
- for (const role of GUILD_ROLES) for (const profile of GUILD_PROFILES) {
+ for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
   assert.deepEqual(protocol.validateInput({...base, role, profile}).practices, []);
   const required = {...base, role, profile, practices: [{id: "tdd", policy: "required"}]};
   if (role === "coder") assert.equal(protocol.validateInput(required).practices.length, 1);

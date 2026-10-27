@@ -7,7 +7,7 @@ import { dirname, join, resolve } from "node:path";
 import { afterEach, describe, it } from "node:test";
 import { setTimeout as delay } from "node:timers/promises";
 import {
-  GUILD_PROFILES,
+  GUILD_ROLE_PROFILES,
   GUILD_ROLE_DEFINITIONS,
   GUILD_ROLES,
 } from "../src/agents";
@@ -79,7 +79,7 @@ writeFileSync(process.env.GUILD_RUNNER_CAPTURE_PATH, JSON.stringify({
 const emit = event => process.stdout.write(JSON.stringify(event) + "\\n");
 const task = JSON.parse(readFileSync(process.env.GUILD_TASK_FILE, "utf8"));
 const {task: text, practices, ...header} = task;
-const payloads = {explorer: {observations: [], unknowns: []}, architect: {decisions: [], contracts: [], handoff: []}, coder: {changes: [], verification: []}, reviewer: {scope: [], findings: [], verdict: "Approve"}};
+const payloads = {explorer: {observations: [], unknowns: []}, architect: {decisions: [], contracts: [], handoff: []}, coder: {changes: [], verification: []}, reviewer: {scope: [], findings: [], verdict: "Approve"}, writer: {artifacts: [{path: "docs/article.md", description: "Draft"}], sources: [], checks: []}};
 const required = task.practices.length > 0;
 const report = {...header, taskOutcome: required ? "blocked" : "succeeded", compliance: required ? [{id: "tdd", policy: "required", status: "blocked", reason: "No test execution", cycles: [], limitations: ["No red"]}] : [], summary: "Captured", blockers: required ? ["Tests unavailable"] : [], limitations: [], payload: payloads[task.role]};
 if (${protocol}) emit({type: "message_end", message: {role: "custom", customType: "guild-protocol-ready", details: {protocol: task.protocol, version: 2, runId: task.runId, taskId: task.taskId, tools: option("--tools").split(",")}}});
@@ -302,11 +302,11 @@ describe("canonical role/profile child invocation", () => {
 
   it("injects only the selected complete package core after role/profile guidance with receipts and unchanged ceilings", async () => {
     const required = [{id: "tdd" as const, policy: "required" as const}];
-    for (const [role, practices, ids] of [["coder", required, ["tdd", "code-comments"]], ["reviewer", [], ["code-review-standards"]], ["coder", [], ["code-comments"]], ["explorer", [], []], ["architect", [], []]] as const) {
+    for (const [role, practices, ids] of [["coder", required, ["tdd", "code-comments"]], ["reviewer", [], ["code-review-standards"]], ["coder", [], ["code-comments"]], ["explorer", [], []], ["architect", [], []], ["writer", [], ["content-craft"]]] as const) {
       const events: any[] = [], telemetry = channel("pithos.guild.child"), collect = (e: unknown) => events.push(e);
       telemetry.subscribe(collect);
       try {
-        const {capture, result} = await captureCanonicalRun({role, profile: "rust", task: "Work", practices: [...practices], cwd: process.cwd(), projectTrusted: false});
+        const {capture, result} = await captureCanonicalRun({role, profile: role === "writer" ? "general" : "rust", task: "Work", practices: [...practices], cwd: process.cwd(), projectTrusted: false});
         assert.ok(capture.args.includes("--no-skills"));
         assert.equal(capture.args[capture.args.indexOf("--tools") + 1], [...GUILD_ROLE_DEFINITIONS[role].tools, "guild_submit_result"].join(","));
         assert.deepEqual(result.selectedSkills?.map(s => s.id), ids);
@@ -321,7 +321,7 @@ describe("canonical role/profile child invocation", () => {
           assert.ok(start > previousStart);
           previousStart = start;
           assert.equal(capture.roleProfilePrompt.slice(start + prefix.length, start + prefix.length + content.toString("utf8").length), content.toString("utf8"));
-          assert.match(capture.roleProfilePrompt.slice(0, start), /# (?:Coder|Reviewer)/);
+          assert.match(capture.roleProfilePrompt.slice(0, start), /# (?:Coder|Reviewer|Writer)/);
         }
         assert.deepEqual([...capture.roleProfilePrompt.matchAll(/^# Package skill core: (.+)$/gm)].map(match => match[1]), ids);
         assert.doesNotMatch(capture.roleProfilePrompt, /# Package skill core: (?:dotnet-cqrs|conventional-commit)/);
@@ -330,10 +330,29 @@ describe("canonical role/profile child invocation", () => {
     }
   });
 
+  it("gives writer/general only content-craft guidance and the fixed writing tool ceiling", async () => {
+    const root = temporaryDirectory(), content = "# Fixture craft\nWrite for π and 🙂.\r\n";
+    mkdirSync(join(root, "skills/content-craft"), {recursive: true});
+    writeFileSync(join(root, "skills/content-craft/SKILL.md"), content);
+    const {capture, result} = await captureCanonicalRun({role: "writer", profile: "general", task: "Revise the supplied article", cwd: process.cwd(), projectTrusted: false}, true, "", root);
+    assert.equal(result.status, "completed");
+    assert.deepEqual((capture.envelope as any).practices, []);
+    assert.deepEqual(result.report?.compliance, []);
+    assert.equal(capture.args[capture.args.indexOf("--tools") + 1], "read,grep,find,ls,git_read,edit,write,guild_submit_result");
+    assert.ok(capture.args.includes("--no-skills"));
+    assert.ok(capture.args.includes("--no-approve"));
+    assert.match(capture.basePrompt, /Standalone Guild member: writer\/general/);
+    assert.ok(capture.roleProfilePrompt.startsWith(readFileSync(resolve(import.meta.dirname, "../agents/roles/writer.md"), "utf8").trimEnd()));
+    assert.ok(capture.roleProfilePrompt.includes(content));
+    assert.deepEqual([...capture.roleProfilePrompt.matchAll(/^# Package skill core: (.+)$/gm)].map(match => match[1]), ["content-craft"]);
+    assert.doesNotMatch(capture.roleProfilePrompt, /^# (?:Coder|Reviewer|Test-Driven Development|Code Comments|Code Review Standards)$/m);
+    assert.deepEqual(result.selectedSkills, [{id: "content-craft", source: "package", path: "skills/content-craft/SKILL.md", bytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex")}]);
+  });
+
   it("loads and composes every fixed package role/profile prompt in private temporary files", async () => {
     for (const role of GUILD_ROLES) {
       const rolePrompt = readFileSync(resolve(import.meta.dirname, `../agents/roles/${role}.md`), "utf8");
-      for (const profile of GUILD_PROFILES) {
+      for (const profile of GUILD_ROLE_PROFILES[role]) {
         const profilePrompt = readFileSync(resolve(import.meta.dirname, `../agents/profiles/${profile}.md`), "utf8");
         const { capture, result } = await captureCanonicalRun({
           role,
@@ -355,8 +374,9 @@ describe("canonical role/profile child invocation", () => {
         );
         assert.ok(capture.roleProfilePrompt.startsWith(`${rolePrompt.trimEnd()}\n\n${profilePrompt.trimEnd()}`), `${role}/${profile} appended prompt`);
         assert.deepEqual((capture.envelope as any).practices, []);
-        assert.equal(capture.roleProfilePrompt.includes("# Package skill core:"), role === "reviewer" || role === "coder", `${role}/${profile} selected core`);
-        assert.deepEqual(result.selectedSkills?.map(skill => skill.id), role === "coder" ? ["code-comments"] : role === "reviewer" ? ["code-review-standards"] : [], `${role}/${profile} receipts`);
+        assert.equal(result.status, "completed", `${role}/${profile} result`);
+        assert.equal(capture.roleProfilePrompt.includes("# Package skill core:"), role === "reviewer" || role === "coder" || role === "writer", `${role}/${profile} selected core`);
+        assert.deepEqual(result.selectedSkills?.map(skill => skill.id), role === "coder" ? ["code-comments"] : role === "reviewer" ? ["code-review-standards"] : role === "writer" ? ["content-craft"] : [], `${role}/${profile} receipts`);
         if (role === "coder") assert.deepEqual((await captureCanonicalRun({role, profile, task: "Required", practices: [{id: "tdd", policy: "required"}], cwd: process.cwd(), projectTrusted: true})).result.selectedSkills?.map(s => s.id), ["tdd", "code-comments"], `${profile} required TDD`);
         const toolsFlag = capture.args.indexOf("--tools");
         assert.equal(
@@ -379,7 +399,7 @@ describe("canonical role/profile child invocation", () => {
       mkdirSync(join(root, "skills", id), {recursive: true});
       writeFileSync(join(root, "skills", id, "SKILL.md"), content);
     }
-    for (const profile of GUILD_PROFILES) {
+    for (const profile of GUILD_ROLE_PROFILES.coder) {
       for (const required of [false, true]) {
         const {capture, result} = await captureCanonicalRun({role: "coder", profile, task: "Work", practices: required ? [{id: "tdd", policy: "required"}] : [], cwd: process.cwd(), projectTrusted: true}, true, "", root);
         assert.equal(result.status, "completed", `${profile}: ${required}`);
@@ -414,6 +434,30 @@ describe("canonical role/profile child invocation", () => {
         assert.equal(result.status, "failed", variant);
         assert.match(getRunFailure(result) ?? "", /ENOENT|limit|UTF-8|regular|canonical|symlink/i, variant);
         assert.equal(existsSync(marker), false, variant);
+        assert.deepEqual(events.slice(-2).map(e => e.type), ["start", "end"]);
+        assert.equal(events.at(-1).exitCode, null);
+      }
+    } finally {telemetry.unsubscribe(collect); if (previous === undefined) process.argv.splice(1, 1); else process.argv[1] = previous;}
+  });
+
+  it("fails writer setup before spawn for missing, oversized, invalid and substituted content-craft cores", async () => {
+    const root = temporaryDirectory(), skills = join(root, "skills/content-craft"), core = join(skills, "SKILL.md");
+    mkdirSync(skills, {recursive: true});
+    const child = join(root, "child.mjs"), marker = join(root, "spawned");
+    writeFileSync(child, `import {writeFileSync} from "node:fs"; writeFileSync(${JSON.stringify(marker)}, "spawned");`);
+    const previous = process.argv[1]; process.argv[1] = child;
+    const telemetry = channel("pithos.guild.child"), events: any[] = [], collect = (e: unknown) => events.push(e);
+    telemetry.subscribe(collect);
+    try {
+      for (const variant of ["missing", "oversize", "invalid UTF-8", "symlink"]) {
+        if (variant === "oversize") writeFileSync(core, Buffer.alloc(32769, 65));
+        if (variant === "invalid UTF-8") writeFileSync(core, Buffer.from([0xff]));
+        if (variant === "symlink") {rmSync(core); const outside = join(root, "outside.md"); writeFileSync(outside, "substituted"); symlinkSync(outside, core);}
+        const result = await runGuildRoleWithPackageRootForTest({role: "writer", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true}, root);
+        assert.equal(result.status, "failed", variant);
+        assert.match(getRunFailure(result) ?? "", /ENOENT|limit|UTF-8|regular|canonical|symlink/i, variant);
+        assert.equal(existsSync(marker), false, variant);
+        assert.deepEqual(result.selectedSkills, []);
         assert.deepEqual(events.slice(-2).map(e => e.type), ["start", "end"]);
         assert.equal(events.at(-1).exitCode, null);
       }

@@ -236,7 +236,9 @@ function permissionLabel(role: GuildRole | undefined): string | undefined {
 			? "read-only review"
 			: role === "coder"
 				? "write-enabled"
-				: undefined;
+				: role === "writer"
+					? "write-enabled (no shell)"
+					: undefined;
 }
 
 function memberSummary(
@@ -512,7 +514,7 @@ function selectedSkillIds(details: unknown): string[] {
 	const skills = recordOf(details)?.selectedSkills;
 	return Array.isArray(skills) ? skills.flatMap(skill => {
 		const id = stringField(skill, "id");
-		return id === "tdd" || id === "code-review-standards" || id === "code-comments" ? [id] : [];
+		return id === "tdd" || id === "code-review-standards" || id === "code-comments" || id === "content-craft" ? [id] : [];
 	}) : [];
 }
 

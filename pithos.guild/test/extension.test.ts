@@ -9,7 +9,7 @@ import {
   GUILD_PROFILES,
   GUILD_ROLE_DEFINITIONS,
   GUILD_ROLES,
-  createGuildTarget,
+  GUILD_TARGETS,
 } from "../src/agents";
 import { registerGuild, type GuildDependencies } from "../src/guild";
 import type { GuildRoleRunResult, RunGuildRoleOptions } from "../src/runner";
@@ -170,8 +170,7 @@ function deferred<T>() {
 }
 
 function canonicalTargets(): string[] {
-  return GUILD_ROLES.flatMap((role) =>
-    GUILD_PROFILES.map((profile) => createGuildTarget(role, profile)));
+  return [...GUILD_TARGETS];
 }
 
 function assertCanonicalDetails(details: Record<string, unknown>, role: string, profile: string): void {
@@ -188,6 +187,48 @@ function assertCanonicalDetails(details: Record<string, unknown>, role: string, 
 }
 
 describe("guild extension", () => {
+  it("offers only writer/general, skips its profile picker, and reports writing permissions", async () => {
+    const pi = fakePi();
+    const received: RunGuildRoleOptions[] = [];
+    registerGuild(pi.api as never, {run: async options => {
+      received.push(options);
+      const envelope = buildTask({role: options.role, profile: options.profile, task: options.task});
+      const writerReport = validateResult(report(envelope), envelope);
+      return resultFor(options, {report: writerReport, output: renderReport(writerReport)});
+    }});
+    const handover = pi.commands.get("guild-handover");
+    assert.deepEqual(handover.getArgumentCompletions("writer/").map((item: any) => item.value), ["writer/general"]);
+    const ctx: any = context();
+    const selections: string[] = [];
+    ctx.ui.select = async (title: string, choices: string[]) => {
+      selections.push(title);
+      assert.equal(title, "Choose a Guild role");
+      return choices.find(choice => choice.startsWith("writer "));
+    };
+    ctx.ui.editor = async (title: string) => {
+      assert.equal(title, "Task for writer/general");
+      return "Write a short story at stories/music.md";
+    };
+    await handover.handler("", ctx);
+    assert.deepEqual(selections, ["Choose a Guild role"]);
+    assert.equal(received[0].role, "writer");
+    assert.equal(received[0].profile, "general");
+    assert.deepEqual(received[0].practices, []);
+    assert.match(pi.messages[0].message.content, /Permissions: write-enabled \(no shell\)/);
+    assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "completed"]);
+    const toolResult = await pi.tool.execute("writer-tool", {role: "writer", profile: "general", task: "Revise stories/music.md"}, undefined, undefined, ctx);
+    assertCanonicalDetails(toolResult.details, "writer", "general");
+    assert.equal(toolResult.details.taskOutcome, "succeeded");
+    assert.deepEqual(toolResult.details.tools, ["read", "grep", "find", "ls", "git_read", "edit", "write", "guild_submit_result"]);
+    for (const profile of GUILD_PROFILES.filter(profile => profile !== "general")) {
+      assert.throws(() => pi.tool.prepareArguments({role: "writer", profile, task: "Write"}), /unsupported/i);
+      await assert.rejects(pi.tool.execute("bad-writer", {role: "writer", profile, task: "Write"}, undefined, undefined, ctx), /unsupported/i);
+      await handover.handler(`writer/${profile} Write`, ctx);
+      await handover.handler(`--json ${JSON.stringify({role: "writer", profile, task: "Write"})}`, ctx);
+    }
+    assert.equal(received.length, 2);
+    assert.throws(() => pi.tool.prepareArguments({role: "writer", profile: "general", task: "Write", practices: [{id: "tdd", policy: "required"}]}), /practices/i);
+  });
   it("correlates a runner observation with its parent tool call", async () => {
     const pi = fakePi();
     let received: RunGuildRoleOptions | undefined;
@@ -263,11 +304,11 @@ describe("guild extension", () => {
     const handover = pi.commands.get("guild-handover");
     const completions = handover.getArgumentCompletions("");
     const aliases = Object.entries(GUILD_MEMBER_ALIASES);
-    assert.equal(completions.length, 33);
-    assert.deepEqual(completions.slice(0, 24).map((item: any) => item.value), canonicalTargets());
-    assert.deepEqual(completions.slice(24).map((item: any) => item.value), aliases.map(([alias]) => alias));
+    assert.equal(completions.length, 34);
+    assert.deepEqual(completions.slice(0, 25).map((item: any) => item.value), canonicalTargets());
+    assert.deepEqual(completions.slice(25).map((item: any) => item.value), aliases.map(([alias]) => alias));
     aliases.forEach(([, target], index) => {
-      assert.match(completions[index + 24].description, new RegExp(target.replace("/", "\\/")));
+      assert.match(completions[index + 25].description, new RegExp(target.replace("/", "\\/")));
     });
     assert.deepEqual(
       handover.getArgumentCompletions("coder/").map((item: any) => item.value),
@@ -849,7 +890,7 @@ describe("guild extension", () => {
     await pi.commands.get("guild-handover").handler("", ctx);
 
     assert.deepEqual(pickerTitles, ["Choose a Guild role", "Choose a Guild profile", "Choose coder practice"]);
-    assert.equal(pickerChoices[0].length, 4);
+    assert.equal(pickerChoices[0].length, 5);
     assert.equal(pickerChoices[1].length, 6);
     assert.match(pickerChoices[0][0], /^explorer \[read-only\]/);
     assert.match(pickerChoices[0][2], /^coder \[write-enabled\]/);
@@ -1090,12 +1131,13 @@ describe("guild extension", () => {
     assert.equal(notifications[0].level, "info");
     const roster = notifications[0].message;
     assert.deepEqual(
-      [...roster.matchAll(/^- (explorer|architect|coder|reviewer) \[(.+?)\]/gm)].map((match) => [match[1], match[2]]),
+      [...roster.matchAll(/^- (explorer|architect|coder|reviewer|writer) \[(.+?)\]/gm)].map((match) => [match[1], match[2]]),
       [
         ["explorer", "read-only"],
         ["architect", "read-only"],
         ["coder", "write-enabled"],
         ["reviewer", "read-only review"],
+        ["writer", "write-enabled (no shell)"],
       ],
     );
     assert.deepEqual(
@@ -1298,6 +1340,29 @@ it("carries blocked outcome, selected receipts and practices through tool and di
  assert.equal(pi.messages[1].message.details.taskOutcome, "blocked");
  assert.match(pi.messages[1].message.content, /Task outcome: blocked/);
  assert.match(pi.messages[1].message.content, /## compliance\n[\s\S]*No preimplementation red/);
+});
+
+it("carries blocked writer artifacts and content-craft receipts through both public entry paths", async () => {
+ const pi = fakePi();
+ const receipt = {id: "content-craft", source: "package", path: "skills/content-craft/SKILL.md", bytes: 42, sha256: "abc"};
+ registerGuild(pi.api as never, {run: async options => {
+  const task = buildTask({role: options.role, profile: options.profile, task: options.task});
+  const submitted = validateResult({...report(task), taskOutcome: "blocked", blockers: ["Explicit output path missing"], payload: {artifacts: [], sources: [], checks: []}}, task);
+  return resultFor(options, {selectedSkills: [receipt] as any, report: submitted, output: renderReport(submitted)});
+ }});
+ const input = {role: "writer", profile: "general", task: "Write a story"};
+ const result = await pi.tool.execute("writer-blocked", input, undefined, undefined, context());
+ assert.equal(result.details.status, "completed");
+ assert.equal(result.details.taskOutcome, "blocked");
+ assert.deepEqual(result.details.report.payload.artifacts, []);
+ assert.deepEqual(result.details.selectedSkills, [receipt]);
+ assert.deepEqual(result.details.practices, []);
+ assert.equal(pi.handlers.get("tool_result")({toolName: "guild_handover", details: result.details})?.isError, undefined);
+ await pi.commands.get("guild-handover").handler('--json '+JSON.stringify(input), context());
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "completed"]);
+ assert.equal(pi.messages[1].message.details.taskOutcome, "blocked");
+ assert.deepEqual(pi.messages[1].message.details.selectedSkills, [receipt]);
+ assert.match(pi.messages[1].message.content, /Explicit output path missing/);
 });
 
 it("returns the same failed terminal details and partial usage to tool and direct paths", async () => {

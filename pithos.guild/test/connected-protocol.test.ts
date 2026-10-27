@@ -8,8 +8,8 @@ import { buildTask, report } from "./protocol-fixtures.ts";
 
 // Provider-free seam follows Pi 0.87.0 source ordering: finalized assistant,
 // execution_start, schema validation, tool_call/execute, execution_end, toolResult.
-async function connected(scenario: "valid" | "invalid-repair" | "missing-repair" | "exhausted" | "identity" | "mixed" | "cancel") {
- const task = buildTask({role: "coder", profile: "typescript", task: "Work"});
+async function connected(scenario: "valid" | "invalid-repair" | "missing-repair" | "exhausted" | "identity" | "mixed" | "cancel" | "blocked", role: "coder" | "writer" = "coder") {
+ const task = buildTask({role, profile: role === "writer" ? "general" : "typescript", task: "Work"});
  const stream = new ResultStream(task);
  const hooks = new Map<string, Function>();
  let tool: any;
@@ -53,16 +53,23 @@ async function connected(scenario: "valid" | "invalid-repair" | "missing-repair"
   await submit("bad", {});
   await emit({type: "agent_start"}); // Must not reset the budget.
  }
- await submit("final", scenario === "exhausted" ? {} : {...report(task), ...(scenario === "identity" ? {taskId: "other"} : {})}, scenario === "mixed");
+ await submit("final", scenario === "exhausted" ? {} : {...report(task), ...(scenario === "identity" ? {taskId: "other"} : {}),
+  ...(scenario === "blocked" ? {taskOutcome: "blocked", blockers: ["Explicit output path missing"], payload: {artifacts: [], sources: [], checks: []}} : {})}, scenario === "mixed");
  await hooks.get("agent_before_settle")!({outcome: aborted ? "aborted" : "completed", entries: []}, ctx);
  await emit({type: "agent_end"});
  await emit({type: "agent_settled"});
  return stream.finish(0, scenario === "cancel");
 }
-for (const scenario of ["valid", "invalid-repair", "missing-repair", "exhausted", "identity", "mixed", "cancel"] as const) {
- it(`connects child hooks to independent parent result validation: ${scenario}`, async () => {
-  const terminal = await connected(scenario);
+for (const role of ["coder", "writer"] as const) for (const scenario of ["valid", "invalid-repair", "missing-repair", "exhausted", "identity", "mixed", "cancel"] as const) {
+ it(`connects ${role} child hooks to independent parent result validation: ${scenario}`, async () => {
+  const terminal = await connected(scenario, role);
   const expected = scenario === "cancel" ? "cancelled" : ["valid", "invalid-repair", "missing-repair"].includes(scenario) ? "completed" : "failed";
   assert.equal(terminal.status, expected, terminal.diagnostic);
  });
 }
+it("retains a writer's blocked report without requiring artifacts or treating it as transport failure", async () => {
+ const terminal = await connected("blocked", "writer");
+ assert.equal(terminal.status, "completed", terminal.diagnostic);
+ assert.equal(terminal.report?.taskOutcome, "blocked");
+ assert.deepEqual(terminal.report?.blockers, ["Explicit output path missing"]);
+});

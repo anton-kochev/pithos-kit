@@ -8,6 +8,8 @@ import {
   GUILD_PROFILES,
   GUILD_ROLE_DEFINITIONS,
   GUILD_ROLES,
+  GUILD_ROLE_PROFILES,
+  GUILD_TARGETS,
   createGuildTarget,
   isGuildMemberAlias,
   isGuildProfile,
@@ -17,8 +19,8 @@ import {
 } from "../src/agents";
 
 describe("canonical Guild role/profile registry", () => {
-  it("defines the canonical four roles, six profiles, and all 24 pairs", () => {
-    assert.deepEqual(GUILD_ROLES, ["explorer", "architect", "coder", "reviewer"]);
+  it("defines five roles, six profiles, and only the 25 supported pairs", () => {
+    assert.deepEqual(GUILD_ROLES, ["explorer", "architect", "coder", "reviewer", "writer"]);
     assert.deepEqual(GUILD_PROFILES, ["general", "frontend", "angular", "typescript", "dotnet", "rust"]);
 
     for (const role of GUILD_ROLES) assert.equal(isGuildRole(role), true);
@@ -27,9 +29,19 @@ describe("canonical Guild role/profile registry", () => {
     assert.equal(isGuildProfile("researcher"), false);
 
     const targets = GUILD_ROLES.flatMap((role) =>
-      GUILD_PROFILES.map((profile) => createGuildTarget(role, profile)),
+      GUILD_ROLE_PROFILES[role].map((profile) => createGuildTarget(role, profile)),
     );
-    assert.equal(new Set(targets).size, 24);
+    assert.equal(new Set(targets).size, 25);
+    assert.deepEqual(GUILD_TARGETS, targets);
+    assert.equal(Object.isFrozen(GUILD_TARGETS), true);
+    assert.equal(Object.isFrozen(GUILD_ROLE_PROFILES), true);
+    for (const role of GUILD_ROLES) assert.equal(Object.isFrozen(GUILD_ROLE_PROFILES[role]), true);
+    assert.deepEqual(GUILD_ROLE_PROFILES.writer, ["general"]);
+    for (const profile of GUILD_PROFILES.filter(profile => profile !== "general")) {
+      assert.equal(isGuildTarget(`writer/${profile}`), false);
+      assert.equal(resolveGuildTarget(`writer/${profile}`), undefined);
+      assert.throws(() => createGuildTarget("writer", profile), /unsupported/i);
+    }
     assert.ok(targets.every((target) => isGuildTarget(target)));
     assert.equal(isGuildTarget("researcher/general"), false);
     assert.equal(isGuildTarget("architect/researcher"), false);
@@ -44,7 +56,9 @@ describe("canonical Guild role/profile registry", () => {
       const definition = GUILD_ROLE_DEFINITIONS[role];
       const expectedTools = role === "coder"
         ? ["read", "grep", "find", "ls", "edit", "write", "bash"]
-        : ["read", "grep", "find", "ls", "git_read"];
+        : role === "writer"
+          ? ["read", "grep", "find", "ls", "git_read", "edit", "write"]
+          : ["read", "grep", "find", "ls", "git_read"];
 
       assert.deepEqual(Object.keys(definition).sort(), ["description", "tools"]);
       assert.ok(definition.description.length > 0);
@@ -104,7 +118,7 @@ describe("canonical Guild role/profile registry", () => {
     for (const prompt of Object.values(prompts)) {
       assert.match(prompt, /^# /);
       assert.doesNotMatch(prompt, /^---/);
-      assert.match(prompt, /repository evidence/i);
+      assert.match(prompt, /repository evidence|supplied evidence/i);
       assert.match(prompt, /package resource is guidance[\s\S]*role owns (?:its )?capability/i);
     }
     for (const role of ["explorer", "architect"] as const) {
@@ -178,7 +192,7 @@ describe("canonical Guild role/profile registry", () => {
     }
 
     for (const role of GUILD_ROLES) {
-      for (const profile of GUILD_PROFILES) {
+      for (const profile of GUILD_ROLE_PROFILES[role]) {
         const target = createGuildTarget(role, profile);
         assert.equal(resolveGuildTarget(target), target);
       }

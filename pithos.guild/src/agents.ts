@@ -3,6 +3,7 @@ export const GUILD_ROLES = Object.freeze([
 	"architect",
 	"coder",
 	"reviewer",
+	"writer",
 ] as const);
 
 export type GuildRole = (typeof GUILD_ROLES)[number];
@@ -17,7 +18,19 @@ export const GUILD_PROFILES = Object.freeze([
 ] as const);
 
 export type GuildProfile = (typeof GUILD_PROFILES)[number];
-export type GuildTarget = `${GuildRole}/${GuildProfile}`;
+export type GuildTarget = `${Exclude<GuildRole, "writer">}/${GuildProfile}` | "writer/general";
+
+// One supported-pair policy serves validation, completion, and interactive selection.
+export const GUILD_ROLE_PROFILES: Readonly<Record<GuildRole, readonly GuildProfile[]>> = Object.freeze({
+	explorer: GUILD_PROFILES,
+	architect: GUILD_PROFILES,
+	coder: GUILD_PROFILES,
+	reviewer: GUILD_PROFILES,
+	writer: Object.freeze(["general"] as const),
+});
+
+export const GUILD_TARGETS = Object.freeze(GUILD_ROLES.flatMap(role =>
+	GUILD_ROLE_PROFILES[role].map(profile => createGuildTarget(role, profile))));
 
 export function isGuildRole(value: unknown): value is GuildRole {
 	return typeof value === "string" && (GUILD_ROLES as readonly string[]).includes(value);
@@ -28,13 +41,17 @@ export function isGuildProfile(value: unknown): value is GuildProfile {
 }
 
 export function createGuildTarget(role: GuildRole, profile: GuildProfile): GuildTarget {
-	return `${role}/${profile}`;
+	if (!isGuildRole(role) || !isGuildProfile(profile) || !GUILD_ROLE_PROFILES[role].includes(profile)) {
+		throw new Error(`Unsupported Guild target: ${role}/${profile}`);
+	}
+	return `${role}/${profile}` as GuildTarget;
 }
 
 export function isGuildTarget(value: unknown): value is GuildTarget {
 	if (typeof value !== "string") return false;
 	const parts = value.split("/");
-	return parts.length === 2 && isGuildRole(parts[0]) && isGuildProfile(parts[1]);
+	return parts.length === 2 && isGuildRole(parts[0]) && isGuildProfile(parts[1])
+		&& GUILD_ROLE_PROFILES[parts[0]].includes(parts[1]);
 }
 
 export interface GuildRoleDefinition {
@@ -50,6 +67,7 @@ export interface GuildProfileDefinition {
 // git_read is the child-registered read-only git tool; shell access stays coder-only.
 const CANONICAL_READ_ONLY_TOOLS = Object.freeze(["read", "grep", "find", "ls", "git_read"] as const);
 const CANONICAL_CODER_TOOLS = Object.freeze(["read", "grep", "find", "ls", "edit", "write", "bash"] as const);
+const CANONICAL_WRITER_TOOLS = Object.freeze([...CANONICAL_READ_ONLY_TOOLS, "edit", "write"] as const);
 
 export const GUILD_ROLE_DEFINITIONS = Object.freeze({
 	explorer: Object.freeze({
@@ -68,12 +86,16 @@ export const GUILD_ROLE_DEFINITIONS = Object.freeze({
 		description: "Reviews repository changes with severity-ranked evidence and a clear verdict without changing the repository.",
 		tools: CANONICAL_READ_ONLY_TOOLS,
 	}),
+	writer: Object.freeze({
+		description: "Creates or revises scoped writing artifacts from a supplied brief and sources; supports only writer/general, without shell or web access.",
+		tools: CANONICAL_WRITER_TOOLS,
+	}),
 } satisfies Record<GuildRole, GuildRoleDefinition>);
 
 export const GUILD_PROFILE_DEFINITIONS = Object.freeze({
 	general: Object.freeze({
-		description: "Technology-neutral software engineering guidance.",
-		expertise: "Cross-cutting concerns in the languages and platforms evidenced by the repository.",
+		description: "Task-grounded general guidance; engineering expertise applies only when relevant.",
+		expertise: "The supplied brief and evidence; cross-cutting software concerns when supported by repository context.",
 	}),
 	frontend: Object.freeze({
 		description: "Browser and user-interface engineering guidance.",

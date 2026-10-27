@@ -12,6 +12,7 @@ function fixture() {
  mkdirSync(join(root, "skills", "tdd"), {recursive: true});
  mkdirSync(join(root, "skills", "code-comments"), {recursive: true});
  mkdirSync(join(root, "skills", "code-review-standards"), {recursive: true});
+ mkdirSync(join(root, "skills", "content-craft"), {recursive: true});
  return root;
 }
 afterEach(() => { for (const root of roots.splice(0)) rmSync(root, {recursive: true, force: true}); });
@@ -22,9 +23,10 @@ it("selects exact package cores by role and required practice, with raw-byte rec
  writeFileSync(join(root, "skills/code-comments/SKILL.md"), comments);
  writeFileSync(join(root, "skills/tdd/SKILL.md"), tdd);
  writeFileSync(join(root, "skills/code-review-standards/SKILL.md"), "# Review\n");
- for (const role of ["explorer", "architect", "coder", "reviewer"] as const) {
+ writeFileSync(join(root, "skills/content-craft/SKILL.md"), "# Craft\n");
+ for (const role of ["explorer", "architect", "coder", "reviewer", "writer"] as const) {
   const selected = await loadGuildSkillCores(root, role, []);
-  assert.deepEqual(selected.map(s => s.receipt.id), role === "reviewer" ? ["code-review-standards"] : role === "coder" ? ["code-comments"] : []);
+  assert.deepEqual(selected.map(s => s.receipt.id), role === "writer" ? ["content-craft"] : role === "reviewer" ? ["code-review-standards"] : role === "coder" ? ["code-comments"] : []);
  }
  const cores = await loadGuildSkillCores(root, "coder", [{id: "tdd", policy: "required"}]);
  assert.deepEqual(cores.map(core => core.receipt.id), ["tdd", "code-comments"]);
@@ -35,6 +37,43 @@ it("selects exact package cores by role and required practice, with raw-byte rec
  assert.equal(selected.content, tdd);
  assert.deepEqual(selected.receipt, {id: "tdd", source: "package", path: "skills/tdd/SKILL.md", bytes: Buffer.byteLength(tdd), sha256: createHash("sha256").update(tdd).digest("hex")});
  assert.equal(selected.sourcePath, join(root, "skills/tdd/SKILL.md"));
+});
+
+it("selects only the fixed writer content-craft core with a raw-byte receipt", async () => {
+ const root = fixture(), content = "# Craft\nAudience π and 🙂.\r\n";
+ const sourcePath = join(root, "skills/content-craft/SKILL.md");
+ writeFileSync(sourcePath, content);
+ // Unrelated cores are absent: writer selection must not depend on coder or reviewer resources.
+ const [core, ...rest] = await loadGuildSkillCores(root, "writer", []);
+ assert.deepEqual(rest, []);
+ assert.equal(core.content, content);
+ assert.equal(core.sourcePath, sourcePath);
+ assert.deepEqual(core.receipt, {id: "content-craft", source: "package", path: "skills/content-craft/SKILL.md", bytes: Buffer.byteLength(content), sha256: createHash("sha256").update(content).digest("hex")});
+});
+
+it("fails closed on invalid content-craft cores only for writers", async () => {
+ for (const variant of ["missing", "oversized", "invalid UTF-8", "file symlink", "directory symlink", "directory", "parent file"] as const) {
+  const root = fixture(), directory = join(root, "skills/content-craft"), core = join(directory, "SKILL.md");
+  writeFileSync(join(root, "skills/tdd/SKILL.md"), "# TDD\n");
+  writeFileSync(join(root, "skills/code-comments/SKILL.md"), "# Comments\n");
+  writeFileSync(join(root, "skills/code-review-standards/SKILL.md"), "# Review\n");
+  if (variant === "oversized") writeFileSync(core, Buffer.alloc(32 * 1024 + 1, 65));
+  if (variant === "invalid UTF-8") writeFileSync(core, Buffer.from([0xff]));
+  if (variant === "directory") mkdirSync(core);
+  if (variant === "file symlink") {
+   const outside = join(root, "outside.md"); writeFileSync(outside, "substitute"); symlinkSync(outside, core);
+  }
+  if (variant === "directory symlink") {
+   const outside = join(root, "outside"); mkdirSync(outside); writeFileSync(join(outside, "SKILL.md"), "substitute");
+   rmSync(directory, {recursive: true}); symlinkSync(outside, directory);
+  }
+  if (variant === "parent file") {rmSync(directory, {recursive: true}); writeFileSync(directory, "not a directory");}
+  await assert.rejects(loadGuildSkillCores(root, "writer", []), /ENOENT|size|limit|UTF-8|regular|canonical/i, variant);
+  for (const role of ["explorer", "architect", "coder", "reviewer"] as const) {
+   assert.deepEqual((await loadGuildSkillCores(root, role, [])).map(core => core.receipt.id), role === "coder" ? ["code-comments"] : role === "reviewer" ? ["code-review-standards"] : [], `${variant}: ${role}`);
+  }
+  assert.deepEqual((await loadGuildSkillCores(root, "coder", [{id: "tdd", policy: "required"}])).map(core => core.receipt.id), ["tdd", "code-comments"], variant);
+ }
 });
 
 it("rejects missing, oversized, invalid UTF-8 and symlink-substituted cores", async () => {
@@ -52,6 +91,7 @@ it("rejects missing, oversized, invalid UTF-8 and symlink-substituted cores", as
 it("fails closed on invalid comment cores only for coders, with or without required TDD", async () => {
  for (const variant of ["missing", "oversized", "invalid UTF-8", "file symlink", "directory symlink", "directory", "parent file"] as const) {
   const root = fixture(), directory = join(root, "skills/code-comments"), core = join(directory, "SKILL.md");
+  writeFileSync(join(root, "skills/content-craft/SKILL.md"), "# Craft\n");
   writeFileSync(join(root, "skills/tdd/SKILL.md"), "# TDD\n");
   writeFileSync(join(root, "skills/code-review-standards/SKILL.md"), "# Review\n");
   if (variant === "oversized") writeFileSync(core, Buffer.alloc(32 * 1024 + 1, 65));
@@ -68,8 +108,8 @@ it("fails closed on invalid comment cores only for coders, with or without requi
   for (const practices of [[], [{id: "tdd" as const, policy: "required" as const}]]) {
    await assert.rejects(loadGuildSkillCores(root, "coder", practices), /ENOENT|size|limit|UTF-8|regular|canonical/i, variant);
   }
-  for (const role of ["explorer", "architect", "reviewer"] as const) {
-   assert.deepEqual((await loadGuildSkillCores(root, role, [])).map(core => core.receipt.id), role === "reviewer" ? ["code-review-standards"] : [], `${variant}: ${role}`);
+  for (const role of ["explorer", "architect", "reviewer", "writer"] as const) {
+   assert.deepEqual((await loadGuildSkillCores(root, role, [])).map(core => core.receipt.id), role === "writer" ? ["content-craft"] : role === "reviewer" ? ["code-review-standards"] : [], `${variant}: ${role}`);
   }
  }
 });

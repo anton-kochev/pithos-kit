@@ -12,10 +12,9 @@ import {
 	GUILD_PROFILE_DEFINITIONS,
 	GUILD_ROLES,
 	GUILD_ROLE_DEFINITIONS,
+	GUILD_ROLE_PROFILES,
 	createGuildTarget,
 	isGuildMemberAlias,
-	isGuildProfile,
-	isGuildRole,
 	resolveGuildTarget,
 	type GuildMemberAlias,
 	type GuildProfile,
@@ -68,6 +67,7 @@ Roles:
   architect
   coder
   reviewer
+  writer (general only; no shell or web access)
 
 Profiles:
   general
@@ -83,7 +83,7 @@ Options:
 
 const GUILD_HANDOVER_PARAMETERS = Type.Object({
 	role: StringEnum(GUILD_ROLES, { description: "Canonical Guild role that owns permissions and workflow" }),
-	profile: StringEnum(GUILD_PROFILES, { description: "Canonical Guild technology profile" }),
+	profile: StringEnum(GUILD_PROFILES, { description: "Canonical Guild profile; writer supports only general" }),
 	task: Type.String({ minLength: 1, description: "Self-contained delegated task, including relevant scope and acceptance criteria" }),
 	practices: Type.Optional(Type.Array(Type.Object({id: StringEnum(["tdd"] as const), policy: StringEnum(["required"] as const)}, {additionalProperties: false}), {maxItems: 1, description: "Coder-only required TDD"})),
 }, { additionalProperties: false });
@@ -180,6 +180,7 @@ function modelName(ctx: ExtensionContext): string | undefined {
 
 function rolePermission(role: GuildRole): string {
 	if (role === "coder") return "write-enabled";
+	if (role === "writer") return "write-enabled (no shell)";
 	if (role === "reviewer") return "read-only review";
 	return "read-only";
 }
@@ -298,6 +299,7 @@ function formatRoster(): string {
 	for (const profile of GUILD_PROFILES) {
 		lines.push(`- ${profile} — ${GUILD_PROFILE_DEFINITIONS[profile].description}`);
 	}
+	lines.push("", "Supported pairs: writer/general only for writer; all listed profiles for other roles.");
 	lines.push("", "Legacy aliases:");
 	for (const [alias, target] of Object.entries(GUILD_MEMBER_ALIASES)) {
 		lines.push(`- ${alias} → ${target}`);
@@ -591,13 +593,14 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		label: "Guild",
 		description: [
 			"Hand one task to an isolated canonical Guild role/profile target.",
-			"Roles own permissions: explorer, architect, and reviewer are read-only; coder is write-enabled.",
-			"Profiles select expertise: general, frontend, angular, typescript, dotnet, or rust.",
+			"Roles own permissions: explorer, architect, and reviewer are read-only; coder is write-enabled; writer can edit writing artifacts without shell or web access.",
+			"Profiles select expertise: general, frontend, angular, typescript, dotnet, or rust. Writer supports only general.",
 		].join(" "),
-		promptSnippet: "Hand focused exploration, architecture, implementation, or review work to an isolated Guild role/profile target",
+		promptSnippet: "Hand focused exploration, architecture, implementation, writing, or review work to an isolated Guild role/profile target",
 		promptGuidelines: [
 			"Use guild_handover with a canonical role, profile, and self-contained task with scope and acceptance criteria.",
-			"Use the explorer role for repository fact-finding, architect for contracts and implementation handoffs, coder for implementation and verification, and reviewer for evidence-based review.",
+			"Use explorer for repository fact-finding, architect for contracts and implementation handoffs, coder for implementation and verification, reviewer for evidence-based review, and writer/general for writing artifacts.",
+			"For writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Clarify and research in the parent; children have no web or question tools.",
 			"Choose the profile from repository evidence: general, frontend, angular, typescript, dotnet, or rust.",
 		],
 		parameters: GUILD_HANDOVER_PARAMETERS,
@@ -622,7 +625,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	});
 
 	const canonicalCompletions = GUILD_ROLES.flatMap((role) =>
-		GUILD_PROFILES.map((profile) => ({
+		GUILD_ROLE_PROFILES[role].map((profile) => ({
 			value: createGuildTarget(role, profile),
 			label: createGuildTarget(role, profile),
 			description: `${GUILD_ROLE_DEFINITIONS[role].description} ${GUILD_PROFILE_DEFINITIONS[profile].description}`,
@@ -691,14 +694,19 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				if (!pickedRole) return;
 				role = pickedRole;
 
-				const profileChoices = GUILD_PROFILES.map((candidate) =>
-					`${candidate} — ${GUILD_PROFILE_DEFINITIONS[candidate].description}`);
-				const selectedProfile = await ctx.ui.select("Choose a Guild profile", profileChoices);
-				if (!selectedProfile) return;
-				const profileIndex = profileChoices.indexOf(selectedProfile);
-				const pickedProfile = GUILD_PROFILES[profileIndex];
-				if (!pickedProfile) return;
-				profile = pickedProfile;
+				const profiles = GUILD_ROLE_PROFILES[role];
+				if (profiles.length === 1) {
+					profile = profiles[0];
+				} else {
+					const profileChoices = profiles.map((candidate) =>
+						`${candidate} — ${GUILD_PROFILE_DEFINITIONS[candidate].description}`);
+					const selectedProfile = await ctx.ui.select("Choose a Guild profile", profileChoices);
+					if (!selectedProfile) return;
+					const profileIndex = profileChoices.indexOf(selectedProfile);
+					const pickedProfile = profiles[profileIndex];
+					if (!pickedProfile) return;
+					profile = pickedProfile;
+				}
 			}
 
 			const target = createGuildTarget(role, profile);

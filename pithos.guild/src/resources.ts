@@ -9,6 +9,7 @@ const CORE_PATHS = {
  tdd: "skills/tdd/SKILL.md",
  "code-review-standards": "skills/code-review-standards/SKILL.md",
  "code-comments": "skills/code-comments/SKILL.md",
+ "content-craft": "skills/content-craft/SKILL.md",
 } as const;
 export interface GuildSkillReceipt {
  id: keyof typeof CORE_PATHS;
@@ -26,7 +27,7 @@ export interface GuildSkillCore {
 /** root is injected only for offline fixture tests; production always supplies this module's package root. */
 export async function loadGuildSkillCores(root: string, role: GuildRole, practices: readonly GuildPractice[]): Promise<GuildSkillCore[]> {
  if (!GUILD_ROLES.includes(role)) throw new Error("Invalid Guild role for skill selection");
- const ids: GuildSkillReceipt["id"][] = role === "reviewer" ? ["code-review-standards"] : role === "coder"
+ const ids: GuildSkillReceipt["id"][] = role === "writer" ? ["content-craft"] : role === "reviewer" ? ["code-review-standards"] : role === "coder"
   ? [...(practices.some(p => p.id === "tdd" && p.policy === "required") ? ["tdd" as const] : []), "code-comments"] : [];
  const cores: GuildSkillCore[] = [];
  for (const id of ids) cores.push(await loadGuildSkillCore(root, id));
