@@ -62,6 +62,10 @@ const GUILD_HANDOVER_HELP = `Usage: /guild-handover [<role>/<profile> | <legacy-
 
 Directly delegate a task to one canonical Guild role/profile target. Omit the target to choose a role and then a profile, or omit the task to open the multiline task editor.
 
+For reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. A plan is optional. Use explicit local file paths for longer context and instruct the child to read those files; preserve material requirements, omit unrelated context and secrets. Reviewers independently challenge plan and implementation, not just plan conformance.
+
+Children do not inherit the parent conversation and cannot ask questions. Close review context gaps and request another review; ask the user only when information is unavailable. Never present a limited review as complete.
+
 Roles:
   explorer
   architect
@@ -601,6 +605,8 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			"Use guild_handover with a canonical role, profile, and self-contained task with scope and acceptance criteria.",
 			"Use explorer for repository fact-finding, architect for contracts and implementation handoffs, coder for implementation and verification, reviewer for evidence-based review, and writer/general for writing artifacts.",
 			"For writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Clarify and research in the parent; children have no web or question tools.",
+			"For reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. A plan is optional. Use explicit local file paths for longer context and instruct the child to read those files; preserve material requirements, omit unrelated context and secrets. Reviewers independently challenge plan and implementation, not just plan conformance.",
+			"Children do not inherit the parent conversation and cannot ask questions. Close review context gaps and request another review; ask the user only when information is unavailable. Never present a limited review as complete.",
 			"Choose the profile from repository evidence: general, frontend, angular, typescript, dotnet, or rust.",
 		],
 		parameters: GUILD_HANDOVER_PARAMETERS,

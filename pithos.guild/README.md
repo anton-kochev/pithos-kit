@@ -106,6 +106,36 @@ The methodology honors explicit commits and ranges or inspects staged, unstaged,
 
 Use `pi config` or `pi config -l` to disable this resource, then run `/reload`. The canonical `reviewer` role remains self-contained without the skill: its package role prompt retains a hard read-only boundary, findings-first evidence, and a deterministic verdict.
 
+### Independent review workflow
+
+Review is independent scrutiny of original needs, plan/design, and implementation, not a plan-conformance stamp. A plan is optional. Parent and direct-command callers supply a self-contained brief in the existing task field; children do not inherit the conversation or ambient context files. Preserve material requirements rather than substituting an author's checklist. Use explicit local file paths for longer context and instruct the child to read those files; disclose inaccessible references, omit unrelated context and secrets.
+
+Reusable review brief:
+
+```text
+Original requirement (preferably verbatim): "..."
+User constraints and decisions, with provenance: ...
+Implementer assumptions (not user decisions): ...
+Exact scope and comparison: paths, commit/range/base or staged/unstaged/untracked state; exclusions ...
+Plan/rationale (optional): none, or explicit local paths; read those files.
+Actual verification evidence and limitations: commands, observed outcomes, evidence paths;
+not-run checks and inaccessible references ...
+Independently challenge plan/design and implementation from the original needs.
+Assess context sufficiency; retain supported findings and disclose unassessed dimensions.
+```
+
+No-plan existing-code example:
+
+```text
+/guild-handover reviewer/typescript Review src/cache.ts at HEAD for resource cleanup against its public contract; no feature request or written plan exists. Read src/cache.ts and test/cache.test.ts. Objective: identify leaks on cancellation. User decision: preserve the public API. Implementer assumption: cancellation always follows initialization. Scope is these paths at HEAD, not working-tree changes. Verification: no commands run; inspect tests, do not claim execution. Report missing essential context rather than inventing intent.
+```
+
+For a change review, replace the scope with the exact comparison and include the original request, for example: `Original requirement: "Cancellation must release the worker even before startup completes." Read docs/cancellation-contract.md and review src/worker.ts and test/worker.test.ts against HEAD, including staged and unstaged changes. Plan: none. User constraint: preserve the API. Author assumption: startup cannot fail. Verification: npm test passed per supplied author log docs/review/test-output.txt; read it, treat it as supplied evidence, not your own execution.` Use real scoped paths and evidence, not these illustrative names.
+
+Reviewers distinguish planning/design gaps from implementation bugs and assess whether tests merely mirror implementation assumptions. They respect explicit decisions unless consequential evidence warrants challenge; independent review is not opposition for sport. Missing essentials preventing the assigned review produce `taskOutcome: blocked` with precise blockers, while independently supported findings remain. Partial context can support an explicitly limited review, never silent narrowing or approval of material unassessed scope. Missing context is not itself a severity finding.
+
+Task outcome and verdict are separate: Request changes for unresolved Critical/High/Medium findings; Comment for Low findings or material unresolved limitations; Approve only with neither in the fully inspected assigned scope. A completed review requesting changes is not itself blocked. Isolated reviewers cannot ask questions or run shell/tests and must always submit the structured report, even when blocked. Parent skill use may ask focused questions. The parent closes gaps by supplying evidence and requesting another review, asking the user only if information is genuinely unavailable. Never present a limited review as complete. These are instruction contracts, not mechanical guarantees of independent reasoning; no automatic review pipeline or new schema is introduced.
+
 ## Code-comments skill
 
 Guild's language-neutral `code-comments` skill guides accurate, concise comments that prevent misunderstandings and plausible wrong edits. It preserves intent, contracts, constraints, and non-obvious mechanisms rather than imposing comment-count targets or a why-only rule. Load it directly with optional task context:
@@ -305,7 +335,7 @@ Empty findings and unperformed checks are legitimate when reported honestly. Eac
 
 A malformed submission or prose-only completion gets **one shared corrective opportunity in the same child**. The next assistant response must submit the result alone; there is no respawn, queue re-entry, or reset on continued agent runs. Identity mismatch, mixed batches, duplicates, post-submission work, exhausted repair, missing handshake/settlement, process/provider errors, and cleanup failures fail closed. Cancellation and failure override a previously valid submission. Mixed-batch rejection is not a claim that sibling work never happened or was rolled back.
 
-Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: every coder selects `skills/code-comments/SKILL.md`, with `skills/tdd/SKILL.md` first when required TDD is requested; reviewer selects only `skills/code-review-standards/SKILL.md`; writer selects only `skills/content-craft/SKILL.md`; explorer and architect select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller must include the original requirement, report, scope and evidence in the task (not coder practices); the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
+Reports, commands, changes, references, TDD cycles, and judgments are **child-reported claims**, not authenticated or host-certified truth. Fixed package core selection is host-owned: every coder selects `skills/code-comments/SKILL.md`, with `skills/tdd/SKILL.md` first when required TDD is requested; reviewer selects only `skills/code-review-standards/SKILL.md`; writer selects only `skills/content-craft/SKILL.md`; explorer and architect select none. Each selected raw valid UTF-8 core must be a canonical regular package file <=32 KiB; missing, symlinked or oversized cores fail before child launch. Its complete content is embedded with absolute source and references-directory anchors, not loaded via ambient skills or references preloading. Details receipts record package-relative path, byte count and SHA-256 of injected raw bytes; they attest selection, not authenticity, child attention, or test execution. Host role/tools/protocol overrides required practice, which overrides general skill exceptions. For optional parent-selected reviewer work, the caller supplies the self-contained review brief above in the task (not coder practices), with an author report if available; the reviewer classifies claims as corroborated/contradicted/unverified. No automatic reviewer pipeline is installed. These guardrails are not a filesystem sandbox. Tool failures carry structured terminal details and are marked as errors through Pi's `tool_result` hook. Known usage is retained on failures/cancellation: `usageFields` identifies fields actually observed, totals may be partial, and `usageKnown: false` means the numeric compatibility placeholders must not be read as measured zero usage.
 
 
 ## Development

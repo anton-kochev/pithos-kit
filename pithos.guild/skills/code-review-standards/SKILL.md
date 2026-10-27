@@ -9,7 +9,7 @@ Apply this language-neutral methodology to repository-connected code review. Det
 
 ## Hard boundary: read-only review
 
-Review only: never create, edit, or delete files; stage or commit changes; install packages; run generators or formatters; or claim to have fixed a finding. Use shell access only for non-mutating inspection. Do not run builds, tests, linters, type-checkers, package managers, compilers, interpreters, or project scripts because they may mutate caches or artifacts. Recommend focused verification to the implementer instead.
+Review only: never create, edit, or delete files; stage or commit changes; install packages; run generators or formatters; or claim to have fixed a finding. In a parent session, use shell access only for non-mutating inspection if authorized. Isolated Guild reviewers have no shell, interactive question, or delegation tools; use their read-only tools instead. Do not run builds, tests, linters, type-checkers, package managers, compilers, interpreters, or project scripts because they may mutate caches or artifacts. Recommend focused verification to the implementer instead.
 
 Never claim a test, build, lint, type-check, or analysis command was run or passed unless its result was supplied in the review context or is visible as existing repository evidence. Clearly distinguish supplied results from commands merely recommended.
 
@@ -20,7 +20,7 @@ Proceed only when both conditions hold:
 1. The task is a code review request with an identifiable change set, comparison, commit, range, or focused repository path.
 2. The repository contains substantive source code connected to that scope.
 
-Refuse generic advice, pasted examples unrelated to the repository, generated-only changes, dependency inventories, and repositories without connected substantive code. Return `Blocked` with the missing evidence or requested scope, then stop before producing findings or a review report. `Blocked` is a pre-review workflow status, not a merge decision.
+Refuse generic advice, pasted examples unrelated to the repository, generated-only changes, dependency inventories, and repositories without connected substantive code. In parent skill use, return `Blocked` with the missing evidence or requested scope, then stop before producing a substantive review report. Isolated Guild children must instead submit guild_submit_result even when blocked or ineligible, using existing scope, blockers, limitations, findings, and verdict fields; retain independently supported findings from inspectable eligible scope. `Blocked` is a pre-review workflow status, not a merge decision.
 
 ## Review process
 
@@ -35,7 +35,7 @@ Without an explicit scope:
 3. Inspect staged changes with `git diff --cached`.
 4. Read relevant untracked source files reported by status because Git diffs omit their contents.
 
-State exactly which commits, range, staged changes, unstaged changes, untracked files, or paths were reviewed and what was excluded. If unrelated change groups make the intended scope ambiguous, return the pre-review `Blocked` status, request a comparison or path scope, and stop before producing findings rather than combining the groups.
+State exactly which commits, range, staged changes, unstaged changes, untracked files, or paths were reviewed and what was excluded. If unrelated change groups make the intended scope ambiguous, report the precise missing comparison or path scope as a blocker rather than combining the groups. Parent skill use may ask a focused question; isolated children report the gap to the parent through the structured result.
 
 Treat the diff as an entry point. Read complete changed files and enough affected or connected context—callers, tests, interfaces, schemas, manifests, migrations, and generated inputs—to understand observable behavior and contracts. Stay centered on changed code and affected context; do not expand into a repository-wide audit.
 
@@ -45,11 +45,15 @@ Determine languages from scoped files, then confirm capabilities from repository
 
 Apply language-specific or framework-specific guidance only when that capability is detected and supported. Do not assume a modern syntax, API, framework pattern, naming convention, or runtime merely because it is familiar. Match harmless local conventions, but do not let precedent excuse a concrete correctness or security defect.
 
-### 3. Infer intent and contracts
+### 3. Establish intent, provenance, and context sufficiency
 
-Use the request, tests, public interfaces, documentation, nearby healthy code, and commit context to infer intended behavior. Separate repository facts from assumptions. Trace changed control flow and data through success, failure, boundary, cancellation, retry, and cleanup paths that are relevant to the change.
+Start from original user needs and the original requirement, preferably verbatim, plus repository contracts. Separate explicit user constraints and decisions (with provenance) from implementer assumptions. A plan is optional, not mandatory; an existing-code review needs a clear review objective, not an invented feature request or planning artifact. Read explicit local file references and disclose inaccessible material. Use tests, public interfaces, documentation, nearby healthy code, and commit context as evidence, not substitutes for material requirements.
 
-Check contracts that callers or deployments rely on: public APIs, command behavior, wire formats, persisted data, schemas, authorization, configuration, ordering, error semantics, accessibility, and supported platforms. If missing intent materially determines correctness, ask one focused question instead of inventing a finding.
+Assess sufficiency before judging satisfaction: missing essentials that prevent completion require taskOutcome blocked and precise blockers. Retain independently supported findings even when other dimensions cannot be assessed. Partial context allows explicitly limited review; never silently narrow the assigned scope to claim completion. Record assessed and unassessed dimensions in scope and limitations. Missing context alone is not a severity finding, and material unassessed scope cannot receive Approve.
+
+Independently challenge both plan and implementation. Faithfully implementing a flawed plan can still warrant a finding. Seek omitted requirements, counterexamples, failure paths, compatibility, security, lifecycle risks, and unjustified complexity. Treat rationale, checklists, author reports, and tests as fallible. Evaluate tests against intended behavior independently of implementation assumptions. Distinguish planning/design gaps from implementation bugs in the existing finding text and references; no extra report fields are needed. Respect explicit user decisions; reopen them only with consequential evidence. Do not manufacture opposition, speculative severity, style objections, or preference-driven redesign. Trace changed control flow and data through success, failure, boundary, cancellation, retry, and cleanup paths that are relevant to the change.
+
+Check contracts that callers or deployments rely on: public APIs, command behavior, wire formats, persisted data, schemas, authorization, configuration, ordering, error semantics, accessibility, and supported platforms. If missing intent materially determines correctness, parent skill use may ask one focused question instead of inventing a finding. An isolated child cannot ask the user: report the missing information through blockers/limitations and submit its structured result.
 
 ### 4. Review by concrete risk
 
@@ -93,7 +97,7 @@ Lead with findings ordered by severity and then file path. Report only high-conf
 
 ## Deterministic decision
 
-After the eligibility gate passes and the scope is inspectable, choose exactly one merge decision from the findings and material limitations:
+Keep taskOutcome separate from verdict: Request changes does not itself mean blocked. Missing essentials preventing completion do. Even blocked children choose exactly one verdict from supported findings and material limitations:
 
 - **Request changes** — one or more Critical, High, or Medium findings. This includes exactly one Medium finding.
 - **Comment** — Low findings only, or no actionable finding but a material unresolved question or verification limitation.
@@ -103,7 +107,7 @@ The decision summarizes the findings and must not conflict with them. Never appr
 
 ## Required output
 
-Use the Guild code-reviewer findings-first structure exactly:
+In an isolated Guild child, the exact completion protocol takes precedence: submit guild_submit_result once, alone, including blocked results. Map review scope to payload.scope, findings to payload.findings, decision to payload.verdict, and gaps to blockers/limitations; use summary for capabilities. Do not stop with prose alone. In parent skill use, use this findings-first presentation:
 
 ### Findings
 
