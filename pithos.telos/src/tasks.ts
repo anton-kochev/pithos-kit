@@ -221,21 +221,17 @@ export function formatTaskDetails(task: Task): string {
 
 export function filterTasks(tasks: Task[], scope: ListScope): Task[] {
 	if (scope === "archived") return tasks.filter((task) => task.status === "archived");
-	if (scope === "all") return [...tasks];
-	return sortCompletedLast(tasks.filter((task) => task.status !== "archived"));
+	const visible = scope === "all" ? [...tasks] : tasks.filter((task) => task.status !== "archived");
+	return visible.sort((a, b) => STATUS_SORT_ORDER[a.status] - STATUS_SORT_ORDER[b.status]);
 }
 
-function sortCompletedLast(tasks: Task[]): Task[] {
-	return tasks
-		.map((task, index) => ({ task, index }))
-		.sort((a, b) => {
-			const aDone = a.task.status === "done";
-			const bDone = b.task.status === "done";
-			if (aDone !== bDone) return aDone ? 1 : -1;
-			return a.index - b.index;
-		})
-		.map(({ task }) => task);
-}
+const STATUS_SORT_ORDER: Record<TaskStatus, number> = {
+	in_progress: 0,
+	blocked: 1,
+	todo: 2,
+	done: 3,
+	archived: 4,
+};
 
 function setStatus(artifact: TaskArtifact, id: string | undefined, status: TaskStatus, now: () => Date): TaskOperationResult {
 	const index = findRequiredIndex(artifact.tasks, id);

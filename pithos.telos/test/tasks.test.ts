@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { applyTaskOperation, createEmptyArtifact, type TaskArtifact } from "../src/tasks";
+import { applyTaskOperation, createEmptyArtifact, type TaskArtifact, type TaskStatus } from "../src/tasks";
 
 const now1 = () => new Date("2026-06-02T12:00:00.000Z");
 const now2 = () => new Date("2026-06-02T13:00:00.000Z");
@@ -76,7 +76,33 @@ describe("task operations", () => {
 
 		assert.deepEqual(active.tasks?.map((task) => task.id), ["TSK-fed456ba"]);
 		assert.deepEqual(archived.tasks?.map((task) => task.id), ["TSK-abc123ef"]);
-		assert.deepEqual(all.tasks?.map((task) => task.id), ["TSK-abc123ef", "TSK-fed456ba"]);
+		assert.deepEqual(all.tasks?.map((task) => task.id), ["TSK-fed456ba", "TSK-abc123ef"]);
+	});
+
+	it("groups lists by status while preserving stored order within each group", () => {
+		const statuses: TaskStatus[] = ["archived", "done", "todo", "blocked", "in_progress", "todo", "in_progress", "blocked", "done", "archived"];
+		const artifact: TaskArtifact = {
+			telos_version: 1,
+			tasks: statuses.map((status, index) => ({
+				...createdArtifact().tasks[0],
+				id: `TSK-${index.toString().padStart(8, "0")}`,
+				status,
+				priority: index < 5 ? "low" : "urgent",
+			})),
+		};
+		const original = structuredClone(artifact);
+		for (const [scope, indices] of [
+			["active", [4, 6, 3, 7, 2, 5, 1, 8]],
+			["all", [4, 6, 3, 7, 2, 5, 1, 8, 0, 9]],
+			["archived", [0, 9]],
+		] as const) {
+			const result = applyTaskOperation(artifact, { action: "list", scope }, now2);
+			const expectedIds = indices.map((index) => artifact.tasks[index].id);
+			assert.deepEqual(result.tasks?.map((task) => task.id), expectedIds, scope);
+			assert.deepEqual(result.text.split("\n").map((line) => line.split(" ")[0]), expectedIds, scope);
+			assert.deepEqual(result.artifact, original);
+			assert.deepEqual(artifact, original);
+		}
 	});
 
 	it("lists completed active tasks after incomplete active tasks", () => {

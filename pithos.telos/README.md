@@ -161,7 +161,7 @@ The `›` chevron marks the selected task. Press `Enter` or `Space` to switch to
 
 The details view shows the description and dependencies only when they are present. Long descriptions wrap instead of truncating.
 
-Completed tasks are dimmed and sorted after incomplete active tasks. Dependency IDs are not expanded in the list; use the details view or `/tasks show <id>` for full details.
+Task lists are grouped by status: **in progress → blocked → to do → done → archived** (when included). This ordering applies to the interactive view, command/tool listings, and generated Markdown summary. Tasks within the same status retain their stored order; priority does not change that order. Sorting does not reorder the canonical task data. Completed tasks are dimmed, with strikethrough titles in the interactive list (when supported by the terminal). Dependency IDs are not expanded in the list; use the details view or `/tasks show <id>` for full details.
 
 ## Agent tool
 

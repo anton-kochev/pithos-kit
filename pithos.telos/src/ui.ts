@@ -194,7 +194,7 @@ export class TaskListComponent {
 				const status = isDone ? th.fg("dim", statusGlyph(task.status)) : statusGlyph(task.status);
 				const id = isDone ? th.fg("dim", task.id) : th.fg("accent", task.id);
 				const priority = isDone ? th.fg("dim", priorityGlyph(task.priority)) : priorityColor(task.priority, th);
-				const title = isDone ? th.fg("dim", task.title) : th.fg("text", task.title);
+				const title = isDone ? th.fg("dim", th.strikethrough(task.title)) : th.fg("text", task.title);
 				const dependency = dependencyIndicator(task, th);
 				const prefix = `${pointer} ${status} ${id} ${priority} `;
 				const suffix = dependency ? `  ${dependency}` : "";

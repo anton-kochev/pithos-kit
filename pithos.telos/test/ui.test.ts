@@ -7,10 +7,12 @@ import type { Task } from "../src/tasks";
 
 const theme = {
 	fg: (_name: string, value: string) => value,
+	strikethrough: (value: string) => value,
 } as Theme;
 
 const labeledTheme = {
 	fg: (name: string, value: string) => `<${name}>${value}</${name}>`,
+	strikethrough: (value: string) => `<strike>${value}</strike>`,
 } as Theme;
 
 const tasks: Task[] = [
@@ -20,6 +22,20 @@ const tasks: Task[] = [
 ];
 
 describe("interactive task list", () => {
+	it("strikes through only completed titles and removes the styling when reopened", () => {
+		const done = makeTask("TSK-done", "Finished task", { status: "done" });
+		const open = makeTask("TSK-open", "Open task");
+		const component = new TaskListComponent([done, open], labeledTheme, () => {});
+		const output = component.render(240).join("\n");
+		assert(output.includes("<dim><strike>Finished task</strike></dim>"));
+		assert(output.includes("<text>Open task</text>"));
+		assert.equal(output.match(/<strike>/g)?.length, 1);
+		component.updateTasks([{ ...done, status: "todo" }, open]);
+		const reopened = component.render(240).join("\n");
+		assert(!reopened.includes("<strike>"));
+		assert(reopened.includes("<text>Finished task</text>"));
+	});
+
 	it("slides a ten-row viewport one row at a time and reports full-list progress", () => {
 		const many = Array.from({ length: 24 }, (_, i) => makeTask(`TSK-${i}`, `Task ${i}`, {
 			status: i < 7 ? "done" : i < 9 ? "blocked" : "todo",
