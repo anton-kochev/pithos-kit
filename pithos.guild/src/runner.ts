@@ -283,7 +283,7 @@ export function truncateUtf8(value: string, maxBytes: number): string {
 	return `${kept}\n\n[Output truncated: ${totalBytes - keptBytes} bytes omitted.]`;
 }
 
-function getPiInvocation(args: string[]): { command: string; args: string[] } {
+export function getPiInvocation(args: string[]): { command: string; args: string[] } {
 	const currentScript = process.argv[1];
 	const isBunVirtualScript = currentScript?.startsWith("/$bunfs/root/");
 	if (currentScript && !isBunVirtualScript && fs.existsSync(currentScript)) {
@@ -327,7 +327,7 @@ function guildRoleBaseSystemPrompt(role: GuildRole, profile: GuildProfile): stri
 	].join("\n");
 }
 
-async function writeGuildRoleSystemPrompts(
+export async function writeGuildRoleSystemPrompts(
 	role: GuildRole,
 	profile: GuildProfile,
 	cores: readonly GuildSkillCore[],
@@ -381,7 +381,7 @@ export function cloneProviderUsage(usage: Usage | null | undefined): Usage | nul
 	return usage ? { ...usage, cost: { ...usage.cost } } : usage;
 }
 
-function snapshotRunResult(result: GuildRoleRunResult): GuildRoleRunResult {
+export function snapshotRunResult(result: GuildRoleRunResult): GuildRoleRunResult {
 	return { ...result, usage: { ...result.usage }, ...(result.providerUsage ? { providerUsage: cloneProviderUsage(result.providerUsage) } : {}), usageFields: result.usageFields?.slice(), selectedSkills: result.selectedSkills?.map(receipt => ({...receipt})) };
 }
 

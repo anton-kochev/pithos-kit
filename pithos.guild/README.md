@@ -315,6 +315,8 @@ Each Guild target runs with:
 
 The tool and direct command both fail closed while Plan mode is active or indeterminate. The inherited trust decision controls `--approve` versus `--no-approve`; it does not expand role tools. Only coder has shell access, so this remains guardrail-oriented delegation rather than a filesystem sandbox. Task input stays free-form; completion is structured.
 
+Guild does not support parent–child clarification exchanges during a handover. Children run in print/JSON mode with stdin ignored: the parent cannot send follow-up instructions to the running child, and the child has no ask-parent/reply operation. Live transcripts are observational, not a messaging channel. Supply essential context before delegation; if missing information blocks the task, the child reports blockers and the parent can supply that information in a new handover, not resume the same child. The same-child corrective opportunity described below repairs result submission only, not missing task context.
+
 Cancellation terminates the child process and waits for shutdown and owned cleanup before releasing the serialized queue. Rendering retains up to 50 KiB of UTF-8 report text plus a truncation notice; accepted structured reports remain in tool-result or lifecycle-message details. Transport and diagnostics are separately bounded, not retained without limit.
 
 ## Exact completion protocol
@@ -347,6 +349,20 @@ npm test
 npm run typecheck
 npm pack --dry-run
 ```
+
+The exploratory RPC compatibility probe requires an explicitly selected installed Pi **1.4.0** runtime:
+
+```bash
+npm run test:rpc-compat -- /path/to/pi/dist/cli.js
+```
+
+Alternatively, set `PI_RPC_PROBE_CLI` to that CLI path. There is no default runtime, and the probe rejects other versions. This is not a production RPC transport or certification of Pi >=1.0 compatibility, live-provider behavior, the Guild protocol, or Plan-mode quiescence; local 0.99 test doubles are not evidence for this probe.
+
+### Background registry adapter contract
+
+`src/background-runs.ts` defines a registry-level contract, not a guarantee of end-to-end Pi integration. An operation must settle only after its owned cleanup finishes. Fulfilled JSON means transport completion, not a validated Guild report; the adapter remains responsible for report validation and process-kill deadlines.
+
+Registry Plan holds require idle admission: nonterminal background records (including waiting or stopping work) and outstanding exclusive operations make acquisition return `busy`. Retained terminal results do not prevent a hold. Repeated acquisition by the same owner returns the same lease; independent owners must each release their holds before admission can resume. Releasing a stale lease cannot remove a renewed hold or reopen a shut-down registry. These registry guarantees alone do not certify cross-package Plan-mode safety.
 
 ## Evaluation and benchmarking
 

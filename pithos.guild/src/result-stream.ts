@@ -1,4 +1,4 @@
-import { childTools, hasIdentityMismatch, LIMITS, PROTOCOL, SUBMIT_TOOL, validateResult, type GuildReport, type GuildTask } from "./protocol.ts";
+import { QuestionExchange, ASK_TOOL, type BackgroundCapability, childTools, hasIdentityMismatch, LIMITS, PROTOCOL, SUBMIT_TOOL, validateResult, type GuildReport, type GuildTask } from "./protocol.ts";
 
 export interface GuildTerminal {
  status: "completed" | "failed" | "cancelled";
@@ -21,6 +21,7 @@ function isAggregateLine(bytes: Buffer): boolean {
 /** Bounded cooperative transport validation, not authentication of a hostile child. */
 export class ResultStream {
  failure?: string;
+ private readonly questions?: QuestionExchange;
  private ready = false;
  private settled = false;
  private report?: GuildReport;
@@ -33,12 +34,13 @@ export class ResultStream {
  /** Discarding the rest of an aggregate line until its newline. */
  private skipping = false;
  private terminal?: GuildTerminal;
- constructor(readonly task: GuildTask) {}
+ constructor(readonly task: GuildTask, readonly capability?: BackgroundCapability) { childTools(task.role, capability); this.questions = capability ? new QuestionExchange() : undefined; }
  fail(reason: string): void { if (!this.terminal) this.failure ??= reason.slice(0, 2048); }
  event(event: any): void {
   if (this.terminal) return;
   if (!event || typeof event.type !== "string") { this.fail("Invalid JSON event"); return; }
   if (this.settled) { this.fail("Event after final settlement"); return; }
+  try { this.questions?.guard(event); } catch (error) { this.fail(String(error)); }
   if (event.type === "error" || event.type === "extension_error") this.fail("Child process/provider/extension error");
   if (event.type === "entry_appended" && event.entry?.customType === "guild-result-repair") {
    if (this.repairUsed || this.report) this.fail("Guild repair budget exhausted");
@@ -46,7 +48,7 @@ export class ResultStream {
   }
   if (event.type === "message_end" && event.message?.role === "custom" && event.message.customType === "guild-protocol-ready") {
    const d = event.message.details;
-   if (this.ready || !d || Object.keys(d).sort().join() !== "protocol,runId,taskId,tools,version" || d.protocol !== PROTOCOL || d.version !== 2 || d.runId !== this.task.runId || d.taskId !== this.task.taskId || !Array.isArray(d.tools) || JSON.stringify(d.tools.slice().sort()) !== JSON.stringify(childTools(this.task.role).sort())) this.fail("Invalid Guild protocol handshake");
+   if (this.ready || !d || Object.keys(d).sort().join() !== (this.capability ? "capability,protocol,runId,taskId,tools,version" : "protocol,runId,taskId,tools,version") || d.capability !== this.capability || d.protocol !== PROTOCOL || d.version !== 2 || d.runId !== this.task.runId || d.taskId !== this.task.taskId || !Array.isArray(d.tools) || JSON.stringify(d.tools.slice().sort()) !== JSON.stringify(childTools(this.task.role, this.capability).sort())) this.fail("Invalid Guild protocol handshake");
    else this.ready = true;
   }
   if (event.type === "message_end" && event.message?.role === "assistant") {
@@ -57,13 +59,18 @@ export class ResultStream {
    }
    if (this.report) this.fail("Assistant work after submission");
    const calls = Array.isArray(event.message.content) ? event.message.content.filter((p: any) => p?.type === "toolCall") : [];
+   try { this.questions?.batch(calls); } catch (error) { this.fail(String(error)); }
+   if (!this.capability && calls.some((call: any) => call.name === ASK_TOOL)) this.fail("Unexpected Guild question capability");
    this.soleCall = calls.length === 1 && calls[0].name === SUBMIT_TOOL && typeof calls[0].id === "string" ? calls[0].id : undefined;
    if (this.repairUsed && !this.soleCall) this.fail("Guild repair requires sole submission on next response");
    if (calls.some((c: any) => c.name === SUBMIT_TOOL && hasIdentityMismatch(c.arguments, this.task))) this.fail("Guild result identity mismatch");
    if (calls.some((c: any) => c.name === SUBMIT_TOOL) && !this.soleCall) this.fail("Submission must be sole tool batch call");
   }
   if (event.type === "tool_execution_start") {
-   if (!this.ready || this.report || !childTools(this.task.role).includes(event.toolName)) this.fail("Unexpected or post-submission tool execution");
+   if (!this.ready || this.report || !childTools(this.task.role, this.capability).includes(event.toolName)) this.fail("Unexpected or post-submission tool execution");
+   if (event.toolName === ASK_TOOL && this.questions) {
+    try { this.questions.start(event.toolCallId, event.args); } catch (error) { this.fail(String(error)); }
+   }
    if (event.toolName === SUBMIT_TOOL) {
     if (!this.soleCall || event.toolCallId !== this.soleCall || this.startedCall || this.submissionIds.has(event.toolCallId)) this.fail("Uncorrelated or duplicate submission");
     if (this.submissionIds.size >= 2) this.fail("Guild submission attempt limit exceeded");
@@ -84,6 +91,10 @@ export class ResultStream {
     try { this.report = validateResult(event.result?.details, this.task); }
     catch (error) { this.fail(error instanceof Error ? error.message : "Invalid Guild result"); }
    } else this.fail("Malformed submission result status");
+  }
+  if (event.type === "tool_execution_end" && event.toolName === ASK_TOOL) {
+   if (!this.questions || !this.ready || this.report) this.fail("Unexpected Guild question end");
+   else try { this.questions.end(event.toolCallId, event.isError, event.result?.details); } catch (error) { this.fail(String(error)); }
   }
   // toolResult message_end is a second representation, never another submission.
   if (event.type === "agent_settled") this.settled = true;

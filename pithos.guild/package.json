@@ -196,6 +196,8 @@
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",
     "typecheck": "tsc --noEmit",
+    "test:rpc-compat": "node --import tsx tools/rpc-compatibility-probe.ts",
+    "test:background-runtime": "node --import tsx tools/background-runner-probe.ts",
     "report": "node --import tsx tools/session-report.ts",
     "eval": "node --import tsx evaluation/src/cli.ts",
     "eval:test": "node --import tsx --test evaluation/test/*.test.ts",

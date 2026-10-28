@@ -3,6 +3,16 @@ import { StringEnum } from "@earendil-works/pi-ai";
 import { Check } from "typebox/value";
 import { GUILD_MEMBER_ALIASES, isGuildMemberAlias, GUILD_ROLE_DEFINITIONS, isGuildProfile, isGuildRole, createGuildTarget, type GuildRole, type GuildProfile } from "./agents.ts";
 
+export const BACKGROUND_CAPABILITY = "guild-background/1";
+export const ASK_TOOL = "guild_ask_parent";
+export type BackgroundCapability = typeof BACKGROUND_CAPABILITY;
+export interface BackgroundOptions { capability: BackgroundCapability }
+export function backgroundCapability(options?: BackgroundOptions): BackgroundCapability | undefined {
+ if (options === undefined) return undefined;
+ exactKeys(options, ["capability"]);
+ if (options.capability !== BACKGROUND_CAPABILITY) throw new Error("Unsupported Guild capability");
+ return BACKGROUND_CAPABILITY;
+}
 export const SUBMIT_TOOL = "guild_submit_result";
 export const PROTOCOL = "guild/2";
 export const LIMITS = Object.freeze({ task: 32 * 1024, input: 40 * 1024, envelope: 48 * 1024, result: 48 * 1024, string: 2048, list: 32, id: 128, line: 1024 * 1024, stdout: 16 * 1024 * 1024, stderr: 64 * 1024 });
@@ -110,12 +120,72 @@ export function validateResult(value: unknown, task: GuildTask): GuildReport {
 export function hasIdentityMismatch(args: unknown, task: GuildTask): boolean {
  return args !== null && typeof args === "object" && ["protocol", "version", "runId", "taskId", "role", "profile"].some(key => Object.hasOwn(args, key) && (args as Record<string, unknown>)[key] !== task[key as keyof GuildTask]);
 }
-export function childTools(role: GuildRole): string[] {
- return [...GUILD_ROLE_DEFINITIONS[role].tools, SUBMIT_TOOL];
+export function childTools(role: GuildRole, capability?: BackgroundCapability): string[] {
+ if (capability !== undefined && capability !== BACKGROUND_CAPABILITY) throw new Error("Unsupported Guild capability");
+ if (capability && role !== "coder" && role !== "reviewer") throw new Error("Unsupported background Guild role");
+ if (!isGuildRole(role)) throw new Error("Unsupported Guild role");
+ return [...GUILD_ROLE_DEFINITIONS[role].tools, SUBMIT_TOOL, ...(capability ? [ASK_TOOL] : [])];
 }
 export function renderReport(report: GuildReport): string {
  return ["Guild report — child-reported claims (not host-verified)", report.summary,
   `\n## taskOutcome\n${report.taskOutcome}`, `\n## compliance\n${JSON.stringify(report.compliance)}`,
   ...Object.entries(report.payload).map(([key, value]) => `\n## ${key}\n${typeof value === "string" ? value : JSON.stringify(value, null, 2)}`),
   `\n## blockers\n${JSON.stringify(report.blockers)}`, `\n## limitations\n${JSON.stringify(report.limitations)}`].join("\n");
+}
+
+export const QUESTION_LIMITS = Object.freeze({text: 8192, count: 8, timeout: 5 * 60 * 1000});
+export const questionSchema = Type.Object({question: Type.String({maxLength: QUESTION_LIMITS.text})}, {additionalProperties: false});
+export function validateQuestion(value: unknown): {question: string} {
+ exactKeys(value, ["question"]);
+ return {question: validateQuestionText(value.question)};
+}
+export function validateQuestionText(value: unknown): string {
+ if (typeof value !== "string" || !value.trim() || value.includes("\0") || Buffer.byteLength(value) > QUESTION_LIMITS.text) throw new Error("Invalid Guild question or answer text");
+ return value;
+}
+export type QuestionOutcome = {outcome: "answered"; answer: string} | {outcome: "unavailable"; reason: "cancelled-or-timed-out"};
+export function validateQuestionOutcome(value: unknown): QuestionOutcome {
+ exactKeys(value, ["outcome"], ["answer", "reason"]);
+ if (value.outcome === "answered") {
+  exactKeys(value, ["outcome", "answer"]);
+  return {outcome: "answered", answer: validateQuestionText(value.answer)};
+ }
+ exactKeys(value, ["outcome", "reason"]);
+ if (value.outcome !== "unavailable" || value.reason !== "cancelled-or-timed-out") throw new Error("Invalid Guild question outcome");
+ return {outcome: "unavailable", reason: "cancelled-or-timed-out"};
+}
+
+/** Each side owns an independent instance; UI wire IDs belong to the future RPC host. */
+export class QuestionExchange {
+ private readonly ids = new Set<string>();
+ private pending?: {id: string; question: string; started: boolean};
+ batch(calls: Array<{name: string; id: string; arguments: unknown}>): void {
+  if (this.pending) throw new Error("Guild question still pending");
+  if (!calls.some(call => call.name === ASK_TOOL)) return;
+  if (calls.length !== 1) throw new Error("Guild question must be sole batch call");
+  const call = calls[0];
+  if (typeof call.id !== "string" || !call.id.trim() || call.id.includes("\0") || Buffer.byteLength(call.id) > LIMITS.id || this.ids.has(call.id)) throw new Error("Invalid or duplicate Guild question identity");
+  if (this.ids.size >= QUESTION_LIMITS.count) throw new Error("Guild question limit exceeded");
+  const {question} = validateQuestion(call.arguments);
+  this.ids.add(call.id);
+  this.pending = {id: call.id, question, started: false};
+ }
+ start(id: string, args: unknown): void {
+  if (!this.pending || this.pending.id !== id || this.pending.started || validateQuestion(args).question !== this.pending.question) throw new Error("Uncorrelated or duplicate Guild question start");
+  this.pending.started = true;
+ }
+ assertStarted(id: string, args: unknown): void {
+  if (!this.pending?.started || this.pending.id !== id || validateQuestion(args).question !== this.pending.question) throw new Error("Uncorrelated Guild question execution");
+ }
+ end(id: string, isError: unknown, details: unknown): void {
+  if (!this.pending?.started || this.pending.id !== id || isError !== false) throw new Error("Uncorrelated or failed Guild question end");
+  validateQuestionOutcome(details);
+  this.pending = undefined;
+ }
+ guard(event: {type: string; toolName?: string; toolCallId?: string}): void {
+  if (event.type === "tool_execution_update" && event.toolName === ASK_TOOL && (!this.pending?.started || event.toolCallId !== this.pending.id)) throw new Error("Uncorrelated Guild question update");
+  if (!this.pending) return;
+  if (event.type === "agent_settled" || (event.type.startsWith("tool_execution_") && (event.toolName !== ASK_TOOL || event.toolCallId !== this.pending.id))) throw new Error("Unexpected event while Guild question pending");
+ }
+ get isPending(): boolean { return this.pending !== undefined; }
 }
