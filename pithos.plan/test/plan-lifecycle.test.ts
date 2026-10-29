@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { createEventBus, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -7,10 +7,17 @@ import { describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import {
 	generatePlanPath,
+	resolveAvailablePlanPath,
 	PlanPublicationConflictError,
 	verifyPlanFileDigest,
 } from "../extensions/plan-files.ts";
 import type { PlanNameCompletionTransport } from "../extensions/plan-session-name.ts";
+import { createRequire } from "node:module";
+// Guild uses parameter properties; load its test-only boundary with its own runner.
+const guildRequire = createRequire(new URL("../../pithos.guild/package.json", import.meta.url));
+const { tsImport } = await import(guildRequire.resolve("tsx/esm/api"));
+const { BackgroundRunRegistry } = await tsImport("../../pithos.guild/src/background-runs.ts", import.meta.url);
+import { discoverPlan } from "../../pithos.guild/src/plan-coordination.ts";
 import planTheme from "../extensions/plan-theme.ts";
 import { commandHarness } from "./command-harness.ts";
 
@@ -75,7 +82,11 @@ function createHarness(options: {
 	namingCompletion?: PlanNameCompletionTransport;
 	verifyPlanFileDigest?: typeof verifyPlanFileDigest;
 	generatePlanPath?: typeof generatePlanPath;
+	resolveAvailablePlanPath?: typeof resolveAvailablePlanPath;
 	setSessionName?: (name: string) => void;
+	setActiveTools?: () => void;
+	appendEntry?: () => void;
+	afterAppendEntry?: () => void;
 }): any {
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
 	const allEntries = options.entries ?? [];
@@ -107,12 +118,14 @@ function createHarness(options: {
 	if (sessionName !== undefined) appendSessionInfo(sessionName);
 	const routing = commandHarness(handlers);
 	const pi = {
+		events: createEventBus(),
 		registerCommand: routing.registerCommand,
 		sendUserMessage: routing.sendUserMessage,
 		on(name: string, handler: (event: any, ctx: any) => Promise<any>) {
 			handlers.set(name, name === "before_agent_start" ? routing.wrapStart(handler) : handler);
 		},
 		appendEntry(customType: string, data: unknown) {
+			options.appendEntry?.();
 			const entry = {
 				type: "custom",
 				id: `entry-${nextEntry++}`,
@@ -124,12 +137,17 @@ function createHarness(options: {
 			allEntries.push(entry);
 			if (branchEntries !== allEntries) branchEntries.push(entry);
 			appended.push(entry);
+			// Pi 1.4 emits entry_appended only after appendCustomEntry advances the
+			// leaf and persists synchronously. Reentrant observers must see that entry;
+			// appendEntry above remains a separate pre-write failure injector.
+			options.afterAppendEntry?.();
 		},
 		sendMessage() {},
 		getActiveTools: () => [...activeTools],
 		getAllTools: () => allTools,
 		setActiveTools(names: string[]) {
 			activeTools = [...names];
+			options.setActiveTools?.();
 		},
 		registerTool(tool: any) {
 			registeredTools.set(tool.name, tool);
@@ -198,10 +216,12 @@ function createHarness(options: {
 	planTheme(pi as never, {
 		verifyPlanFileDigest: options.verifyPlanFileDigest,
 		generatePlanPath: options.generatePlanPath,
+		resolveAvailablePlanPath: options.resolveAvailablePlanPath,
 		namingCompletion: options.namingCompletion ?? (async () => { throw new Error("mock: naming unavailable"); }),
 	} as never);
 	return {
 		routing,
+		events: pi.events,
 		handlers,
 		ctx,
 		allEntries,
@@ -1120,29 +1140,42 @@ describe("Plan session lifecycle", () => {
 				oldStatus = input(harness, "/plan status");
 				await verificationStarted.promise;
 
-				const replacementCtx = createReplacementContext(harness, "session-after-status");
+				const observed = observeEntryCoordination(harness);
+				const replacement = createHarness({ cwd: harness.ctx.cwd, sessionId: "session-after-status" });
+				const replacementCtx = replacement.ctx;
 				await harness.handlers.get("session_shutdown")?.(
 					{ type: "session_shutdown", reason: "new" },
 					harness.ctx,
 				);
+				const entriesBeforeReplacement = harness.appended.length;
 				const staleContextAccesses = makeContextStale(harness.ctx);
-				await harness.handlers.get("session_start")?.(
+				await replacement.handlers.get("session_start")?.(
 					{ type: "session_start", reason: "new", previousSessionFile: "old-session.jsonl" },
 					replacementCtx,
 				);
-				await inputWithContext(harness, replacementCtx, "/plan");
-				const replacementState = harness.appended.at(-1)?.data;
-				const entriesAfterReplacement = harness.appended.length;
+				await inputWithContext(replacement, replacementCtx, "/plan");
+				const lastPersistedState = replacement.appended.at(-1)?.data;
+				assert.equal(lastPersistedState?.active, true);
+				assert.notEqual(lastPersistedState.planId, harness.appended.at(-1)?.data.planId);
+				const replacementTools = [...replacement.getActiveTools()];
+				assert.equal(replacementTools.includes("create_plan"), true);
+				assert.equal(replacementTools.includes("write"), false);
+				const replacementCoordination = observeEntryCoordination(replacement);
+				const entriesAfterReplacement = replacement.appended.length;
 
 				verification.reject(new PlanPublicationConflictError("Old session status conflict."));
 				assert.deepEqual(await oldStatus, { action: "handled" });
 
 				assert.deepEqual(staleContextAccesses, []);
-				assert.equal(harness.appended.length, entriesAfterReplacement);
-				assert.equal(harness.appended.at(-1)?.data, replacementState);
-				assert.equal(replacementState.ownerSessionId, "session-after-status");
-				assert.equal(replacementState.active, true);
-				assert.equal(replacementState.publicationState, "unpublished");
+				assert.equal(replacement.appended.length, entriesAfterReplacement);
+				assert.equal(replacement.appended.at(-1)?.data, lastPersistedState);
+				assert.equal(lastPersistedState.active, true);
+				assert.deepEqual(replacement.getActiveTools(), replacementTools);
+				assert.equal(replacementCoordination.provider.inspect().phase, "active");
+				// The outgoing callback must not append to its abandoned session either.
+				assert.equal(harness.appended.length, entriesBeforeReplacement);
+				assert.equal(observed.provider.inspect().phase, "disposed");
+				assert.equal(observed.released(), 0);
 			} finally {
 				verification.reject(new Error("Test cleanup released deferred status verification."));
 				await oldStatus?.catch(() => undefined);
@@ -1185,19 +1218,28 @@ describe("Plan session lifecycle", () => {
 				);
 				await verificationStarted.promise;
 
-				const replacementCtx = createReplacementContext(harness, "session-after-preflight");
+				const observed = observeEntryCoordination(harness);
+				const replacement = createHarness({ cwd: harness.ctx.cwd, sessionId: "session-after-preflight" });
+				const replacementCtx = replacement.ctx;
 				await harness.handlers.get("session_shutdown")?.(
 					{ type: "session_shutdown", reason: "resume", targetSessionFile: "replacement.jsonl" },
 					harness.ctx,
 				);
+				const entriesBeforeReplacement = harness.appended.length;
 				const staleContextAccesses = makeContextStale(harness.ctx);
-				await harness.handlers.get("session_start")?.(
+				await replacement.handlers.get("session_start")?.(
 					{ type: "session_start", reason: "resume", previousSessionFile: "old-session.jsonl" },
 					replacementCtx,
 				);
-				await inputWithContext(harness, replacementCtx, "/plan");
-				const replacementState = harness.appended.at(-1)?.data;
-				const entriesAfterReplacement = harness.appended.length;
+				await inputWithContext(replacement, replacementCtx, "/plan");
+				const lastPersistedState = replacement.appended.at(-1)?.data;
+				assert.equal(lastPersistedState?.active, true);
+				assert.notEqual(lastPersistedState.planId, harness.appended.at(-1)?.data.planId);
+				const replacementTools = [...replacement.getActiveTools()];
+				assert.equal(replacementTools.includes("create_plan"), true);
+				assert.equal(replacementTools.includes("write"), false);
+				const replacementCoordination = observeEntryCoordination(replacement);
+				const entriesAfterReplacement = replacement.appended.length;
 
 				verification.reject(new PlanPublicationConflictError("Old publication baseline conflict."));
 				const gate = await oldPreflight as { block?: boolean; reason?: string } | undefined;
@@ -1205,11 +1247,15 @@ describe("Plan session lifecycle", () => {
 				assert.equal(gate?.block, true);
 				assert.match(gate?.reason ?? "", /superseded|session/i);
 				assert.deepEqual(staleContextAccesses, []);
-				assert.equal(harness.appended.length, entriesAfterReplacement);
-				assert.equal(harness.appended.at(-1)?.data, replacementState);
-				assert.equal(replacementState.ownerSessionId, "session-after-preflight");
-				assert.equal(replacementState.active, true);
-				assert.equal(replacementState.publicationState, "unpublished");
+				assert.equal(replacement.appended.length, entriesAfterReplacement);
+				assert.equal(replacement.appended.at(-1)?.data, lastPersistedState);
+				assert.equal(lastPersistedState.active, true);
+				assert.deepEqual(replacement.getActiveTools(), replacementTools);
+				assert.equal(replacementCoordination.provider.inspect().phase, "active");
+				// The outgoing callback must not append to its abandoned session either.
+				assert.equal(harness.appended.length, entriesBeforeReplacement);
+				assert.equal(observed.provider.inspect().phase, "disposed");
+				assert.equal(observed.released(), 0);
 			} finally {
 				verification.reject(new Error("Test cleanup released deferred publication preflight."));
 				await oldPreflight?.catch(() => undefined);
@@ -1604,34 +1650,48 @@ describe("Plan session lifecycle", () => {
 				oldExit = input(harness, "/plan exit");
 				await chooserStarted.promise;
 
-				const replacementCtx = createReplacementContext(harness, "session-new");
+				const observed = observeEntryCoordination(harness);
+				const replacement = createHarness({ cwd: harness.ctx.cwd, sessionId: "session-new" });
+				const replacementCtx = replacement.ctx;
 				await harness.handlers.get("session_shutdown")?.(
 					{ type: "session_shutdown", reason: "new" },
 					harness.ctx,
 				);
+				const entriesBeforeReplacement = harness.appended.length;
 				const staleContextAccesses = makeContextStale(harness.ctx);
-				await harness.handlers.get("session_start")?.(
+				await replacement.handlers.get("session_start")?.(
 					{ type: "session_start", reason: "new", previousSessionFile: "old-session.jsonl" },
 					replacementCtx,
 				);
 				assert.deepEqual(
-					await inputWithContext(harness, replacementCtx, "/plan"),
+					await inputWithContext(replacement, replacementCtx, "/plan"),
 					{ action: "handled" },
 				);
-				const replacementState = harness.appended.at(-1)?.data;
-				const entriesAfterReplacement = harness.appended.length;
+				const lastPersistedState = replacement.appended.at(-1)?.data;
+				assert.equal(lastPersistedState?.active, true);
+				assert.notEqual(lastPersistedState.planId, harness.appended.at(-1)?.data.planId);
+				const replacementTools = [...replacement.getActiveTools()];
+				assert.equal(replacementTools.includes("create_plan"), true);
+				assert.equal(replacementTools.includes("write"), false);
+				const replacementCoordination = observeEntryCoordination(replacement);
+				const entriesAfterReplacement = replacement.appended.length;
 
 				chooserDecision.resolve("Exit without publishing");
 				assert.deepEqual(await oldExit, { action: "handled" });
 
 				assert.equal(chooserSignal?.aborted, true);
 				assert.deepEqual(staleContextAccesses, []);
-				assert.equal(harness.appended.length, entriesAfterReplacement);
-				assert.equal(harness.appended.at(-1)?.data, replacementState);
-				assert.equal(replacementState.ownerSessionId, "session-new");
-				assert.equal(replacementState.active, true);
-				assert.equal(harness.getActiveTools().includes("create_plan"), true);
-				assert.equal(harness.getActiveTools().includes("write"), false);
+				assert.equal(replacement.appended.length, entriesAfterReplacement);
+				assert.equal(replacement.appended.at(-1)?.data, lastPersistedState);
+				assert.equal(lastPersistedState.active, true);
+				assert.deepEqual(replacement.getActiveTools(), replacementTools);
+				assert.equal(replacementCoordination.provider.inspect().phase, "active");
+				// The outgoing callback must not append to its abandoned session either.
+				assert.equal(harness.appended.length, entriesBeforeReplacement);
+				assert.equal(observed.provider.inspect().phase, "disposed");
+				assert.equal(observed.released(), 0);
+				assert.equal(harness.getActiveTools().includes("create_plan"), false);
+				assert.equal(harness.getActiveTools().includes("write"), true);
 			} finally {
 				chooserDecision.resolve(undefined);
 				await oldExit?.catch(() => undefined);
@@ -2110,34 +2170,48 @@ describe("Plan session lifecycle", () => {
 				);
 				await fallbackStarted.promise;
 
-				const replacementCtx = createReplacementContext(harness, "session-switched");
+				const observed = observeEntryCoordination(harness);
+				const replacement = createHarness({ cwd: harness.ctx.cwd, sessionId: "session-switched" });
+				const replacementCtx = replacement.ctx;
 				await harness.handlers.get("session_shutdown")?.(
 					{ type: "session_shutdown", reason: "resume", targetSessionFile: "replacement.jsonl" },
 					harness.ctx,
 				);
+				const entriesBeforeReplacement = harness.appended.length;
 				const staleContextAccesses = makeContextStale(harness.ctx);
-				await harness.handlers.get("session_start")?.(
+				await replacement.handlers.get("session_start")?.(
 					{ type: "session_start", reason: "resume", previousSessionFile: "old-session.jsonl" },
 					replacementCtx,
 				);
 				assert.deepEqual(
-					await inputWithContext(harness, replacementCtx, "/plan"),
+					await inputWithContext(replacement, replacementCtx, "/plan"),
 					{ action: "handled" },
 				);
-				const replacementState = harness.appended.at(-1)?.data;
-				const entriesAfterReplacement = harness.appended.length;
+				const lastPersistedState = replacement.appended.at(-1)?.data;
+				assert.equal(lastPersistedState?.active, true);
+				assert.notEqual(lastPersistedState.planId, harness.appended.at(-1)?.data.planId);
+				const replacementTools = [...replacement.getActiveTools()];
+				assert.equal(replacementTools.includes("create_plan"), true);
+				assert.equal(replacementTools.includes("write"), false);
+				const replacementCoordination = observeEntryCoordination(replacement);
+				const entriesAfterReplacement = replacement.appended.length;
 
 				fallbackDecision.resolve("Exit without publishing");
 				await settlement;
 
 				assert.equal(fallbackSignal?.aborted, true);
 				assert.deepEqual(staleContextAccesses, []);
-				assert.equal(harness.appended.length, entriesAfterReplacement);
-				assert.equal(harness.appended.at(-1)?.data, replacementState);
-				assert.equal(replacementState.ownerSessionId, "session-switched");
-				assert.equal(replacementState.active, true);
-				assert.equal(harness.getActiveTools().includes("create_plan"), true);
-				assert.equal(harness.getActiveTools().includes("write"), false);
+				assert.equal(replacement.appended.length, entriesAfterReplacement);
+				assert.equal(replacement.appended.at(-1)?.data, lastPersistedState);
+				assert.equal(lastPersistedState.active, true);
+				assert.deepEqual(replacement.getActiveTools(), replacementTools);
+				assert.equal(replacementCoordination.provider.inspect().phase, "active");
+				// The outgoing callback must not append to its abandoned session either.
+				assert.equal(harness.appended.length, entriesBeforeReplacement);
+				assert.equal(observed.provider.inspect().phase, "disposed");
+				assert.equal(observed.released(), 0);
+				assert.equal(harness.getActiveTools().includes("create_plan"), false);
+				assert.equal(harness.getActiveTools().includes("write"), true);
 			} finally {
 				fallbackDecision.resolve(undefined);
 				await settlement?.catch(() => undefined);
@@ -3840,5 +3914,1751 @@ describe("Plan session lifecycle", () => {
 			assert.deepEqual(resumed.sessionNameChanges, []);
 			assert.match(resumed.notifications.at(-1)?.message ?? "", /completed.*exit.*restart/i);
 		});
+	});
+});
+
+
+describe("factory coordination capability", () => {
+	it("disposes before shutdown yields and never reopens on a reused session_start", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "plan-coordination-"));
+		try {
+			const harness = createHarness({ cwd });
+			const discover = (events: any) => {
+				const providers: any[] = [];
+				events.emit("pithos.plan.coordination", { version: 1, reply: (provider: any) => { providers.push(provider); } });
+				return providers;
+			};
+			const [provider] = discover(harness.events);
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			const shutdown = harness.handlers.get("session_shutdown")({ reason: "reload" }, harness.ctx);
+			assert.deepEqual(discover(harness.events), [], "shutdown must synchronously disable discovery");
+			assert.equal(provider.inspect().phase, "disposed");
+			assert.equal(provider.attachParticipant({ instance: {}, tryAcquire() { assert.fail("disposed provider must not acquire"); } }).kind, "blocked");
+			await shutdown;
+			await harness.handlers.get("session_start")({ reason: "switch" }, harness.ctx);
+			assert.deepEqual(discover(harness.events), []);
+			assert.equal(provider.inspect().phase, "disposed");
+			const fresh = createHarness({ cwd });
+			const [next] = discover(fresh.events);
+			assert.notEqual(next.instance, provider.instance);
+			assert.equal(next.inspect().phase, "initializing");
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+	it("replies synchronously before session_start and opens readiness after clean reconciliation", async () => {
+		const cwd = await mkdtemp(join(tmpdir(), "plan-coordination-"));
+		try {
+			const harness = createHarness({ cwd });
+			const providers: any[] = [];
+			const reply = (provider: any) => { providers.push(provider); };
+			for (const request of [null, undefined, 1, {}, { version: 2, reply }, { version: "1", reply }, { version: 1, reply: null }]) {
+				harness.events.emit("pithos.plan.coordination", request);
+			}
+			assert.equal(providers.length, 0);
+			harness.events.emit("pithos.plan.coordination", { version: 1, reply });
+			assert.equal(providers.length, 1, "factory must advertise synchronously before session_start");
+			const provider = providers[0];
+			assert.equal(provider.version, 1);
+			assert.equal(provider.inspect().phase, "initializing");
+			await harness.handlers.get("session_start")({ reason: "startup" }, harness.ctx);
+			await harness.handlers.get("session_tree")({}, harness.ctx);
+			harness.events.emit("pithos.plan.coordination", { version: 1, reply });
+			assert.equal(providers[1], provider);
+			assert.equal(provider.inspect().phase, "inactive");
+			let acquired = 0;
+			let released = 0;
+			assert.equal(provider.attachParticipant({
+				instance: {},
+				tryAcquire() {
+					acquired += 1;
+					return { kind: "held", lease: { release() { released += 1; } } };
+				},
+			}).kind, "attached");
+			assert.equal(acquired, 0);
+			assert.equal(released, 0);
+			assert.equal(provider.inspect().phase, "inactive");
+		} finally {
+			await rm(cwd, { recursive: true, force: true });
+		}
+	});
+});
+
+function observeEntryCoordination(harness: any) {
+	let provider: any;
+	harness.events.emit("pithos.plan.coordination", { version: 1, reply(value: any) { provider = value; } });
+	let released = 0;
+	assert.equal(provider.attachParticipant({
+		instance: {},
+		tryAcquire() { return { kind: "held", lease: { release() { released += 1; } } }; },
+	}).kind, "attached");
+	return { provider, released: () => released };
+}
+
+describe("ordinary entry coordination", () => {
+	it("enters synchronously and retains protection through successful persistence", async () => {
+		const path = Promise.withResolvers<string>();
+		await withHarness({ generatePlanPath: () => path.promise }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			assert.equal(observed.provider.inspect().phase, "initializing");
+			const entering = input(harness, "/plan");
+			try {
+				assert.equal(observed.provider.inspect().phase, "entering");
+				await new Promise<void>((resolve) => setImmediate(resolve));
+				assert.equal(harness.appended.length, 0);
+				assert.equal(observed.released(), 0);
+			} finally { path.resolve(".pi/plans/entry.md"); await entering; }
+			assert.equal(harness.appended.at(-1).data.active, true);
+			assert.equal(observed.provider.inspect().phase, "active");
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+
+describe("ordinary entry stale callbacks", () => {
+	for (const event of ["input", "agent_start"]) {
+		it(`rolls back owned partial activation after reentrant ${event} and permits retry`, async () => {
+			let onTools: (() => void) | undefined;
+			await withHarness({ mode: "tui", setActiveTools: () => onTools?.() }, async (harness) => {
+				const observed = observeEntryCoordination(harness);
+				const normalTools = [...harness.getActiveTools()];
+				let footer: unknown;
+				harness.ctx.ui.setFooter = (value: unknown) => { footer = value; };
+				onTools = () => {
+					onTools = undefined;
+					void harness.handlers.get(event)({ text: "new task", source: "interactive" }, harness.ctx);
+				};
+				await input(harness, "/plan");
+				assert.equal(harness.appended.length, 0);
+				assert.deepEqual(harness.getActiveTools(), normalTools);
+				assert.equal(harness.ctx.ui.theme.name, "dark");
+				assert.equal(footer, undefined);
+				assert.equal(observed.provider.inspect().phase, "inactive");
+				assert.equal(observed.released(), 1);
+				await input(harness, "/plan");
+				assert.equal(harness.appended.at(-1)?.data.active, true);
+				assert.equal(observed.provider.inspect().phase, "active");
+				assert.deepEqual(harness.appended.at(-1).data.previousToolNames, normalTools);
+			});
+		});
+	}
+	it("does not persist or notify after tool application synchronously shuts down the session", async () => {
+		let onTools: (() => void) | undefined;
+		await withHarness({ mode: "tui", setActiveTools: () => onTools?.() }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			const uiEffects: string[] = [];
+			harness.ctx.ui.setFooter = () => { uiEffects.push("footer"); };
+			harness.ctx.ui.setStatus = () => { uiEffects.push("status"); };
+			let effectsAtShutdown: string[] = [];
+			onTools = () => {
+				onTools = undefined;
+				void harness.handlers.get("session_shutdown")({ reason: "reload" }, harness.ctx);
+				effectsAtShutdown = [...uiEffects];
+			};
+			await input(harness, "/plan");
+			assert.deepEqual(uiEffects, effectsAtShutdown);
+			assert.equal(harness.ctx.ui.theme.name, "dark");
+			assert.equal(harness.appended.length, 0);
+			assert.equal(harness.notifications.length, 0);
+			assert.equal(observed.provider.inspect().phase, "disposed");
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+describe("ordinary entry safety pins", () => {
+	for (const supersede of ["queued-entry", "path-entry", "input", "agent_start", "session_tree", "session_shutdown"]) {
+		it(`retains protection when superseded by ${supersede}`, async () => {
+			const path = Promise.withResolvers<string>();
+			let calls = 0;
+			await withHarness({ generatePlanPath: () => ++calls === 1 ? path.promise : Promise.resolve(".pi/plans/newer.md") }, async (harness) => {
+				const observed = observeEntryCoordination(harness);
+				const normalTools = [...harness.getActiveTools()];
+				const first = input(harness, "/plan");
+				const firstGeneration = observed.provider.inspect().generation;
+				let second: Promise<any> | undefined;
+				try {
+					if (supersede !== "queued-entry") await new Promise<void>((resolve) => setImmediate(resolve));
+					if (supersede.endsWith("entry")) {
+						second = input(harness, "/plan");
+						assert.notEqual(observed.provider.inspect().generation, firstGeneration);
+					} else if (supersede === "input") await input(harness, "new task");
+					else await harness.handlers.get(supersede)({ reason: "reload" }, harness.ctx);
+				} finally { path.resolve(".pi/plans/older.md"); await first; await second; }
+				assert.equal(observed.released(), ["input", "agent_start", "session_tree"].includes(supersede) ? 1 : 0);
+				if (second) {
+					assert.equal(harness.appended.length, 1);
+					assert.equal(observed.provider.inspect().phase, "active");
+					if (supersede === "path-entry") assert.equal(harness.appended[0].data.candidatePath, ".pi/plans/newer.md");
+				} else {
+					assert.equal(harness.appended.length, 0);
+					assert.deepEqual(harness.getActiveTools(), normalTools);
+					assert.equal(harness.notifications.length, 0);
+					assert.equal(observed.provider.inspect().phase, supersede === "session_shutdown" ? "disposed" : "inactive");
+				}
+			});
+		});
+	}
+	for (const failure of ["path", "tools", "persistence"]) {
+		it(`keeps protection after ${failure} failure`, async () => {
+			let armed = false;
+			const fail = () => { if (armed) throw new Error("entry failure"); };
+			await withHarness({
+				generatePlanPath: failure === "path" ? async () => { throw new Error("entry failure"); } : undefined,
+				setActiveTools: failure === "tools" ? fail : undefined,
+				appendEntry: failure === "persistence" ? fail : undefined,
+			}, async (harness) => {
+				const observed = observeEntryCoordination(harness);
+				armed = true;
+				await input(harness, "/plan");
+				assert.equal(observed.provider.inspect().phase, failure === "path" ? "inactive" : "entering");
+				assert.equal(observed.released(), failure === "path" ? 1 : 0);
+				assert.equal(harness.appended.length, 0);
+				assert.match(harness.notifications.at(-1).message, /not activated safely/);
+			});
+		});
+	}
+});
+
+describe("ordinary exit coordination", () => {
+	it("exposes exiting before restoring tools and releases holds after direct exit", async () => {
+		let onTools: (() => void) | undefined;
+		await withHarness({ setActiveTools: () => onTools?.() }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			await input(harness, "/plan");
+			const phases: string[] = [];
+			onTools = () => { phases.push(observed.provider.inspect().phase); };
+			await input(harness, "/plan exit");
+			assert.deepEqual(phases, ["exiting"]);
+			assert.equal(harness.appended.at(-1).data.active, false);
+			assert.equal(observed.provider.inspect().phase, "inactive");
+			assert.equal(observed.released(), 1);
+		});
+	});
+});
+
+describe("ordinary exit failure safety", () => {
+	it("restores active tools after a partial tool failure and permits retry", async () => {
+		let fail = false;
+		await withHarness({ setActiveTools: () => { if (fail) { fail = false; throw new Error("exit tools failed"); } } }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			await input(harness, "/plan");
+			const planned = [...harness.getActiveTools()];
+			fail = true;
+			await input(harness, "/plan exit");
+			assert.deepEqual(harness.getActiveTools(), planned);
+			assert.equal(harness.appended.at(-1).data.active, true);
+			assert.match(harness.notifications.at(-1).message, /not exited safely/i);
+			assert.equal(observed.released(), 0);
+			await input(harness, "/plan exit");
+			assert.equal(harness.appended.at(-1).data.active, false);
+		});
+	});
+});
+
+describe("ordinary exit persistence boundary", () => {
+	it("keeps read-only policy active inside persistence and rolls back a failed write", async () => {
+		let onAppend: (() => void) | undefined;
+		await withHarness({ appendEntry: () => onAppend?.() }, async (harness) => {
+			await input(harness, "/plan");
+			let shell: Promise<any> | undefined;
+			onAppend = () => {
+				onAppend = undefined;
+				shell = harness.handlers.get("user_bash")({}, harness.ctx);
+				throw new Error("exit persistence failed");
+			};
+			await input(harness, "/plan exit");
+			assert.equal((await shell)?.result.exitCode, 126);
+			assert.equal(harness.appended.at(-1).data.active, true);
+			assert.equal(harness.getActiveTools().includes("bash"), false);
+			assert.match(harness.notifications.at(-1).message, /not exited safely/i);
+			await input(harness, "/plan exit");
+			assert.equal(harness.appended.at(-1).data.active, false);
+		});
+	});
+});
+
+describe("ordinary exit supersession", () => {
+	for (const boundary of ["tools", "getTheme", "theme", "footer", "status", "persist"]) {
+		for (const event of ["input", "agent_start"]) {
+			it(`stops old exit after ${event} at ${boundary}`, async () => {
+				let hook: (() => void) | undefined;
+				await withHarness({ mode: "tui", setActiveTools: () => { if (boundary === "tools") hook?.(); }, afterAppendEntry: () => { if (boundary === "persist") hook?.(); } }, async (harness) => {
+					const observed = observeEntryCoordination(harness);
+					await input(harness, "/plan");
+					harness.ctx.ui.select = async () => "Exit without publishing";
+					for (const [name, target] of [["getTheme", "getTheme"], ["setTheme", "theme"], ["setFooter", "footer"], ["setStatus", "status"]]) {
+						const original = harness.ctx.ui[name];
+						harness.ctx.ui[name] = (...args: any[]) => { const result = original(...args); if (boundary === target) hook?.(); return result; };
+					}
+					let superseding: Promise<any> | undefined;
+					let fired = false;
+					hook = () => {
+						hook = undefined;
+						fired = true;
+						superseding = harness.handlers.get(event)({ text: "new task", source: "interactive", reason: "reload" }, harness.ctx);
+					};
+					const before = harness.notifications.length;
+					await input(harness, "/plan exit");
+					await superseding;
+					assert.equal(fired, true);
+					assert.equal(harness.notifications.slice(before).some((entry: any) => /exited Plan mode/i.test(entry.message)), false);
+					assert.equal(observed.released(), 0);
+					if (event === "input" || event === "agent_start") {
+						assert.equal(harness.appended.at(-1).data.active, true);
+						assert.equal(harness.getActiveTools().includes("bash"), false);
+						await input(harness, "/plan exit");
+						assert.equal(harness.appended.at(-1).data.active, false);
+					}
+				});
+			});
+		}
+	}
+});
+
+
+describe("ordinary exit session supersession", () => {
+	for (const boundary of ["tools", "getTheme", "theme", "footer", "status", "persist"]) {
+		for (const event of ["session_tree", "session_shutdown"]) {
+			it(`preserves reconstructed state and stops stale effects after ${event} at ${boundary}`, async () => {
+				let hook: (() => void) | undefined;
+				const effects: string[] = [];
+				await withHarness({
+					mode: "tui",
+					setActiveTools: () => { effects.push("tools"); if (boundary === "tools") hook?.(); },
+					afterAppendEntry: () => { effects.push("append"); if (boundary === "persist") hook?.(); },
+				}, async (harness) => {
+					const observed = observeEntryCoordination(harness);
+					await input(harness, "/plan");
+					const selectedBranch = [...harness.ctx.sessionManager.getBranch()];
+					const planId = harness.appended.at(-1).data.planId;
+					// Incoming tree UI is distinct so outgoing callbacks cannot hide among
+					// reconciliation effects. Tools remain shared, as in the runtime.
+					const incomingCtx = { ...harness.ctx, ui: { ...harness.ctx.ui } };
+					harness.ctx.ui.select = async () => "Exit without publishing";
+					for (const [name, target] of [["getTheme", "getTheme"], ["setTheme", "theme"], ["setFooter", "footer"], ["setStatus", "status"], ["notify", "notify"]]) {
+						const original = harness.ctx.ui[name];
+						harness.ctx.ui[name] = (...args: any[]) => {
+							effects.push(name);
+							const result = original(...args);
+							if (boundary === target) hook?.();
+							return result;
+						};
+					}
+					let superseding: Promise<any> | undefined;
+					let effectsAtSupersession: string[] | undefined;
+					let activeAtAppendObservation: boolean | undefined;
+					let replacement: any;
+					let staleAccesses: string[] = [];
+					hook = () => {
+						hook = undefined;
+						if (boundary === "persist") {
+							activeAtAppendObservation = harness.appended.at(-1).data.active;
+						}
+						if (event === "session_tree") harness.setBranch([...selectedBranch]);
+						superseding = harness.handlers.get(event)({ reason: "reload" }, event === "session_tree" ? incomingCtx : harness.ctx);
+						if (event === "session_shutdown") {
+							replacement = createHarness({ cwd: harness.ctx.cwd, mode: "tui", entries: [...harness.allEntries], branch: parentLinkedBranch(harness.allEntries) });
+							staleAccesses = makeContextStale(harness.ctx);
+						}
+						effectsAtSupersession = [...effects];
+					};
+					await input(harness, "/plan exit");
+					// Tree reconciliation finishes asynchronously; only its own UI/tools are allowed.
+					const effectsAfterExit = [...effects];
+					await superseding;
+					assert.ok(effectsAtSupersession);
+					if (boundary === "persist") assert.equal(activeAtAppendObservation, false, "append observation sees committed inactive record");
+					assert.deepEqual(staleAccesses, []);
+					assert.equal(observed.released(), 0);
+					if (event === "session_shutdown") {
+						assert.deepEqual(effectsAfterExit, effectsAtSupersession);
+						assert.equal(observed.provider.inspect().phase, "disposed");
+					} else {
+						// Only incoming reconciliation may reapply tools after its await.
+						assert.deepEqual(effects.slice(effectsAtSupersession.length), ["tools"]);
+						assert.equal(harness.getActiveTools().includes("bash"), false);
+						replacement = createHarness({ cwd: harness.ctx.cwd, mode: "tui", entries: [...harness.allEntries], branch: [...harness.ctx.sessionManager.getBranch()] });
+					}
+					const expectedActive = event === "session_tree" || boundary !== "persist";
+					const durable = replacement.ctx.sessionManager.getBranch().filter((entry: any) => entry.customType === harness.appended[0].customType).at(-1).data;
+					assert.equal(durable.active, expectedActive);
+					assert.equal(durable.planId, planId);
+					await replacement.handlers.get("session_start")({ reason: "reload" }, replacement.ctx);
+					assert.equal(replacement.getActiveTools().includes("create_plan"), expectedActive);
+					assert.equal(replacement.getActiveTools().includes("bash"), !expectedActive);
+					assert.equal(replacement.ctx.ui.theme.name, expectedActive ? "plan" : "dark");
+					assert.equal(harness.notifications.some((entry: any) => /exited Plan mode/i.test(entry.message)), false);
+				});
+			});
+		}
+	}
+});
+
+describe("reconciliation recovery fencing", () => {
+	for (const reject of [false, true]) {
+		it(`discards approval recovery after shutdown (${reject ? "reject" : "resolve"})`, async () => {
+			await withHarness({ confirm: async () => true }, async (original) => {
+				await input(original, "/plan");
+				await checkpointPlan(original, "# Restart fence\n", 0);
+				await startLifecycleCommand(original, "/plan save");
+				await original.handlers.get("tool_call")({ type: "tool_call", toolCallId: "approved", toolName: "create_plan", input: { revision: 1 } }, original.ctx);
+				const verification = Promise.withResolvers<void>();
+				const started = Promise.withResolvers<void>();
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries: [...original.allEntries], mode: "tui",
+					verifyPlanFileDigest: async () => { started.resolve(); return verification.promise; },
+				});
+				const observation = observeEntryCoordination(resumed);
+				const pending = resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				await started.promise;
+				await resumed.handlers.get("session_shutdown")({ reason: "reload" }, resumed.ctx);
+				const snapshot = { appended: resumed.appended.length, notifications: resumed.notifications.length, themes: [...resumed.themeChanges], tools: [...resumed.getActiveTools()] };
+				if (reject) verification.reject(new Error("stale verification failure"));
+				else verification.resolve();
+				await pending;
+				assert.deepEqual({ appended: resumed.appended.length, notifications: resumed.notifications.length, themes: resumed.themeChanges, tools: resumed.getActiveTools() }, snapshot);
+				assert.equal(observation.provider.inspect().phase, "disposed");
+				assert.equal(observation.released(), 0);
+			});
+		});
+	}
+});
+
+describe("reconciliation transition barrier", () => {
+	it("holds reconciling synchronously and refuses commands until recovery settles", async () => {
+		await withHarness({ confirm: async () => true }, async (original) => {
+			await input(original, "/plan");
+			await checkpointPlan(original, "# Barrier\n", 0);
+			await startLifecycleCommand(original, "/plan save");
+			await original.handlers.get("tool_call")({ toolCallId: "approval", toolName: "create_plan", input: { revision: 1 } }, original.ctx);
+			const verification = Promise.withResolvers<void>();
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries: [...original.allEntries], verifyPlanFileDigest: () => verification.promise });
+			const observed = observeEntryCoordination(resumed);
+			const pending = resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			try {
+				assert.equal(observed.provider.inspect().phase, "reconciling");
+				await input(resumed, "/plan exit");
+				assert.equal(resumed.appended.length, 0);
+				assert.match(resumed.notifications.at(-1)?.message ?? "", /reconcil/i);
+				assert.equal(observed.released(), 0);
+			} finally { verification.resolve(); await pending; }
+			assert.notEqual(observed.provider.inspect().phase, "inactive");
+		});
+	});
+});
+
+describe("completed recovery supersession", () => {
+	for (const stage of ["approval", "baseline", "completed"] as const) {
+		for (const supersede of ["shutdown", "tree"] as const) {
+			for (const reject of [false, true]) {
+				it(`${stage} verification ignores ${reject ? "rejection" : "success"} after ${supersede}`, async () => {
+					await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+						await input(original, "/plan");
+						await checkpointPlan(original, "# Recovery\n", 0);
+						if (stage === "baseline") {
+							await startLifecycleCommand(original, "/plan save");
+							await publishLatest(original, 1);
+							await checkpointPlan(original, "# Updated recovery\n", 1);
+						}
+						const revision = stage === "baseline" ? 2 : 1;
+						await startLifecycleCommand(original, stage === "completed" ? "/plan exit" : "/plan save");
+						const call = { toolCallId: "recovery-approval", toolName: "create_plan", input: { revision } };
+						assert.equal((await original.handlers.get("tool_call")(call, original.ctx))?.block, undefined);
+						if (stage === "completed") await original.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, original.ctx);
+						const verification = Promise.withResolvers<void>();
+						const started = Promise.withResolvers<void>();
+						let calls = 0;
+						const resumed = createHarness({ cwd: original.ctx.cwd, entries: [...original.allEntries], mode: "tui", verifyPlanFileDigest: async () => {
+							if (stage === "baseline" && ++calls === 1) throw new PlanPublicationConflictError("not updated");
+							started.resolve(); return verification.promise;
+						} });
+						const observed = observeEntryCoordination(resumed);
+						const pending = resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+						await started.promise;
+						if (supersede === "shutdown") await resumed.handlers.get("session_shutdown")({ reason: "reload" }, resumed.ctx);
+						else { resumed.setBranch([]); await resumed.handlers.get("session_tree")({}, resumed.ctx); }
+						const releasesBeforeOutgoing = observed.released();
+						const snapshot = { appended: resumed.appended.length, notifications: resumed.notifications.length, themes: [...resumed.themeChanges], tools: [...resumed.getActiveTools()] };
+						let staleContextReads = 0;
+						for (const key of ["cwd", "ui", "mode", "sessionManager"]) {
+							const value = resumed.ctx[key];
+							Object.defineProperty(resumed.ctx, key, { get() { staleContextReads += 1; return value; } });
+						}
+						if (reject) verification.reject(new Error("obsolete recovery error")); else verification.resolve();
+						await pending;
+						assert.equal(staleContextReads, 0);
+						assert.deepEqual({ appended: resumed.appended.length, notifications: resumed.notifications.length, themes: resumed.themeChanges, tools: resumed.getActiveTools() }, snapshot);
+						assert.equal(observed.released(), releasesBeforeOutgoing);
+						assert.equal(observed.provider.inspect().phase, supersede === "tree" ? "inactive" : "disposed");
+					});
+				});
+			}
+		}
+	}
+});
+
+describe("reconciliation reentrant callbacks", () => {
+	for (const boundary of ["tools", "theme", "append"] as const) {
+		it(`stops outgoing restoration when ${boundary} callback navigates to an empty branch`, async () => {
+			await withHarness({ confirm: async () => true }, async (original) => {
+				await input(original, "/plan");
+				await checkpointPlan(original, "# Reentrant restore\n", 0);
+				await startLifecycleCommand(original, "/plan save");
+				await original.handlers.get("tool_call")({ toolCallId: "approval", toolName: "create_plan", input: { revision: 1 } }, original.ctx);
+				let callback: (() => void) | undefined;
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries: [...original.allEntries], mode: "tui", verifyPlanFileDigest: async () => {},
+					setActiveTools: () => { if (boundary === "tools") callback?.(); },
+					afterAppendEntry: () => { if (boundary === "append") callback?.(); },
+				});
+				let nested: Promise<void> | undefined;
+				callback = () => { callback = undefined; resumed.setBranch([]); nested = resumed.handlers.get("session_tree")({}, resumed.ctx); };
+				const getTheme = resumed.ctx.ui.getTheme;
+				if (boundary === "theme") resumed.ctx.ui.getTheme = (name: string) => { callback?.(); return getTheme(name); };
+				const observed = observeEntryCoordination(resumed);
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				await nested;
+				assert.equal(resumed.getThemeName(), "dark");
+				assert.equal(resumed.getActiveTools().includes("create_plan"), false);
+				if (boundary === "append") assert.equal(resumed.notifications.some((item: any) => /Recovered|Completed/.test(item.message)), false);
+				assert.equal(observed.released(), 1);
+			});
+		});
+	}
+});
+
+describe("legacy reconciliation ownership", () => {
+	it("does not announce migration after its activation notification navigates away", async () => {
+		await withHarness({}, async (base) => {
+			const resumed = createHarness({ cwd: base.ctx.cwd, entries: [{ type: "custom", customType: "plan-theme-state", data: { active: true, planPath: ".pi/plans/legacy.md" } }] });
+			const observed = observeEntryCoordination(resumed);
+			const notify = resumed.ctx.ui.notify;
+			let nested: Promise<void> | undefined;
+			resumed.ctx.ui.notify = (message: string, level: string) => {
+				notify(message, level);
+				if (/Plan mode active/.test(message)) { resumed.setBranch([]); nested = resumed.handlers.get("session_tree")({}, resumed.ctx); }
+			};
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			await nested;
+			assert.equal(resumed.notifications.some((item: any) => /legacy.*migrated/i.test(item.message)), false);
+			assert.equal(resumed.getActiveTools().includes("create_plan"), false);
+			assert.equal(observed.released(), 1);
+		});
+	});
+});
+
+describe("completed exit restoration callbacks", () => {
+	it("stops before persisting or notifying when restoration shuts down reentrantly", async () => {
+		await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+			await input(original, "/plan");
+			await checkpointPlan(original, "# Exit restore\n", 0);
+			await publishLatest(original, 1, "/plan exit", false);
+			// Tool settlement clears completion, so retain the pre-result durable entry.
+			const completionIndex = original.allEntries.findLastIndex((entry: any) => entry.data?.completedPublication?.action === "exit");
+			let callback: (() => void) | undefined;
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries: original.allEntries.slice(0, completionIndex + 1), mode: "tui", verifyPlanFileDigest: async () => {}, setActiveTools: () => callback?.() });
+			let snapshot: any;
+			callback = () => {
+				callback = undefined;
+				void resumed.handlers.get("session_shutdown")({ reason: "reload" }, resumed.ctx);
+				snapshot = { appended: resumed.appended.length, notifications: resumed.notifications.length, themes: [...resumed.themeChanges] };
+			};
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			assert.ok(snapshot);
+			assert.deepEqual({ appended: resumed.appended.length, notifications: resumed.notifications.length, themes: resumed.themeChanges }, snapshot);
+		});
+	});
+});
+
+describe("legacy deferred reconciliation", () => {
+	for (const supersede of ["shutdown", "tree"] as const) {
+		it(`retains holds and discards migration after ${supersede}`, async () => {
+			await withHarness({}, async (base) => {
+				const path = Promise.withResolvers<string>();
+				const started = Promise.withResolvers<void>();
+				const resumed = createHarness({ cwd: base.ctx.cwd, entries: [{ type: "custom", customType: "plan-theme-state", data: { active: true } }], generatePlanPath: () => { started.resolve(); return path.promise; } });
+				const observed = observeEntryCoordination(resumed);
+				const pending = resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				await started.promise;
+				if (supersede === "shutdown") await resumed.handlers.get("session_shutdown")({ reason: "reload" }, resumed.ctx);
+				else { resumed.setBranch([]); await resumed.handlers.get("session_tree")({}, resumed.ctx); }
+				const releasesBeforeOutgoing = observed.released();
+				const snapshot = [...resumed.getActiveTools()];
+				path.resolve(".pi/plans/stale-legacy.md");
+				await pending;
+				assert.equal(resumed.appended.length, 0);
+				assert.equal(resumed.notifications.length, 0);
+				assert.deepEqual(resumed.getActiveTools(), snapshot);
+				assert.equal(observed.released(), releasesBeforeOutgoing);
+				assert.equal(observed.provider.inspect().phase, supersede === "tree" ? "inactive" : "disposed");
+			});
+		});
+	}
+});
+
+describe("completed conflict callback fencing", () => {
+	it("stops conflict conversion when persistence navigates away", async () => {
+		await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+			await input(original, "/plan");
+			await checkpointPlan(original, "# Conflict recovery\n", 0);
+			await publishLatest(original, 1, "/plan exit", false);
+			const completionIndex = original.allEntries.findLastIndex((entry: any) => entry.data?.completedPublication?.action === "exit");
+			let callback: (() => void) | undefined;
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries: original.allEntries.slice(0, completionIndex + 1), verifyPlanFileDigest: async () => { throw new PlanPublicationConflictError("changed"); }, afterAppendEntry: () => callback?.() });
+			let nested: Promise<void> | undefined;
+			callback = () => { callback = undefined; resumed.setBranch([]); nested = resumed.handlers.get("session_tree")({}, resumed.ctx); };
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			await nested;
+			assert.equal(resumed.notifications.length, 0);
+			assert.equal(resumed.getActiveTools().includes("create_plan"), false);
+		});
+	});
+});
+
+describe("publication write ownership", () => {
+	it("leaves a committed create recoverable after tree supersession without completing the replacement branch", async () => {
+		await withHarness({ confirm: async () => true }, async (harness) => {
+			await input(harness, "/plan");
+			const content = "# Owned publication\n";
+			await checkpointPlan(harness, content, 0);
+			const incomingBranch = [...harness.allEntries];
+			await startLifecycleCommand(harness, "/plan save");
+			const call = { type: "tool_call", toolCallId: "owned-write", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			const approvedBranch = structuredClone(harness.allEntries);
+			const path = harness.appended.at(-1).data.approval.path;
+			const cwd = harness.ctx.cwd;
+			const occupied = await occupyFileMutationQueue(join(cwd, path));
+			const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+			const outcome = execution.then((value: any) => ({ value }), (error: Error) => ({ error }));
+			try {
+				await assertOperationWaitsForQueue(execution);
+				harness.setBranch(incomingBranch);
+				const incoming = createReplacementContext(harness, "session-a");
+				await harness.handlers.get("session_tree")({}, incoming);
+				const staleAccesses = makeContextStale(harness.ctx);
+				const entries = structuredClone(harness.allEntries);
+				const notifications = [...harness.notifications];
+				const tools = [...harness.getActiveTools()];
+				occupied.release();
+				await occupied.done;
+				const result = await outcome;
+				assert.match(result.error?.message ?? "", /superseded.*file.*not.*undone/i);
+				assert.deepEqual(harness.allEntries, entries);
+				assert.deepEqual(harness.notifications, notifications);
+				assert.deepEqual(harness.getActiveTools(), tools);
+				assert.deepEqual(staleAccesses, []);
+				assert.deepEqual(harness.sessionNameChanges, []);
+				assert.equal(await readFile(join(cwd, path), "utf8"), content);
+				const approvedDigest = approvedBranch.at(-1).data.approval.digest;
+				const recovered = createHarness({ cwd, entries: approvedBranch });
+				await recovered.handlers.get("session_start")({ reason: "resume" }, recovered.ctx);
+				assert.equal(recovered.appended.at(-1).data.publishedDigest, approvedDigest);
+			} finally {
+				occupied.release();
+				await occupied.done;
+				await outcome;
+			}
+		});
+	});
+});
+
+describe("publication collision ownership", () => {
+	for (const lifecycle of ["tree", "shutdown"] as const) {
+	for (const reject of [false, true]) {
+	it(`discards collision resolution ${reject ? "rejection" : "success"} after ${lifecycle}`, async () => {
+		const resolving = Promise.withResolvers<void>();
+		const resolution = Promise.withResolvers<string>();
+		let defer = false;
+		await withHarness({
+			confirm: async () => true,
+			resolveAvailablePlanPath: async (cwd, path) => {
+				if (!defer) return resolveAvailablePlanPath(cwd, path);
+				resolving.resolve();
+				return resolution.promise;
+			},
+		}, async (harness) => {
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Collision\n", 0);
+			await startLifecycleCommand(harness, "/plan save");
+			const call = { type: "tool_call", toolCallId: "collision-write", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			const path = harness.appended.at(-1).data.approval.path;
+			const cwd = harness.ctx.cwd;
+			await mkdir(dirname(join(cwd, path)), { recursive: true });
+			await writeFile(join(cwd, path), "external collision");
+			defer = true;
+			const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+			const outcome = execution.catch((error: Error) => error);
+			await resolving.promise;
+			await harness.handlers.get(lifecycle === "tree" ? "session_tree" : "session_shutdown")({ reason: "reload" }, harness.ctx);
+			const staleAccesses = makeContextStale(harness.ctx);
+			const entries = structuredClone(harness.allEntries);
+			if (reject) resolution.reject(new Error("stale resolution error"));
+			else resolution.resolve(".pi/plans/replacement.md");
+			const error = await outcome;
+			assert.match(error.message, /superseded/i);
+			assert.deepEqual(harness.allEntries, entries);
+			assert.deepEqual(staleAccesses, []);
+			assert.equal(await readFile(join(cwd, path), "utf8"), "external collision");
+		});
+	});
+	}
+	}
+});
+
+describe("publication postappend ownership", () => {
+	for (const action of ["save", "exit"] as const) {
+	it(`does not report ${action} completion or name after shutdown from a durable publication observer`, async () => {
+		let armed = false;
+		let pendingChecks = 0;
+		let shutdown: Promise<void> | undefined;
+		let accesses: string[] = [];
+		let harness: any;
+		await withHarness({ confirm: async () => true, select: async () => "Create plan", hasPendingMessages: () => armed && action === "exit" && pendingChecks++ > 0, afterAppendEntry: () => {
+			if (!armed) return;
+			armed = false;
+			shutdown = harness.handlers.get("session_shutdown")({ reason: "reload" }, harness.ctx);
+			accesses = makeContextStale(harness.ctx);
+		} }, async (current) => {
+			harness = current;
+			await input(harness, "/plan");
+			const content = "# Postappend\n";
+			await checkpointPlan(harness, content, 0);
+			await startLifecycleCommand(harness, `/plan ${action}`);
+			const call = { type: "tool_call", toolCallId: "postappend-write", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			const cwd = harness.ctx.cwd;
+			const path = harness.appended.at(-1).data.approval.path;
+			armed = true;
+			await assert.rejects(harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx), /superseded/i);
+			await shutdown;
+			assert.deepEqual(accesses, []);
+			assert.deepEqual(harness.sessionNameChanges, []);
+			assert.equal(await readFile(join(cwd, path), "utf8"), content);
+			if (action === "save") assert.equal(harness.appended.at(-1).data.completedPublication.path, path);
+			else assert.equal(harness.appended.at(-1).data.completedPublication, undefined);
+		});
+	});
+	}
+});
+
+describe("publication write ownership matrix", () => {
+	for (const kind of ["create", "update"] as const) {
+		for (const lifecycle of ["tree", "shutdown"] as const) {
+			for (const reject of [false, true]) {
+				it(`${kind} ${reject ? "rejection" : "resolution"} after ${lifecycle} is inert`, async () => {
+					await withHarness({ confirm: async () => true }, async (harness) => {
+						await input(harness, "/plan");
+						await checkpointPlan(harness, "# Original\n", 0);
+						if (kind === "update") {
+							await publishLatest(harness, 1);
+							await checkpointPlan(harness, "# Updated\n", 1);
+						}
+						const incomingBranch = [...harness.allEntries];
+						await startLifecycleCommand(harness, "/plan save");
+						const call = { type: "tool_call", toolCallId: "matrix-write", toolName: "create_plan", input: { revision: kind === "create" ? 1 : 2 } };
+						assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+						const approval = structuredClone(harness.appended.at(-1).data.approval);
+						const cwd = harness.ctx.cwd;
+						const absolutePath = join(cwd, approval.path);
+						const occupied = await occupyFileMutationQueue(absolutePath);
+						const controller = new AbortController();
+						const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, controller.signal, undefined, harness.ctx);
+						const outcome = execution.catch((error: Error) => error);
+						try {
+							await assertOperationWaitsForQueue(execution);
+							let replacement: any;
+							if (lifecycle === "tree") {
+								harness.setBranch(incomingBranch);
+								await harness.handlers.get("session_tree")({}, createReplacementContext(harness, "session-a"));
+							} else {
+								await harness.handlers.get("session_shutdown")({ reason: "new" }, harness.ctx);
+								replacement = createHarness({ cwd, sessionId: "replacement" });
+								await replacement.handlers.get("session_start")({ reason: "new" }, replacement.ctx);
+								await input(replacement, "/plan");
+							}
+							const replacementEntries = structuredClone(replacement?.allEntries);
+							const entries = structuredClone(harness.allEntries);
+							const notifications = [...harness.notifications];
+							const tools = [...harness.getActiveTools()];
+							const stale = makeContextStale(harness.ctx);
+							if (reject) {
+								if (kind === "create") controller.abort();
+								else await writeFile(absolutePath, "external conflict");
+							}
+							occupied.release();
+							await occupied.done;
+							assert.match((await outcome).message, /superseded/i);
+							assert.deepEqual(stale, []);
+							assert.deepEqual(harness.allEntries, entries);
+							assert.deepEqual(harness.notifications, notifications);
+							assert.deepEqual(harness.getActiveTools(), tools);
+							assert.deepEqual(replacement?.allEntries, replacementEntries);
+							if (!reject) assert.equal(await readFile(absolutePath, "utf8"), kind === "create" ? "# Original\n" : "# Updated\n");
+							else if (kind === "update") assert.equal(await readFile(absolutePath, "utf8"), "external conflict");
+							else await assert.rejects(readFile(absolutePath), { code: "ENOENT" });
+						} finally {
+							occupied.release();
+							await occupied.done;
+							await outcome;
+						}
+					});
+				});
+			}
+		}
+	}
+});
+
+describe("publication same-branch intent", () => {
+	it("keeps a delivered newer input as save intent while the approved write completes", async () => {
+		await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (harness) => {
+			await input(harness, "/plan");
+			const content = "# Same branch\n";
+			await checkpointPlan(harness, content, 0);
+			await startLifecycleCommand(harness, "/plan exit");
+			const call = { type: "tool_call", toolCallId: "input-write", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			const path = harness.appended.at(-1).data.approval.path;
+			const occupied = await occupyFileMutationQueue(join(harness.ctx.cwd, path));
+			const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+			try {
+				await assertOperationWaitsForQueue(execution);
+				await input(harness, "newer user instructions");
+				occupied.release();
+				await occupied.done;
+				const result = await execution;
+				assert.equal(result.terminate, undefined);
+				assert.equal(harness.appended.at(-1).data.completedPublication.action, "save");
+				assert.equal(await readFile(join(harness.ctx.cwd, path), "utf8"), content);
+				assert.equal(harness.getActiveTools().includes("bash"), false);
+			} finally {
+				occupied.release();
+				await occupied.done;
+				await execution.catch(() => undefined);
+			}
+		});
+	});
+});
+
+describe("publication postappend input", () => {
+	it("returns save semantics when input arrives from the completion observer", async () => {
+		let armed = false;
+		let newerInput: Promise<any> | undefined;
+		let harness: any;
+		await withHarness({ confirm: async () => true, select: async () => "Create plan", afterAppendEntry: () => {
+			if (!armed) return;
+			armed = false;
+			newerInput = harness.handlers.get("input")({ source: "interactive", text: "continue planning" }, harness.ctx);
+		} }, async (current) => {
+			harness = current;
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Continue after publication\n", 0);
+			await startLifecycleCommand(harness, "/plan exit");
+			const call = { type: "tool_call", toolCallId: "postappend-input", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			armed = true;
+			const result = await harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+			await newerInput;
+			assert.equal(result.terminate, undefined);
+			assert.equal(harness.appended.at(-1).data.completedPublication.action, "save");
+			assert.equal(harness.getActiveTools().includes("bash"), false);
+		});
+	});
+});
+
+describe("recovery transition phases", () => {
+	it("coordinates inactive mismatched completion before applying and persisting its downgrade", async () => {
+		await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+			await input(original, "/plan");
+			await checkpointPlan(original, "# One\n", 0);
+			await publishLatest(original, 1, "/plan exit", false);
+			await checkpointPlan(original, "# Two\n", 1);
+			const latest = original.allEntries.findLast((entry: any) => entry.data?.completedPublication);
+			const entries = [...original.allEntries, { ...latest, id: "inactive-mismatch-phase", parentId: original.allEntries.at(-1).id, data: { ...latest.data, active: false } }];
+			let observed: any;
+			const phases: string[] = [];
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+				setActiveTools: () => phases.push(observed.provider.inspect().phase),
+				appendEntry: () => phases.push(observed.provider.inspect().phase),
+			});
+			observed = observeEntryCoordination(resumed);
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			assert.equal(phases[0], "entering");
+			assert.equal(observed.provider.inspect().phase, "active");
+			assert.equal(observed.released(), 0);
+			assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 1);
+			assert.equal(resumed.appended.at(-1).data.active, true);
+		});
+	});
+});
+
+async function withMismatchedRecovery(run: (original: any, entries: Entry[]) => Promise<void>): Promise<void> {
+	await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+		await input(original, "/plan");
+		await checkpointPlan(original, "# One\n", 0);
+		await publishLatest(original, 1, "/plan exit", false);
+		await checkpointPlan(original, "# Two\n", 1);
+		const latest = original.allEntries.findLast((entry: any) => entry.data?.completedPublication);
+		const entries = [...original.allEntries, { ...latest, id: "inactive-recovery", parentId: original.allEntries.at(-1).id, data: { ...latest.data, active: false } }];
+		await run(original, entries);
+	});
+}
+
+describe("recovery downgrade failures", () => {
+	for (const failure of ["tools", "persist"] as const) {
+		it(`retains protection and completion when ${failure} fails`, async () => {
+			await withMismatchedRecovery(async (original, entries) => {
+				const fail = () => { throw new Error(`injected ${failure} failure`); };
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+					setActiveTools: failure === "tools" ? fail : undefined,
+					appendEntry: failure === "persist" ? fail : undefined,
+				});
+				const observed = observeEntryCoordination(resumed);
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				assert.equal(observed.provider.inspect().phase, "entering");
+				assert.equal(observed.released(), 0);
+				assert.equal(resumed.appended.length, 0);
+				assert.equal(entries.at(-1).data.completedPublication.action, "exit");
+				assert.match(resumed.notifications.at(-1).message, /not recovered safely/);
+				assert.equal(resumed.sessionNameChanges.length, 0);
+			});
+		});
+	}
+});
+
+describe("settled downgrade ownership", () => {
+	it("does not notify after shutdown from completion persistence", async () => {
+		let harness: any;
+		let armed = false;
+		let writes = 0;
+		let shutdown: Promise<void> | undefined;
+		let notificationCount = 0;
+		await withHarness({ confirm: async () => true, select: async () => "Create plan",
+			afterAppendEntry: () => {
+				if (!armed || ++writes !== 2) return;
+				armed = false;
+				shutdown = harness.handlers.get("session_shutdown")({ reason: "quit" }, harness.ctx);
+				notificationCount = harness.notifications.length;
+			},
+		}, async (original) => {
+			harness = original;
+			await input(original, "/plan");
+			await checkpointPlan(original, "# One\n", 0);
+			await publishLatest(original, 1, "/plan exit", false);
+			await checkpointPlan(original, "# Two\n", 1);
+			const observed = observeEntryCoordination(original);
+			armed = true;
+			await original.handlers.get("agent_settled")({}, original.ctx);
+			await shutdown;
+			assert.equal(writes, 2);
+			assert.equal(original.notifications.length, notificationCount);
+			assert.equal(observed.provider.inspect().phase, "disposed");
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+describe("tree downgrade protection", () => {
+	it("finishes an already-active branch downgrade under active protection", async () => {
+		await withMismatchedRecovery(async (original, entries) => {
+			entries.at(-1).data.active = true;
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries });
+			const observed = observeEntryCoordination(resumed);
+			await resumed.handlers.get("session_tree")({}, resumed.ctx);
+			assert.equal(observed.provider.inspect().phase, "active");
+			assert.equal(observed.released(), 0);
+			assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 1);
+			assert.equal(resumed.appended.at(-1).data.active, true);
+			assert.equal(resumed.appended.at(-1).data.publicationState, "dirty");
+			assert.equal(resumed.sessionNameChanges.length, 0);
+		});
+	});
+});
+
+describe("reentrant recovery ownership", () => {
+	for (const event of ["session_shutdown", "session_tree"] as const) {
+		it(`abandons the outgoing downgrade when tools trigger ${event}`, async () => {
+			await withMismatchedRecovery(async (original, entries) => {
+				let resumed: any;
+				let armed = true;
+				let replacement: Promise<void> | undefined;
+				const exactExit = entries.find((entry: any) => entry.data?.completedPublication && entry.data.checkpointRevision === 1);
+				resumed = createHarness({ cwd: original.ctx.cwd, entries,
+					setActiveTools: () => {
+						if (!armed) return;
+						armed = false;
+						if (event === "session_tree") resumed.setBranch(parentLinkedBranch(entries, exactExit));
+						replacement = resumed.handlers.get(event)({ reason: "quit" }, resumed.ctx);
+					},
+				});
+				const observed = observeEntryCoordination(resumed);
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				await replacement;
+				assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 0);
+				assert.equal(resumed.notifications.some((entry: any) => /no longer matches/.test(entry.message)), false);
+				assert.equal(observed.released(), event === "session_tree" ? 1 : 0);
+				if (event === "session_shutdown") {
+					assert.equal(resumed.appended.length, 0);
+					assert.equal(observed.provider.inspect().phase, "disposed");
+				} else {
+					assert.equal(resumed.appended.at(-1).data.active, false);
+					assert.equal(resumed.appended.at(-1).data.checkpointRevision, 1);
+				}
+			});
+		});
+	}
+});
+
+describe("disposed downgrade refusal", () => {
+	it("does not consume a mismatched completion on a late settled event", async () => {
+		await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+			await input(original, "/plan");
+			await checkpointPlan(original, "# One\n", 0);
+			await publishLatest(original, 1, "/plan exit", false);
+			await checkpointPlan(original, "# Two\n", 1);
+			const observed = observeEntryCoordination(original);
+			await original.handlers.get("session_shutdown")({ reason: "quit" }, original.ctx);
+			const writes = original.appended.length;
+			const notifications = original.notifications.length;
+			await original.handlers.get("agent_settled")({}, original.ctx);
+			assert.equal(original.appended.length, writes);
+			assert.equal(original.notifications.length, notifications);
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+describe("downgrade retry tool snapshot", () => {
+	it("retains the pre-Plan tools after a failed persistence is retried", async () => {
+		await withMismatchedRecovery(async (original, entries) => {
+			let fail = true;
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+				appendEntry: () => { if (fail) throw new Error("retryable persistence failure"); },
+			});
+			const observed = observeEntryCoordination(resumed);
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			fail = false;
+			await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+			assert.equal(observed.provider.inspect().phase, "active");
+			assert.equal(resumed.appended.at(-1).data.previousToolNames.includes("write"), true);
+			assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 1);
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+describe("exact-checkpoint downgrade retry", () => {
+	for (const failure of ["tools", "persist"] as const) {
+		it(`finishes the inactive exit downgrade after ${failure} fails`, async () => {
+			await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+				await input(original, "/plan");
+				await checkpointPlan(original, "# Exact checkpoint\n", 0);
+				await publishLatest(original, 1, "/plan exit", false);
+				const latest = original.allEntries.findLast((entry: any) => entry.data?.completedPublication);
+				const snapshot = [...latest.data.previousToolNames];
+				const entries = [...original.allEntries, { ...latest, id: "inactive-exact-retry", parentId: original.allEntries.at(-1).id, data: { ...latest.data, active: false } }];
+				let failing = true;
+				const fail = () => { if (failing) throw new Error(`retryable ${failure} failure`); };
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+					setActiveTools: failure === "tools" ? fail : undefined,
+					// This fixture's appendEntry injector fails before the durable append.
+					appendEntry: failure === "persist" ? fail : undefined,
+				});
+				const observed = observeEntryCoordination(resumed);
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				assert.equal(observed.provider.inspect().phase, "entering");
+				assert.equal(resumed.appended.length, 0);
+				assert.equal(resumed.getActiveTools().includes("bash"), false);
+				failing = false;
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal(observed.provider.inspect().phase, "active");
+				assert.equal(observed.released(), 0);
+				assert.equal(resumed.getActiveTools().includes("bash"), false);
+				assert.equal(resumed.getActiveTools().includes("write"), false);
+				assert.equal(resumed.appended.at(-1).data.active, true);
+				assert.deepEqual(resumed.appended.at(-1).data.previousToolNames, snapshot);
+				assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 1);
+				assert.equal(resumed.appended.some((entry: any) => entry.data.completedPublication?.action === "exit" || !entry.data.active), false);
+				assert.equal(resumed.notifications.some((entry: any) => /exited Plan mode/.test(entry.message)), false);
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal(resumed.appended.filter((entry: any) => entry.data.completedPublication?.action === "save").length, 1);
+			});
+		});
+	}
+});
+
+async function withExactExitRecovery(run: (original: any, entries: Entry[]) => Promise<void>) {
+	await withHarness({ confirm: async () => true, select: async () => "Create plan" }, async (original) => {
+		await input(original, "/plan");
+		await checkpointPlan(original, "# Recovered exact exit\n", 0);
+		await publishLatest(original, 1, "/plan exit", false);
+		const index = original.allEntries.findLastIndex((entry: Entry) => entry.data?.completedPublication?.action === "exit");
+		await run(original, structuredClone(original.allEntries.slice(0, index + 1)));
+	});
+}
+
+describe("recovered exact exit coordination", () => {
+	it("enters exiting before restoration and keeps active enforcement until the inactive append", async () => {
+		await withExactExitRecovery(async (original, entries) => {
+			let observed: any;
+			const phases: string[] = [];
+			let policy: Promise<any> | undefined;
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries, mode: "tui",
+				setActiveTools: () => phases.push(observed.provider.inspect().phase),
+				appendEntry: () => {
+					phases.push(observed.provider.inspect().phase);
+					policy = resumed.handlers.get("user_bash")({}, resumed.ctx);
+				},
+			});
+			observed = observeEntryCoordination(resumed);
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			assert.ok(phases.length >= 2);
+			assert.ok(phases.every((phase) => phase === "exiting"), phases.join(","));
+			assert.equal((await policy)?.result.exitCode, 126);
+			assert.equal(resumed.appended.at(-1).data.active, false);
+			assert.equal(resumed.appended.at(-1).data.completedPublication, undefined);
+			assert.equal(await resumed.handlers.get("user_bash")({}, resumed.ctx), undefined);
+			assert.equal(observed.released(), 1);
+		});
+	});
+});
+
+describe("recovered exact exit failures", () => {
+	for (const failure of ["tools", "theme", "persist", "observer"] as const) {
+		it(`retains exact retry intent and protection after ${failure} failure`, async () => {
+			await withExactExitRecovery(async (original, entries) => {
+				entries.at(-1)!.data.previousThemeName = "dark";
+				const tools = [...entries.at(-1)!.data.previousToolNames];
+				let armed = true;
+				const fail = () => { if (armed) throw new Error("injected exit failure"); };
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries, mode: "tui",
+					setActiveTools: failure === "tools" ? fail : undefined,
+					appendEntry: failure === "persist" ? fail : undefined,
+					afterAppendEntry: failure === "observer" ? fail : undefined,
+				});
+				const setTheme = resumed.ctx.ui.setTheme;
+				resumed.ctx.ui.setTheme = (theme: any) => failure === "theme" && armed && theme.name !== "plan"
+					? { success: false, error: "injected theme refusal" } : setTheme(theme);
+				const observed = observeEntryCoordination(resumed);
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+				assert.equal(observed.provider.inspect().phase, "exiting");
+				assert.equal(observed.released(), 0);
+				assert.equal(resumed.appended.length, failure === "observer" ? 1 : 0);
+				assert.equal(resumed.notifications.some((item: any) => /Completed the already-published/.test(item.message)), false);
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+				armed = false;
+				// Retry the still-owned memory, including the completion left after an
+				// observer threw *after* the inactive record became durable.
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal(resumed.appended.at(-1).data.active, false);
+				assert.equal(resumed.appended.at(-1).data.completedPublication, undefined);
+				assert.deepEqual(resumed.getActiveTools(), tools);
+				assert.equal(resumed.appended.some((entry: Entry) => entry.data.completedPublication?.action === "save"), false);
+				assert.equal(observed.released(), 1);
+			});
+		});
+	}
+});
+
+describe("recovered exact exit callback supersession", () => {
+	for (const stage of ["tools", "theme", "footer", "status", "append"] as const) {
+		for (const event of ["session_shutdown", "session_tree"] as const) {
+			it(`stops outgoing ${stage} continuation after ${event}`, async () => {
+				await withExactExitRecovery(async (original, entries) => {
+					entries.at(-1)!.data.previousThemeName = "dark";
+					const incoming = parentLinkedBranch(entries, entries.find((entry: Entry) => entry.data?.active && !entry.data?.publishedDigest));
+					let armed = true;
+					let replacement: Promise<void> | undefined;
+					let snapshot: any;
+					let resumed: any;
+					const capture = () => ({ writes: resumed.appended.length, notifications: resumed.notifications.length, themes: [...resumed.themeChanges] });
+					const supersede = () => {
+						if (!armed) return;
+						armed = false;
+						if (event === "session_tree") resumed.setBranch([...incoming]);
+						replacement = resumed.handlers.get(event)({ reason: "quit" }, resumed.ctx);
+						snapshot = capture();
+					};
+					resumed = createHarness({ cwd: original.ctx.cwd, entries, mode: "tui",
+						setActiveTools: stage === "tools" ? supersede : undefined,
+						afterAppendEntry: stage === "append" ? supersede : undefined,
+					});
+					for (const [name, selected] of [["setTheme", "theme"], ["setFooter", "footer"], ["setStatus", "status"]]) {
+						const originalCallback = resumed.ctx.ui[name];
+						resumed.ctx.ui[name] = (...args: any[]) => {
+							const result = originalCallback(...args);
+							if (stage === selected) supersede();
+							return result;
+						};
+					}
+					const observed = observeEntryCoordination(resumed);
+					await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+					await replacement;
+					assert.ok(snapshot);
+					assert.equal(resumed.notifications.some((item: any) => /Completed the already-published|not exited safely/.test(item.message)), false);
+					assert.equal(observed.released(), 0);
+					if (event === "session_shutdown") {
+						assert.deepEqual(capture(), snapshot);
+						assert.equal(observed.provider.inspect().phase, "disposed");
+					} else {
+						assert.equal(resumed.appended.at(-1).data.active, true);
+						assert.equal(resumed.appended.at(-1).data.completedPublication, undefined);
+						assert.equal(resumed.getActiveTools().includes("write"), false);
+						assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+					}
+				});
+			});
+		}
+	}
+});
+
+describe("recovered approval exit reporting", () => {
+	it("does not claim exit before recovered deactivation succeeds", async () => {
+		await withExactExitRecovery(async (original, entries) => {
+			const data = entries.at(-1)!.data;
+			data.approval = { ...data.completedPublication, kind: "create" };
+			delete data.completedPublication;
+			delete data.publishedPath;
+			delete data.publishedRevision;
+			delete data.publishedDigest;
+			data.publicationState = "unpublished";
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+				setActiveTools: () => { throw new Error("restore unavailable"); },
+			});
+			const observed = observeEntryCoordination(resumed);
+			await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+			assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+			assert.equal(resumed.notifications.some((item: any) => /kept Plan mode exited/.test(item.message)), false);
+			assert.equal(resumed.appended.at(-1).data.completedPublication.action, "exit");
+			assert.equal(observed.released(), 0);
+		});
+	});
+});
+
+describe("recovered exit intent lifetime", () => {
+	for (const downgrade of ["checkpoint", "file conflict"] as const) {
+		it(`allows a later deferred exit after ${downgrade} downgrade consumption`, async () => {
+			await withExactExitRecovery(async (original, entries) => {
+				let failing = true;
+				const resumed = createHarness({ cwd: original.ctx.cwd, entries,
+					setActiveTools: () => { if (failing) throw new Error("restore unavailable"); },
+					select: async () => "Update plan",
+					confirm: async () => true,
+				});
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+				failing = false;
+				const publishedPath = join(original.ctx.cwd, entries.at(-1)!.data.publishedPath);
+				const publishedContent = await readFile(publishedPath, "utf8");
+				if (downgrade === "checkpoint") await checkpointPlan(resumed, "# Superseding checkpoint\n", 1);
+				else await writeFile(publishedPath, "external edit\n");
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal(resumed.appended.at(-1).data.completedPublication, undefined);
+				assert.equal(resumed.appended.at(-1).data.active, true);
+
+				if (downgrade === "file conflict") {
+					assert.equal(await readFile(publishedPath, "utf8"), "external edit\n");
+					await writeFile(publishedPath, publishedContent);
+					await checkpointPlan(resumed, "# Superseding checkpoint\n", 1);
+				}
+
+				const lifecycle = await input(resumed, "/plan exit");
+				assert.equal(lifecycle.action, "dispatched");
+				await resumed.handlers.get("before_agent_start")({ prompt: lifecycle.text, systemPrompt: "base" }, resumed.ctx);
+				await checkpointPlan(resumed, "# Final checkpoint\n", 2);
+				resumed.ctx.ui.select = async () => "Exit without publishing";
+				const gate = await resumed.handlers.get("tool_call")({ toolCallId: "later-exit", toolName: "create_plan", input: { revision: 3 } }, resumed.ctx);
+				assert.match(gate.reason, /chose to exit/);
+				assert.equal((await resumed.handlers.get("user_bash")({}, resumed.ctx))?.result.exitCode, 126);
+				await resumed.handlers.get("agent_settled")({}, resumed.ctx);
+				assert.equal(resumed.appended.at(-1).data.active, false);
+				assert.equal(await resumed.handlers.get("user_bash")({}, resumed.ctx), undefined);
+			});
+		});
+	}
+});
+
+describe("ordinary exit retry intent", () => {
+	it("retains completed publication through a failed exit and retries settlement", async () => {
+		let failRestore = false;
+		await withHarness({
+			confirm: async () => true,
+			select: async () => "Create plan",
+			setActiveTools: () => { if (failRestore) throw new Error("injected ordinary restoration failure"); },
+		}, async (harness) => {
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Retry ordinary exit\n", 0);
+			await publishLatest(harness, 1, "/plan exit", false);
+			failRestore = true;
+			await harness.handlers.get("agent_settled")({}, harness.ctx);
+			assert.equal((await harness.handlers.get("user_bash")({}, harness.ctx))?.result.exitCode, 126);
+			failRestore = false;
+			await harness.handlers.get("agent_settled")({}, harness.ctx);
+			assert.equal(harness.appended.at(-1).data.active, false, "settlement must retry the retained completed exit");
+			assert.equal(harness.appended.at(-1).data.completedPublication, undefined);
+			assert.equal(harness.getActiveTools().includes("bash"), true);
+		});
+	});
+});
+
+describe("deferred exit retry intent", () => {
+	it("retains exit without publication through a failed restoration", async () => {
+		let failRestore = false;
+		let choices = 0;
+		await withHarness({
+			confirm: async () => true,
+			select: async () => ++choices === 1 ? "Create plan" : "Exit without publishing",
+			setActiveTools: () => { if (failRestore) throw new Error("injected deferred restoration failure"); },
+		}, async (harness) => {
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Initial checkpoint\n", 0);
+			await startLifecycleCommand(harness, "/plan exit");
+			await checkpointPlan(harness, "# Revised checkpoint\n", 1);
+			const gate = await harness.handlers.get("tool_call")({
+				type: "tool_call", toolCallId: "deferred-retry", toolName: "create_plan", input: { revision: 2 },
+			}, harness.ctx);
+			assert.equal(gate?.block, true);
+			failRestore = true;
+			await harness.handlers.get("agent_settled")({}, harness.ctx);
+			assert.equal((await harness.handlers.get("user_bash")({}, harness.ctx))?.result.exitCode, 126);
+			failRestore = false;
+			await harness.handlers.get("agent_settled")({}, harness.ctx);
+			assert.equal(harness.appended.at(-1).data.active, false, "settlement must retry the deferred exit");
+			assert.equal(harness.appended.at(-1).data.publishedPath, undefined);
+			assert.equal(choices, 2, "retry must not ask for another decision");
+		});
+	});
+});
+
+describe("factory publication drain", () => {
+	for (const navigation of ["tree", "session"] as const) {
+		it(`refuses commands on an inactive ${navigation} until the old publication drains`, async () => {
+			await withHarness({ confirm: async () => true }, async (harness) => {
+				const observed = observeEntryCoordination(harness);
+				await input(harness, "/plan");
+				await checkpointPlan(harness, "# Drain\n", 0);
+				await startLifecycleCommand(harness, "/plan save");
+				const call = { toolCallId: "drain", toolName: "create_plan", input: { revision: 1 } };
+				assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+				const path = harness.appended.at(-1).data.approval.path;
+				const occupied = await occupyFileMutationQueue(join(harness.ctx.cwd, path));
+				const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+				const outcome = execution.catch((error: Error) => error);
+				try {
+					await assertOperationWaitsForQueue(execution);
+					harness.setBranch([]);
+					const current = createReplacementContext(harness, navigation === "session" ? "session-b" : "session-a");
+					await harness.handlers.get(navigation === "tree" ? "session_tree" : "session_start")({ reason: "new" }, current);
+					const stale = makeContextStale(harness.ctx);
+					const entries = harness.appended.length;
+					await inputWithContext(harness, current, "/plan");
+					assert.equal(harness.appended.length, entries, "publication drain must refuse activation on the incoming branch");
+					assert.match(harness.notifications.at(-1).message, /publication.*progress/i);
+					occupied.release();
+					await occupied.done;
+					assert.match((await outcome).message, /superseded/i);
+					assert.notEqual(observed.provider.inspect().phase, "inactive", "old publication finally cannot release");
+					assert.equal(observed.released(), 0);
+					await inputWithContext(harness, current, "/plan status");
+					assert.equal(observed.provider.inspect().phase, "inactive");
+					assert.equal(observed.released(), 1);
+					await inputWithContext(harness, current, "/plan");
+					assert.equal(harness.appended.at(-1).data.active, true);
+					assert.equal(harness.appended.at(-1).data.ownerSessionId, navigation === "session" ? "session-b" : "session-a");
+					assert.deepEqual(stale, []);
+				} finally {
+					occupied.release();
+					await occupied.done;
+					await outcome;
+				}
+			});
+		});
+	}
+});
+
+describe("publication drain cleanup", () => {
+	for (const kind of ["create", "update"] as const) {
+		for (const reject of [false, true]) {
+			it(`${kind} ${reject ? "failure" : "success"} drains before the next command`, async () => {
+				await withHarness({ confirm: async () => true }, async (harness) => {
+					await input(harness, "/plan");
+					await checkpointPlan(harness, "# Original\n", 0);
+					if (kind === "update") {
+						await publishLatest(harness, 1);
+						await checkpointPlan(harness, "# Updated\n", 1);
+					}
+					await startLifecycleCommand(harness, "/plan save");
+					const call = { toolCallId: "cleanup", toolName: "create_plan", input: { revision: kind === "create" ? 1 : 2 } };
+					assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+					const path = join(harness.ctx.cwd, harness.appended.at(-1).data.approval.path);
+					const occupied = await occupyFileMutationQueue(path);
+					const controller = new AbortController();
+					const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, controller.signal, undefined, harness.ctx);
+					const outcome = execution.then(() => "success", () => "failure");
+					try {
+						await assertOperationWaitsForQueue(execution);
+						await input(harness, "/plan status");
+						assert.match(harness.notifications.at(-1).message, /publication.*progress/i);
+						if (reject) {
+							if (kind === "create") controller.abort();
+							else await writeFile(path, "external conflict");
+						}
+						occupied.release();
+						await occupied.done;
+						assert.equal(await outcome, reject ? "failure" : "success");
+						await input(harness, "/plan status");
+						assert.match(harness.notifications.at(-1).message, /Plan status: active/);
+					} finally {
+						occupied.release();
+						await occupied.done;
+						await outcome;
+					}
+				});
+			});
+		}
+	}
+});
+
+describe("publication drain lifecycle boundaries", () => {
+	it("does not retry or touch a disposed context after shutdown and drain", async () => {
+		await withHarness({ confirm: async () => true }, async (harness) => {
+			await input(harness, "/plan");
+			await checkpointPlan(harness, "# Shutdown drain\n", 0);
+			await startLifecycleCommand(harness, "/plan save");
+			const call = { toolCallId: "shutdown-drain", toolName: "create_plan", input: { revision: 1 } };
+			assert.equal(await harness.handlers.get("tool_call")(call, harness.ctx), undefined);
+			const occupied = await occupyFileMutationQueue(join(harness.ctx.cwd, harness.appended.at(-1).data.approval.path));
+			const execution = harness.registeredTools.get("create_plan").execute(call.toolCallId, call.input, undefined, undefined, harness.ctx);
+			const outcome = execution.catch((error: Error) => error);
+			try {
+				await assertOperationWaitsForQueue(execution);
+				harness.setBranch([]);
+				await harness.handlers.get("session_tree")({}, harness.ctx);
+				await harness.handlers.get("session_shutdown")({ reason: "quit" }, harness.ctx);
+				const stale = makeContextStale(harness.ctx);
+				const entries = harness.appended.length;
+				occupied.release();
+				await occupied.done;
+				assert.match((await outcome).message, /superseded/i);
+				await inputWithContext(harness, { isIdle: () => true }, "/plan");
+				assert.equal(harness.appended.length, entries);
+				assert.deepEqual(stale, []);
+			} finally {
+				occupied.release();
+				await occupied.done;
+				await outcome;
+			}
+		});
+	});
+});
+
+describe("entry rollback evidence", () => {
+	it("retains active enforcement after an append observer throws and requires reconciliation", async () => {
+		let fail = true;
+		await withHarness({ afterAppendEntry: () => { if (fail) throw new Error("observer failed after append"); } }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			await input(harness, "/plan");
+			assert.equal(harness.appended.at(-1).data.active, true);
+			assert.equal((await harness.handlers.get("user_bash")({}, harness.ctx))?.result.exitCode, 126);
+			assert.match(harness.notifications.at(-1).message, /recovery needed/i);
+			assert.doesNotMatch(harness.notifications.at(-1).message, /Normal tools and theme remain active/);
+			assert.equal(observed.released(), 0);
+			fail = false;
+			await input(harness, "/plan");
+			assert.equal(harness.appended.length, 1, "uncertain entry cannot mint another identity");
+			await harness.handlers.get("session_start")({ reason: "resume" }, harness.ctx);
+			assert.equal((await harness.handlers.get("user_bash")({}, harness.ctx))?.result.exitCode, 126);
+		});
+	});
+});
+
+describe("entry cleanup proof", () => {
+	for (const failure of ["tools", "theme", "footer", "status"]) {
+		it(`requires recovery when cancelled activation cannot restore ${failure}`, async () => {
+			let onTools: (() => void) | undefined;
+			await withHarness({ mode: "tui", setActiveTools: () => onTools?.() }, async (harness) => {
+				const observed = observeEntryCoordination(harness);
+				onTools = () => {
+					onTools = failure === "tools" ? () => { throw new Error("restore tools failed"); } : undefined;
+					if (failure === "theme") harness.ctx.ui.setTheme = () => ({ success: false });
+					if (failure === "footer") harness.ctx.ui.setFooter = () => { throw new Error("footer failed"); };
+					if (failure === "status") harness.ctx.ui.setStatus = () => { throw new Error("status failed"); };
+					void harness.handlers.get("input")({ text: "new task", source: "interactive" }, harness.ctx);
+				};
+				await input(harness, "/plan");
+				assert.match(harness.notifications.at(-1)?.message ?? "", /recovery needed/i);
+				assert.equal(harness.appended.length, 0);
+				assert.equal(observed.released(), 0);
+				onTools = undefined;
+				await input(harness, "/plan");
+				assert.equal(harness.appended.length, 0, "failed cleanup cannot authorize a fresh entry");
+			});
+		});
+	}
+});
+
+describe("entry append cancellation evidence", () => {
+	it("reports recovery when an append observer cancels activation without throwing", async () => {
+		let onAppend: (() => void) | undefined;
+		await withHarness({ afterAppendEntry: () => onAppend?.() }, async (harness) => {
+			const observed = observeEntryCoordination(harness);
+			onAppend = () => {
+				onAppend = undefined;
+				void harness.handlers.get("input")({ text: "new task", source: "interactive" }, harness.ctx);
+			};
+			await input(harness, "/plan");
+			assert.match(harness.notifications.at(-1)?.message ?? "", /recovery needed/i);
+			assert.equal((await harness.handlers.get("user_bash")({}, harness.ctx))?.result.exitCode, 126);
+			assert.equal(harness.appended.length, 1);
+			assert.equal(observed.released(), 0);
+			await input(harness, "/plan");
+			assert.equal(harness.appended.length, 1);
+		});
+	});
+});
+
+// Acceptance list: startup attach; repeated entry/exit; busy refusal and drain;
+// deferred entry/exit admission; stale owners and publication drain stay fenced.
+describe("real registry inactivity finalization", () => {
+	it("makes clean startup ready and attaches the real registry", async () => {
+		await withHarness({}, async (harness) => {
+			const registry = new BackgroundRunRegistry(async () => {});
+			try {
+				await harness.handlers.get("session_start")({}, harness.ctx);
+				assert.equal(discoverPlan(harness.events, { presence: "present", persisted: "inactive" }, {
+					instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+				}).kind, "ready");
+				const run = registry.start({ role: "coder", profile: "typescript", task: "acceptance" });
+				await registry.wait(run.id, 1000);
+			} finally { await registry.shutdown(); }
+		});
+	});
+});
+
+it("real registry repeated entry and exit reacquires and releases", async () => {
+	await withHarness({}, async (harness) => {
+		const registry = new BackgroundRunRegistry(async () => {});
+		const boundary = { presence: "present", persisted: "inactive" } as const;
+		try {
+			await harness.handlers.get("session_start")({}, harness.ctx);
+			assert.equal(discoverPlan(harness.events, boundary, {
+				instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+			}).kind, "ready");
+			for (let i = 0; i < 2; i++) {
+				await input(harness, "/plan");
+				assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "blocked" }), /Plan hold/);
+				await input(harness, "/plan exit");
+				assert.equal(discoverPlan(harness.events, boundary).kind, "ready");
+				const run = registry.start({ role: "coder", profile: "typescript", task: "released" });
+				await registry.wait(run.id, 1000);
+			}
+		} finally { await registry.shutdown(); }
+	});
+});
+
+it("clean path cancellation releases only its owning entry", async () => {
+	const path = Promise.withResolvers<string>();
+	await withHarness({ generatePlanPath: () => path.promise }, async (harness) => {
+		const observed = observeEntryCoordination(harness);
+		const entering = input(harness, "/plan");
+		await new Promise<void>(resolve => setImmediate(resolve));
+		await harness.handlers.get("input")({ text: "cancel", source: "interactive" }, harness.ctx);
+		path.resolve(".pi/plans/cancelled.md");
+		await entering;
+		assert.equal(harness.appended.length, 0);
+		assert.equal(observed.provider.inspect().phase, "inactive");
+		assert.equal(observed.released(), 1);
+	});
+});
+
+describe("real registry busy admission", () => {
+	for (const status of ["running", "waiting", "stopping", "exclusive"] as const) {
+		it(`refuses ${status} work before Plan mutation, then retries after drain`, async () => {
+			let mutations = 0;
+			await withHarness({
+				generatePlanPath: async () => { mutations++; return ".pi/plans/registry.md"; },
+				setActiveTools: () => { mutations++; }, appendEntry: () => { mutations++; },
+			}, async (harness) => {
+				const drain = Promise.withResolvers<void>();
+				let signals = 0;
+				const registry = new BackgroundRunRegistry(async ({ signal, ask }) => {
+					signal.addEventListener("abort", () => { signals++; });
+					if (status === "waiting") void ask("Continue?").catch(() => {});
+					await drain.promise;
+				});
+				let exclusive: Promise<unknown> | undefined;
+				try {
+					await harness.handlers.get("session_start")({}, harness.ctx);
+					assert.equal(discoverPlan(harness.events, { presence: "present", persisted: "inactive" }, {
+						instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+					}).kind, "ready");
+					const run = status === "exclusive" ? undefined : registry.start({ role: "coder", profile: "typescript", task: "busy" });
+					if (status === "exclusive") exclusive = registry.runExclusive(() => drain.promise);
+					await new Promise<void>(resolve => setImmediate(resolve));
+					if (status === "stopping") void registry.cancel(run!.id);
+					if (run) assert.equal(registry.status(run.id).status, status);
+					const before = { mutations, signals, entries: harness.appended.length };
+					await input(harness, "/plan");
+					assert.deepEqual({ mutations, signals, entries: harness.appended.length }, before);
+					assert.match(harness.notifications.at(-1)?.message ?? "", /busy|unavailable/i);
+					if (status === "waiting") registry.reply(run!.id, registry.status(run!.id).question!.id, "Continue");
+					drain.resolve();
+					if (run) await registry.wait(run.id, 1000);
+					await exclusive;
+					await input(harness, "/plan");
+					assert.equal(harness.appended.at(-1).data.active, true, "retained terminal records do not block entry");
+					assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "held" }), /Plan hold/);
+				} finally { drain.resolve(); await exclusive; await registry.shutdown(); }
+			});
+		});
+	}
+});
+
+it("real registry blocks deferred path, active mode and exit persistence until outer completion", async () => {
+	const path = Promise.withResolvers<string>();
+	let onAppend: (() => void) | undefined;
+	await withHarness({ generatePlanPath: () => path.promise, afterAppendEntry: () => onAppend?.() }, async harness => {
+		const registry = new BackgroundRunRegistry(async () => {});
+		const start = () => registry.start({ role: "coder", profile: "typescript", task: "admission" });
+		try {
+			await harness.handlers.get("session_start")({}, harness.ctx);
+			assert.equal(discoverPlan(harness.events, { presence: "present", persisted: "inactive" }, {
+				instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+			}).kind, "ready");
+			const entry = input(harness, "/plan");
+			assert.throws(start, /Plan hold/);
+			await new Promise<void>(resolve => setImmediate(resolve));
+			assert.throws(start, /Plan hold/);
+			path.resolve(".pi/plans/held.md");
+			await entry;
+			assert.throws(start, /Plan hold/);
+			let checked = false;
+			onAppend = () => { checked = true; assert.throws(start, /Plan hold/); };
+			await input(harness, "/plan exit");
+			assert.equal(checked, true);
+			const run = start();
+			await registry.wait(run.id, 1000);
+		} finally { path.resolve(".pi/plans/held.md"); await registry.shutdown(); }
+	});
+});
+
+it("exit notification cannot release a newer real registry entry hold", async () => {
+	await withHarness({}, async harness => {
+		const registry = new BackgroundRunRegistry(async () => {});
+		try {
+			await harness.handlers.get("session_start")({}, harness.ctx);
+			assert.equal(discoverPlan(harness.events, { presence: "present", persisted: "inactive" }, {
+				instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+			}).kind, "ready");
+			await input(harness, "/plan");
+			let newer: Promise<unknown> | undefined;
+			const notify = harness.ctx.ui.notify;
+			harness.ctx.ui.notify = (message: string, level: string) => {
+				notify(message, level);
+				if (/Exited Plan mode/.test(message)) newer = input(harness, "/plan");
+			};
+			await input(harness, "/plan exit");
+			assert.ok(newer);
+			await newer;
+			assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "stale" }), /Plan hold/);
+			assert.equal(harness.appended.at(-1).data.active, true);
+		} finally { await registry.shutdown(); }
+	});
+});
+
+it("real registry stays protected across active and invalid owned restoration", async () => {
+	await withHarness({}, async original => {
+		await input(original, "/plan");
+		for (const invalid of [false, true]) {
+			const entries = structuredClone(original.allEntries);
+			if (invalid) {
+				const latest = entries.at(-1);
+				entries.push({ ...latest, id: "conflicting-plan", parentId: latest.id, data: { ...latest.data, planId: "other-owned-plan" } });
+			}
+			const resumed = createHarness({ cwd: original.ctx.cwd, entries });
+			const registry = new BackgroundRunRegistry(async () => {});
+			let provider: any;
+			resumed.events.emit("pithos.plan.coordination", { version: 1, reply(value: any) { provider = value; } });
+			try {
+				assert.equal(provider.attachParticipant({ instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner) }).kind, "attached");
+				await resumed.handlers.get("session_start")({ reason: "resume" }, resumed.ctx);
+				assert.equal(discoverPlan(resumed.events, { presence: "present", persisted: "inactive" }).kind, "blocked");
+				if (!invalid) assert.equal(provider.inspect().phase, "active");
+				assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "restore" }), /Plan hold/);
+			} finally { await registry.shutdown(); }
+		}
+	});
+});
+
+describe("real registry theme cleanup proof", () => {
+	it("refuses ordinary exit until the saved theme can be restored", async () => {
+		await withHarness({ mode: "tui" }, async (harness) => {
+			const registry = new BackgroundRunRegistry(async () => {});
+			const boundary = { presence: "present", persisted: "inactive" } as const;
+			try {
+				await harness.handlers.get("session_start")({}, harness.ctx);
+				assert.equal(discoverPlan(harness.events, boundary, {
+					instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+				}).kind, "ready");
+				harness.ctx.ui.theme.name = "saved-custom";
+				const tools = [...harness.getActiveTools()];
+				await input(harness, "/plan");
+				const setTheme = harness.ctx.ui.setTheme;
+				harness.ctx.ui.setTheme = (theme: any) => theme.name === "plan"
+					? setTheme(theme) : { success: false, error: "restoration refused" };
+				await input(harness, "/plan exit");
+				assert.equal(discoverPlan(harness.events, boundary).kind, "blocked");
+				assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "blocked" }), /Plan hold/);
+				assert.equal(harness.ctx.ui.theme.name, "plan");
+				assert.equal(harness.appended.some((entry: Entry) => entry.data.active === false), false);
+				assert.equal(harness.appended.at(-1).data.previousThemeName, "saved-custom");
+				assert.deepEqual(harness.appended.at(-1).data.previousToolNames, tools);
+				assert.match(harness.notifications.at(-1).message, /not exited safely/);
+				harness.ctx.ui.setTheme = setTheme;
+				await input(harness, "/plan exit");
+				assert.equal(harness.ctx.ui.theme.name, "saved-custom");
+				assert.deepEqual(harness.getActiveTools(), tools);
+				assert.equal(harness.appended.at(-1).data.active, false);
+				assert.equal(discoverPlan(harness.events, boundary).kind, "ready");
+				const run = registry.start({ role: "coder", profile: "typescript", task: "released" });
+				await registry.wait(run.id, 1000);
+			} finally { await registry.shutdown(); }
+		});
+	});
+});
+
+it("real registry retains outgoing theme on empty branch cleanup failure", async () => {
+	await withHarness({ mode: "tui" }, async (harness) => {
+		const registry = new BackgroundRunRegistry(async () => {});
+		const boundary = { presence: "present", persisted: "inactive" } as const;
+		try {
+			await harness.handlers.get("session_start")({}, harness.ctx);
+			assert.equal(discoverPlan(harness.events, boundary, {
+				instance: {}, tryAcquire: (owner: object) => registry.tryAcquirePlanHold(owner),
+			}).kind, "ready");
+			harness.ctx.ui.theme.name = "outgoing-custom";
+			const tools = [...harness.getActiveTools()];
+			await input(harness, "/plan");
+			const setTheme = harness.ctx.ui.setTheme;
+			harness.ctx.ui.setTheme = (theme: any) => theme.name === "plan"
+				? setTheme(theme) : { success: false, error: "restoration refused" };
+			harness.setBranch([]);
+			await assert.rejects(harness.handlers.get("session_tree")({}, harness.ctx), /theme restoration failed/);
+			assert.equal(discoverPlan(harness.events, boundary).kind, "blocked");
+			assert.throws(() => registry.start({ role: "coder", profile: "typescript", task: "blocked" }), /Plan hold/);
+			assert.equal(harness.ctx.ui.theme.name, "plan");
+			assert.equal(harness.appended.some((entry: Entry) => entry.data.active === false), false);
+			assert.equal(harness.appended.at(-1).data.previousThemeName, "outgoing-custom");
+			harness.ctx.ui.setTheme = setTheme;
+			await harness.handlers.get("session_tree")({}, harness.ctx);
+			assert.equal(harness.ctx.ui.theme.name, "outgoing-custom", "retry must use the outgoing snapshot, not fallback or empty incoming state");
+			assert.deepEqual(harness.getActiveTools(), tools);
+			assert.equal(discoverPlan(harness.events, boundary).kind, "ready");
+			const run = registry.start({ role: "coder", profile: "typescript", task: "released" });
+			await registry.wait(run.id, 1000);
+		} finally { await registry.shutdown(); }
 	});
 });

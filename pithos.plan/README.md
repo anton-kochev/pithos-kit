@@ -241,6 +241,49 @@ operating-system sandbox. Other extensions and external processes can still
 mutate files directly. Changes observed by publication verification become
 conflicts, but arbitrary external OS writes can race the final filesystem calls.
 
+## Internal Guild–Plan coordination contract
+
+The internal v1 modules use `pithos.plan.coordination` for synchronous discovery
+between trusted extensions; this is not a malicious-extension security boundary.
+Discovery handlers must reply on-stack as their final synchronous operation;
+late replies are ignored. A ready discovery result is a snapshot, **not an
+admission grant**: callers must rediscover/revalidate immediately before admission.
+
+Guild requires caller-established inactive persisted state, plus either confirmed
+Plan absence with no replies or exactly one compatible, inactive provider with
+confirmed presence. Provider state cannot establish inventory, provenance, or
+persisted inactivity for the caller. Supplying a participant attaches it and
+rechecks the provider generation; omitting it performs inspection only.
+
+Plan instance, generation, and hold-owner identities are process-local objects,
+not persisted IDs. Transitions require the current generation and acquire
+participant holds before changing phase. Busy/unavailable refusals are retryable;
+protocol faults permanently block the coordinator and retain remaining protection.
+Attachments last for the coordinator's lifetime. The caller must complete
+tool/theme/state reconciliation before `confirmInactive` releases holds.
+Disposal deliberately retains holds; registry shutdown owns final cleanup.
+
+The Plan entrypoint now confirms inactivity only after caller-owned restoration,
+persistence, notifications, and cleanup succeed. Startup on an empty, inactive,
+or foreign branch becomes ready; entry reacquires holds before path generation
+or mutation. Active, inconsistent, uncertain, or still-publishing state remains
+nonready. Publication drain alone never releases a hold: the next explicit command
+reconciles the current branch. Captured generation/session/state/checkpoint evidence
+prevents outgoing callbacks from releasing a newer owner's protection.
+
+In TUI mode, refusal of both the saved theme and fallback restoration blocks
+ordinary exit and outgoing branch reconciliation as well as recovered exit.
+No inactive candidate can release the hold after that failure. Ordinary exit
+retains active protection and its snapshots for a fresh `/plan exit`; failed
+branch cleanup retains the outgoing snapshots until a subsequent session/tree
+reconciliation succeeds. Fix theme availability before retrying. Terminal shutdown
+cleanup remains best effort and does not release coordination holds.
+
+Tests attach the real Guild registry to the actual Plan entrypoint and exercise
+busy refusal, repeated entry/exit, and admission during transitions. This is not
+Guild runtime wiring or live-runtime certification; no parent-facing background
+tools are exposed by this integration.
+
 ## Migrating from `@pithos-kit/skills`
 
 `@pithos-kit/skills` is retired. Remove global and project installs

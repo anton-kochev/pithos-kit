@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { withFileMutationQueue } from "@earendil-works/pi-coding-agent";
+import { createEventBus, withFileMutationQueue } from "@earendil-works/pi-coding-agent";
 import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
@@ -23,6 +23,9 @@ function builtin(name: string) {
 }
 
 async function createHarness(options: {
+	cwd?: string;
+	entries?: any[];
+	sessionName?: string;
 	hasUI?: boolean;
 	sendUserMessageError?: Error;
 	persisted?: boolean;
@@ -35,9 +38,9 @@ async function createHarness(options: {
 	hasPendingMessages?: () => boolean;
 	mode?: "tui" | "rpc" | "json" | "print";
 } = {}) {
-	const cwd = await mkdtemp(join(tmpdir(), "pi-plan-enforcement-"));
+	const cwd = options.cwd ?? await mkdtemp(join(tmpdir(), "pi-plan-enforcement-"));
 	const handlers = new Map<string, (event: any, ctx: any) => Promise<any>>();
-	const entries: any[] = [];
+	const entries: any[] = options.entries ?? [];
 	const notifications: Array<{ message: string; level: string }> = [];
 	const registeredTools = new Map<string, any>();
 	const autocompleteFactories: unknown[] = [];
@@ -61,9 +64,10 @@ async function createHarness(options: {
 		}
 	}
 	let activeTools = allTools.map((tool) => tool.name);
-	let sessionName = "named-session";
+	let sessionName = options.sessionName ?? "named-session";
 	const routing = commandHarness(handlers);
 	const pi = {
+		events: createEventBus(),
 		registerCommand: routing.registerCommand,
 		sendUserMessage(text: string) {
 			if (options.sendUserMessageError) throw options.sendUserMessageError;
@@ -160,6 +164,7 @@ async function createHarness(options: {
 		autocompleteFactories,
 		footerFactories,
 		getActiveTools: () => activeTools,
+		getSessionName: () => sessionName,
 		getThemeName: () => themeName,
 		setThemeName: (name: string) => { themeName = name; },
 		cleanup: () => rm(cwd, { recursive: true, force: true }),
@@ -313,7 +318,7 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 	});
 
 	it("keeps and reapplies the Plan theme across reload without replacing the pre-Plan theme", async () => {
-		const harness = await createHarness({ mode: "tui" });
+		let harness = await createHarness({ mode: "tui" });
 		try {
 			await enter(harness);
 			assert.equal(harness.getThemeName(), "plan");
@@ -325,7 +330,10 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 			);
 			assert.equal(harness.getThemeName(), "plan", "reload cleanup must not flash back to the default theme");
 
-			harness.setThemeName("dark");
+			harness = await createHarness({
+				mode: "tui", cwd: harness.cwd, entries: harness.entries,
+				sessionName: harness.getSessionName(),
+			});
 			await harness.handlers.get("session_start")?.(
 				{ type: "session_start", reason: "reload" },
 				harness.ctx,
@@ -345,11 +353,9 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 		console.error = (...values: unknown[]) => output.push(values.map(String).join(" "));
 		try {
 			for (const mode of ["rpc", "json", "print"] as const) {
-				const harness = await createHarness({
-					mode,
-					hasUI: mode === "rpc",
-					themeMethodsThrow: true,
-				});
+				const options = { mode, hasUI: mode === "rpc", themeMethodsThrow: true };
+				let harness = await createHarness(options);
+				const originalTools = [...harness.getActiveTools()];
 				try {
 					assert.deepEqual(await enter(harness), { action: "handled" }, mode);
 					assert.equal(latestState(harness).active, true, mode);
@@ -359,6 +365,14 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 						{ type: "session_shutdown", reason: "reload" },
 						harness.ctx,
 					);
+					output.push(...harness.notifications.map(({ message }) => message));
+					// Pi reload replaces the disposed extension factory, retaining the session branch.
+					harness = await createHarness({
+						...options,
+						cwd: harness.cwd,
+						entries: harness.entries,
+						sessionName: harness.getSessionName(),
+					});
 					await harness.handlers.get("session_start")?.(
 						{ type: "session_start", reason: "reload" },
 						harness.ctx,
@@ -370,6 +384,7 @@ describe("Plan mode enforcement", { concurrency: false }, () => {
 					assert.deepEqual(await command(harness, "/plan exit"), { action: "handled" });
 					assert.equal(latestState(harness).active, false, mode);
 					assert.equal(harness.getActiveTools().includes("create_plan"), false, mode);
+					assert.deepEqual(harness.getActiveTools(), originalTools, mode);
 					output.push(...harness.notifications.map(({ message }) => message));
 				} finally {
 					await harness.cleanup();
