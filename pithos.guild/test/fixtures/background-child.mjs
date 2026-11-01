@@ -15,6 +15,16 @@ const submit = () => {
 };
 let buffer = '';
 const steers = [];
+// Explicit signal gate gives lifecycle tests real close evidence without timing sleeps.
+if (text === 'question-gated') {
+ setInterval(() => {}, 1000);
+ process.on('SIGTERM', () => emit({type: 'fixture-stopping'}));
+ process.on('SIGUSR2', () => process.exit(0));
+}
+if (text === 'question-hold') {
+ const keepAlive = setInterval(() => {}, 1000);
+ process.on('SIGTERM', () => { clearInterval(keepAlive); setTimeout(() => process.exit(0), 250); });
+}
 process.stdin.on('data', chunk => {
  buffer += chunk;
  for (;;) {
@@ -39,6 +49,11 @@ process.stdin.on('data', chunk => {
     const ui = {type: 'extension_ui_request', id: 'ui', method: text === 'question-method' ? 'confirm' : 'input', timeout: 300000, title: JSON.stringify({protocol: 'guild-background/1', runId: text === 'question-identity' ? 'wrong' : task.runId, taskId: task.taskId, toolCallId: 'ask', question})};
     emit(ui);
     if (text === 'question-duplicate') emit(ui);
+    if (text === 'question-close') setTimeout(() => process.exit(0), 40);
+    if (text === 'question-ui-timeout') setTimeout(() => {
+     const details = {outcome: 'unavailable', reason: 'cancelled-or-timed-out'};
+     emit({type: 'tool_execution_end', toolName: 'guild_ask_parent', toolCallId: 'ask', isError: false, result: {details, content: [{type: 'text', text: JSON.stringify(details)}]}});
+    }, 40);
    } else if (text !== 'updates') submit();
   } else if (command.type === 'extension_ui_response') {
    if (command.id !== 'ui' || (!command.cancelled && command.value !== `Answer for ${process.pid}`)) process.exit(7);

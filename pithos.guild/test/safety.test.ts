@@ -1,6 +1,28 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { admitGuildHandover, planModeState } from "../src/safety";
+import { admitGuildHandover, planBoundaryFor, planModeState } from "../src/safety";
+
+it("maps both explicit Plan integration modes across all persisted states", () => {
+  for (const [mode, presence] of [["required", "present"], ["standalone", "absent"]] as const) {
+    for (const [state, persisted] of [["inactive", "inactive"], ["active", "active"], ["indeterminate", "unknown"]] as const) {
+      assert.deepEqual(planBoundaryFor(mode, state), { presence, persisted }, `${mode}/${state}`);
+    }
+  }
+});
+
+it("maps omitted, null and invalid runtime integration arguments to unknown without defaults", () => {
+  // Reflect exercises untyped callers, including truly omitted arguments.
+  assert.deepEqual(Reflect.apply(planBoundaryFor, undefined, []), { presence: "unknown", persisted: "unknown" });
+  for (const [mode, presence] of [["required", "present"], ["standalone", "absent"]] as const) {
+    assert.deepEqual(Reflect.apply(planBoundaryFor, undefined, [mode]), { presence, persisted: "unknown" });
+  }
+  for (const invalid of [undefined, null, "invalid", "", false, 0, {}, ["required"], new String("standalone")]) {
+    assert.deepEqual(Reflect.apply(planBoundaryFor, undefined, [invalid, "inactive"]), { presence: "unknown", persisted: "inactive" });
+    for (const [mode, presence] of [["required", "present"], ["standalone", "absent"]] as const) {
+      assert.deepEqual(Reflect.apply(planBoundaryFor, undefined, [mode, invalid]), { presence, persisted: "unknown" });
+    }
+  }
+});
 
 describe("Plan mode state characterization", () => {
   it("is inactive when no Plan state entry exists", () => {

@@ -1,4 +1,22 @@
+import type { PlanBoundary } from "./plan-coordination.ts";
+
 export type PlanModeState = "active" | "inactive" | "indeterminate";
+export type PlanIntegrationMode = "required" | "standalone";
+
+/**
+ * Internal expectation mapping only, not readiness or handover admission.
+ * Required means the caller requires Plan, not that inventory observed it;
+ * standalone is an explicit trusted caller assertion of absence, never silence.
+ * Background admission captures the parent-process policy at factory construction;
+ * this mapping itself never supplies a default or establishes caller trust.
+ * Positive cooperation still requires discoverPlan's versioned handshake.
+ */
+export function planBoundaryFor(mode: PlanIntegrationMode, persisted: PlanModeState): PlanBoundary {
+	return {
+		presence: mode === "required" ? "present" : mode === "standalone" ? "absent" : "unknown",
+		persisted: persisted === "inactive" ? "inactive" : persisted === "active" ? "active" : "unknown",
+	};
+}
 
 export function planModeState(entries: readonly unknown[]): PlanModeState {
 	for (let index = entries.length - 1; index >= 0; index -= 1) {

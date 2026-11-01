@@ -5,6 +5,8 @@ export interface ConcurrentRunQueueLimits {
 	concurrency?: number;
 	/** Nonnegative safe integer; defaults to eight waiting operations. */
 	pendingCapacity?: number;
+	/** Preserve blocking FIFO backlogs; only nonexclusive waiters consume pending capacity. Default false. */
+	unboundedExclusivePending?: boolean;
 }
 
 export interface ConcurrentRunQueueOptions {
@@ -41,19 +43,24 @@ export class ConcurrentRunQueue {
 	private resolveShutdown: (() => void) | undefined;
 	private readonly concurrency: number;
 	private readonly pendingCapacity: number;
+	private readonly unboundedExclusivePending: boolean;
 
-	constructor({ concurrency = 3, pendingCapacity = 8 }: ConcurrentRunQueueLimits = {}) {
+	constructor({ concurrency = 3, pendingCapacity = 8, unboundedExclusivePending = false }: ConcurrentRunQueueLimits = {}) {
 		if (!Number.isSafeInteger(concurrency) || concurrency < 1) throw new RangeError("Invalid concurrency.");
 		if (!Number.isSafeInteger(pendingCapacity) || pendingCapacity < 0) throw new RangeError("Invalid pendingCapacity.");
 		this.concurrency = concurrency;
 		this.pendingCapacity = pendingCapacity;
+		this.unboundedExclusivePending = unboundedExclusivePending;
 	}
 
 	enqueue<T>(operation: ConcurrentRunQueueOperation<T>, options: ConcurrentRunQueueOptions = {}): Promise<T> {
 		if (this.shutdownError) return Promise.reject(this.shutdownError);
 		if (options.signal?.aborted) return Promise.reject(options.signal.reason);
 		const canStart = this.pending.length === 0 && this.canStart(options.exclusive === true);
-		if (!canStart && this.pending.length >= this.pendingCapacity) return Promise.reject(new Error("Run queue pending capacity exceeded."));
+		if (!canStart && (!this.unboundedExclusivePending || options.exclusive !== true)) {
+			const waiting = this.unboundedExclusivePending ? this.pending.filter(entry => !entry.exclusive).length : this.pending.length;
+			if (waiting >= this.pendingCapacity) return Promise.reject(new Error("Run queue pending capacity exceeded."));
+		}
 		return new Promise<T>((resolve, reject) => {
 			let state: "queued" | "running" | "settled" = "queued";
 			const controller = new AbortController();

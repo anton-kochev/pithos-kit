@@ -391,7 +391,7 @@ it("refuses holds without disturbing active, queued, waiting or stopping cleanup
   if (held.kind === "held") held.lease.release();
 });
 
-it("counts exclusive ownership before reentrant execution through queue rejection and cleanup", async (t) => {
+it("counts an unbounded exclusive backlog before reentrant execution through failures and cleanup", async (t) => {
   const gate = deferred();
   const registry = new BackgroundRunRegistry(() => undefined);
   t.after(async () => { gate.resolve(); await registry.shutdown(); });
@@ -402,16 +402,19 @@ it("counts exclusive ownership before reentrant execution through queue rejectio
     await gate.promise;
   });
   assert.deepEqual(reentrant, { kind: "busy", outstanding: 1 });
-  const pending = Array.from({ length: 8 }, () => registry.runExclusive(() => undefined));
-  assert.deepEqual(registry.tryAcquirePlanHold(owner), { kind: "busy", outstanding: 9 });
-  await assert.rejects(registry.runExclusive(() => assert.fail("overflow launched")), /capacity/i);
-  assert.deepEqual(registry.tryAcquirePlanHold(owner), { kind: "busy", outstanding: 9 });
+  const order: number[] = [];
+  const pending = Array.from({ length: 11 }, (_, index) => registry.runExclusive(() => { order.push(index); return index; }));
+  const outcomes = Promise.allSettled(pending);
+  await tick();
+  assert.deepEqual(registry.tryAcquirePlanHold(owner), { kind: "busy", outstanding: 12 });
   const aborted = new AbortController();
   aborted.abort(new Error("pre-aborted"));
   await assert.rejects(registry.runExclusive(() => assert.fail("aborted launched"), aborted.signal), /pre-aborted/);
-  assert.deepEqual(registry.tryAcquirePlanHold(owner), { kind: "busy", outstanding: 9 });
+  assert.deepEqual(registry.tryAcquirePlanHold(owner), { kind: "busy", outstanding: 12 });
   gate.resolve();
-  await Promise.all([active, ...pending]);
+  await active;
+  assert.deepEqual(await outcomes, Array.from({ length: 11 }, (_, value) => ({ status: "fulfilled", value })));
+  assert.deepEqual(order, Array.from({ length: 11 }, (_, index) => index));
   await assert.rejects(registry.runExclusive(() => { throw new Error("sync failure"); }), /sync failure/);
   await assert.rejects(registry.runExclusive(async () => { throw new Error("async failure"); }), /async failure/);
   const held = registry.tryAcquirePlanHold(owner);
@@ -435,6 +438,78 @@ it("counts exclusive ownership before reentrant execution through queue rejectio
   assert.equal(registry.tryAcquirePlanHold(owner).kind, "unavailable");
 });
 
+it("forwards synchronous exclusive phases under ownership before reentrant background admission", async (t) => {
+  const gate = deferred();
+  const phases: string[] = [];
+  const holds: ReturnType<BackgroundRunRegistry["tryAcquirePlanHold"]>[] = [];
+  const launched: string[] = [];
+  const registry = new BackgroundRunRegistry(() => { launched.push("background"); });
+  t.after(async () => { gate.resolve(); await registry.shutdown(); });
+  let backgroundId: string | undefined;
+  let refused: Promise<void> | undefined;
+  const run = registry.runExclusive(async () => {
+    launched.push("exclusive");
+    holds.push(registry.tryAcquirePlanHold({}));
+    await gate.promise;
+    return 42;
+  }, undefined, phase => {
+    phases.push(phase);
+    holds.push(registry.tryAcquirePlanHold({}));
+    if (phase === "queued") {
+      backgroundId = registry.start(input).id;
+      refused = assert.rejects(registry.runExclusive(() => assert.fail("reentrant exclusive launched")), /background/i);
+    }
+    throw new Error("observer must not own settlement");
+  });
+  assert.deepEqual(phases, ["queued", "running"]);
+  assert.deepEqual(holds, [
+    { kind: "busy", outstanding: 1 },
+    { kind: "busy", outstanding: 2 },
+    { kind: "busy", outstanding: 2 },
+  ]);
+  assert.deepEqual(launched, ["exclusive"]);
+  assert.equal(registry.status(backgroundId!).status, "queued");
+  await refused;
+  gate.resolve();
+  assert.equal(await run, 42);
+  assert.equal((await registry.wait(backgroundId!, 1000)).reason, "terminal");
+  assert.deepEqual(launched, ["exclusive", "background"]);
+  const held = registry.tryAcquirePlanHold({});
+  assert.equal(held.kind, "held", "throwing observers must not leak exclusive ownership");
+  if (held.kind === "held") held.lease.release();
+});
+
+it("releases exclusive ownership after synchronous phase cancellation without launching", async () => {
+  for (const stopAt of ["queued", "running"]) {
+    for (const stop of ["abort", "shutdown"]) {
+      const registry = new BackgroundRunRegistry(() => undefined);
+      const controller = new AbortController();
+      const phases: string[] = [];
+      const holds: ReturnType<BackgroundRunRegistry["tryAcquirePlanHold"]>[] = [];
+      let launches = 0;
+      let drain: Promise<void> | undefined;
+      try {
+        const run = registry.runExclusive(() => { launches++; }, controller.signal, phase => {
+          phases.push(phase);
+          holds.push(registry.tryAcquirePlanHold({}));
+          if (phase !== stopAt) return;
+          if (stop === "abort") controller.abort(new Error("phase cancellation"));
+          else drain = registry.shutdown();
+        });
+        await assert.rejects(run, stop === "abort" ? /phase cancellation/ : /shut down/i);
+        await drain;
+        assert.equal(launches, 0);
+        assert.deepEqual(phases, stopAt === "queued" ? ["queued"] : ["queued", "running"]);
+        assert.ok(holds.every(hold => hold.kind === "busy" && hold.outstanding === 1));
+        assert.equal(getEventListeners(controller.signal, "abort").length, 0);
+        const hold = registry.tryAcquirePlanHold({});
+        assert.equal(hold.kind, stop === "abort" ? "held" : "unavailable");
+        if (hold.kind === "held") hold.lease.release();
+      } finally { await registry.shutdown(); }
+    }
+  }
+});
+
 it("rechecks admission when input validation reentrantly acquires an idle hold", async (t) => {
   let starts = 0;
   const registry = new BackgroundRunRegistry(() => { starts++; });
@@ -448,4 +523,62 @@ it("rechecks admission when input validation reentrantly acquires an idle hold",
   assert.throws(() => registry.start(value), /plan.*hold/i);
   assert.equal(starts, 0);
   assert.deepEqual(registry.list(), []);
+});
+
+it("question lifetime cancellation fails only its pending invocation and detaches listeners", async () => {
+  const first = new AbortController();
+  const second = new AbortController();
+  const cleanup = deferred();
+  let rejected = false;
+  const registry = new BackgroundRunRegistry(async ({ ask }) => {
+    try {
+      await ask("First?", first.signal);
+      await ask("Second?", second.signal);
+    } catch { rejected = true; }
+    await cleanup.promise;
+  });
+  try {
+    const run = registry.start(input);
+    registry.reply(run.id, registry.status(run.id).question!.id, "yes");
+    await tick();
+    assert.equal(getEventListeners(first.signal, "abort").length, 0);
+    first.abort();
+    assert.equal(registry.status(run.id).status, "waiting");
+    second.abort();
+    await tick();
+    assert.equal(rejected, true);
+    assert.equal(registry.status(run.id).question, undefined);
+    assert.equal(registry.status(run.id).status, "stopping");
+    assert.equal(getEventListeners(second.signal, "abort").length, 0);
+    cleanup.resolve();
+    await tick();
+    assert.equal(registry.status(run.id).status, "failed");
+  } finally { cleanup.resolve(); await registry.shutdown(); }
+});
+
+it("already cancelled lifetimes and same-turn reply/cancellation races cannot strand questions", async () => {
+  for (const order of ["already", "reply-first", "abort-first"] as const) {
+    const lifetime = new AbortController();
+    if (order === "already") lifetime.abort();
+    let rejected = false;
+    const registry = new BackgroundRunRegistry(async ({ ask }) => {
+      try { await ask("Race?", lifetime.signal); } catch { rejected = true; }
+    });
+    try {
+      const run = registry.start(input);
+      const question = registry.status(run.id).question;
+      if (order === "reply-first") {
+        registry.reply(run.id, question!.id, "yes");
+        lifetime.abort();
+      } else if (order === "abort-first") {
+        lifetime.abort();
+        assert.throws(() => registry.reply(run.id, question!.id, "late"), /pending question/);
+      }
+      await tick();
+      assert.equal(registry.status(run.id).question, undefined);
+      assert.equal(registry.status(run.id).status, order === "reply-first" ? "completed" : "failed");
+      assert.equal(rejected, order !== "reply-first");
+      assert.equal(getEventListeners(lifetime.signal, "abort").length, 0);
+    } finally { await registry.shutdown(); }
+  }
 });

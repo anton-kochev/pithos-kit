@@ -10,7 +10,10 @@ import { applyJsonEvent, createEmptyGuildRoleRunResult, getPiInvocation, snapsho
 
 export interface BackgroundControl { sendUpdate(text: string): Promise<"queued" | "handled"> }
 export interface RunBackgroundGuildRoleOptions extends RunGuildRoleOptions {
- onQuestion(question: string): Promise<string | undefined>;
+ /** Host-bound task identity for internal composition; legacy callers allocate locally. */
+ taskId?: string;
+ /** Per-question cancellation is mandatory settlement control for composed adapters, not run cancellation. */
+ onQuestion(question: string, questionSignal: AbortSignal): Promise<string | undefined>;
  onReady?: (control: BackgroundControl) => void;
 }
 interface Deadlines { command: number; handshake: number; run: number; question: number; eof: number; term: number; kill: number }
@@ -34,7 +37,7 @@ export function runBackgroundGuildRoleForTest(options: RunBackgroundGuildRoleOpt
 async function run(options: RunBackgroundGuildRoleOptions, seam: TestSeam): Promise<GuildRoleRunResult> {
  const result = createEmptyGuildRoleRunResult(options.role, options.profile, options.task);
  result.runId = options.runId ?? randomUUID();
- result.taskId = randomUUID();
+ result.taskId = options.taskId ?? randomUUID();
  result.model = options.model;
  result.usageKnown = false;
  result.usageFields = [];
@@ -97,7 +100,7 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
   let buffer = Buffer.alloc(0), skipping = false;
   const questions = new QuestionExchange();
   const uiIds = new Set<string>();
-  type PendingQuestion = {toolCallId: string; uiId: string; answered: boolean; outcome?: ReturnType<typeof validateQuestionOutcome>; timer?: NodeJS.Timeout};
+  type PendingQuestion = {lifetime: AbortController; toolCallId: string; uiId: string; answered: boolean; outcome?: ReturnType<typeof validateQuestionOutcome>; timer?: NodeJS.Timeout};
   let question: PendingQuestion | undefined;
   // QuestionExchange caps this history at eight distinct calls per run.
   const questionResults = new Map<string, {outcome: ReturnType<typeof validateQuestionOutcome>; seen: boolean}>();
@@ -114,6 +117,7 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
   const finish = (code: number | null) => {
    if (closed) return;
    closed = true;
+   question?.lifetime.abort();
    result.exitCode = code ?? 1;
    if (missingQuestionResult()) stream.fail("Missing Guild question toolResult");
    if (buffer.length || skipping) stream.fail("Incomplete Guild JSONL record at EOF");
@@ -128,6 +132,8 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
   const stop = () => {
    if (closed || stopping) return;
    stopping = true;
+   // Mark transport stopped before notifying adapters: abort listeners can reenter.
+   question?.lifetime.abort();
    cancelRequests();
    child.stdin.destroy();
    child.kill("SIGTERM");
@@ -209,7 +215,7 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
     if (!metadata || Object.keys(metadata).sort().join() !== "protocol,question,runId,taskId,toolCallId" || metadata.protocol !== BACKGROUND_CAPABILITY || metadata.runId !== stream.task.runId || metadata.taskId !== stream.task.taskId) throw new Error("Invalid Guild question UI identity");
     questions.assertStarted(metadata.toolCallId, {question: metadata.question});
     uiIds.add(value.id);
-    const current: PendingQuestion = {toolCallId: metadata.toolCallId, uiId: value.id, answered: false};
+    const current: PendingQuestion = {lifetime: new AbortController(), toolCallId: metadata.toolCallId, uiId: value.id, answered: false};
     question = current;
     const answer = (text: string | undefined) => {
      if (closed || stopping || question !== current || current.answered) return;
@@ -218,12 +224,15 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
       current.answered = true;
       current.outcome = outcome;
       if (current.timer) cancelTimer(current.timer);
+      if (outcome.outcome === "unavailable") current.lifetime.abort();
+      if (closed || stopping) return;
       write({type: "extension_ui_response", id: current.uiId, ...(outcome.outcome === "answered" ? {value: outcome.answer} : {cancelled: true})});
      } catch (error) {fail(String(error));}
     };
     current.timer = later(() => answer(undefined), limits.question);
-    // Never join the parent callback: it may ignore cancellation forever.
-    void Promise.resolve().then(() => options.onQuestion(metadata.question)).then(answer, error => {
+    // Invoke before processing more child events so the callback can observe cancellation.
+    // Never join it: a parent callback may ignore cancellation forever.
+    void (async () => options.onQuestion(metadata.question, current.lifetime.signal))().then(answer, error => {
      if (!closed && !stopping && question === current && !current.answered) fail(`Guild question callback failed: ${String(error)}`);
     });
     return;

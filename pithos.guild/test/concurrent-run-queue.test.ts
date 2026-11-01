@@ -10,6 +10,70 @@ function deferred<T = void>() {
 }
 
 describe("ConcurrentRunQueue", () => {
+  it("opts exclusive backlog out of the bound while retaining eight background waiters and FIFO barriers", async (t) => {
+    const queue = new ConcurrentRunQueue({ unboundedExclusivePending: true });
+    const exclusiveGate = deferred();
+    const backgroundGate = deferred();
+    const started: string[] = [];
+    const runs: Promise<unknown>[] = [];
+    let active = 0;
+    let exclusiveMaximum = 0;
+    let backgroundMaximum = 0;
+    t.after(async () => {
+      exclusiveGate.resolve(); backgroundGate.resolve();
+      await queue.shutdown();
+      await Promise.allSettled(runs);
+    });
+    for (let i = 0; i < 12; i++) {
+      runs.push(queue.enqueue(async () => {
+        started.push(`exclusive-${i}`);
+        exclusiveMaximum = Math.max(exclusiveMaximum, ++active);
+        try { await exclusiveGate.promise; } finally { active--; }
+      }, { exclusive: true }));
+    }
+    const exclusiveResults = Promise.allSettled(runs);
+    const cancelled = new AbortController();
+    const background = (name: string) => async () => {
+      started.push(name);
+      backgroundMaximum = Math.max(backgroundMaximum, ++active);
+      try { await backgroundGate.promise; } finally { active--; }
+    };
+    let reentrantOverflow!: Promise<void>;
+    for (let i = 0; i < 8; i++) {
+      runs.push(queue.enqueue(background(`background-${i}`), {
+        signal: i === 0 ? cancelled.signal : undefined,
+        onPhase: phase => {
+          if (i === 7 && phase === "queued") {
+            reentrantOverflow = assert.rejects(queue.enqueue(() => assert.fail("reentrant overflow launched")), /capacity/i);
+          }
+        },
+      }));
+    }
+    const backgroundResults = Promise.allSettled(runs.slice(12));
+    // Rejection observers are attached before yielding, including during a red run.
+    await assert.rejects(queue.enqueue(() => assert.fail("overflow launched")), /capacity/i);
+    assert.ok(reentrantOverflow, "all eight background waiters were admitted");
+    await reentrantOverflow;
+    assert.deepEqual(started, ["exclusive-0"]);
+    cancelled.abort(new Error("cancel pending background"));
+    runs.push(queue.enqueue(background("replacement")));
+    exclusiveGate.resolve();
+    const outcomes = await exclusiveResults;
+    assert.ok(outcomes.every(result => result.status === "fulfilled"), "exclusive backlog must not overflow");
+    assert.deepEqual(started, [
+      ...Array.from({ length: 12 }, (_, i) => `exclusive-${i}`),
+      "background-1", "background-2", "background-3",
+    ]);
+    assert.equal(exclusiveMaximum, 1);
+    backgroundGate.resolve();
+    const results = await backgroundResults;
+    assert.equal(results[0].status, "rejected");
+    assert.ok(results.slice(1).every(result => result.status === "fulfilled"));
+    await runs.at(-1);
+    assert.deepEqual(started.slice(12), [...Array.from({ length: 7 }, (_, i) => `background-${i + 1}`), "replacement"]);
+    assert.equal(backgroundMaximum, 3);
+  });
+
   it("validates constructor limits and supports zero pending capacity", async () => {
     for (const concurrency of [0, -1, 1.5, Infinity, NaN]) {
       assert.throws(() => new ConcurrentRunQueue({ concurrency }), /concurrency/i);

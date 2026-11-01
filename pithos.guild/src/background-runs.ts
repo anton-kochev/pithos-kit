@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { types } from "node:util";
-import { ConcurrentRunQueue } from "./concurrent-run-queue.ts";
+import { ConcurrentRunQueue, type ConcurrentRunQueueOptions } from "./concurrent-run-queue.ts";
 import { validateInput, type GuildInput } from "./protocol.ts";
 
 export type BackgroundStatus = "queued" | "running" | "waiting" | "stopping" | "completed" | "failed" | "cancelled";
@@ -12,11 +12,14 @@ export interface BackgroundSnapshot {
   readonly error?: string;
   readonly question?: Readonly<{ id: string; text: string }>;
 }
-export interface BackgroundRequest {
+export type BackgroundContextArgs<C> = [C] extends [undefined] ? [context?: C] : [context: C];
+export interface BackgroundRequest<C = undefined> {
+  readonly context: C;
   readonly id: string;
   readonly input: GuildInput;
   readonly signal: AbortSignal;
-  readonly ask: (text: string) => Promise<string>;
+  /** Cancellation of this question lifetime is a hard failure while its ask is pending. */
+  readonly ask: (text: string, questionSignal?: AbortSignal) => Promise<string>;
 }
 /**
  * Settle only after owned cleanup. Rejection means failure; a fulfilled object's
@@ -24,7 +27,7 @@ export interface BackgroundRequest {
  * Other fulfilled JSON values mean transport completion, NOT a validated Guild report.
  * Process kill deadlines and report validation remain the adapter's responsibility.
  */
-export type BackgroundOperation = (request: BackgroundRequest) => unknown | PromiseLike<unknown>;
+export type BackgroundOperation<C = undefined> = (request: BackgroundRequest<C>) => unknown | PromiseLike<unknown>;
 interface RecordState {
   id: string;
   status: BackgroundStatus;
@@ -57,16 +60,17 @@ export interface BackgroundLimits {
 }
 
 /**
- * Session-owned, memory-only registry with three active slots and eight queued slots.
+ * Session-owned, memory-only registry with three active background slots and eight
+ * queued background slots; blocking exclusive operations retain an unbounded FIFO backlog.
  * Each run permits eight questions, one pending at a time; question/reply text is
  * nonblank, NUL-free and at most 8 KiB UTF-8. Waiting/stopping work holds its slot.
  * Session-local identities are intentionally not recoverable across replacement.
  * Limits bound retained data, not the adapter's transient allocations or heap.
  */
-export class BackgroundRunRegistry {
+export class BackgroundRunRegistry<C = undefined> {
   private readonly owner = randomUUID();
   private sequence = 0;
-  private readonly queue = new ConcurrentRunQueue();
+  private readonly queue = new ConcurrentRunQueue({ unboundedExclusivePending: true });
   private readonly records = new Map<string, RecordState>();
   private closed = false;
   private exclusiveOutstanding = 0;
@@ -74,7 +78,7 @@ export class BackgroundRunRegistry {
   private readonly waiters = new Set<() => void>();
 
   private readonly limits: Required<BackgroundLimits>;
-  constructor(private readonly execute: BackgroundOperation, limits: BackgroundLimits = {}) {
+  constructor(private readonly execute: BackgroundOperation<C>, limits: BackgroundLimits = {}) {
     this.limits = { records: 16, resultBytes: 64 * 1024, questionTimeoutMs: 300_000, lifetimeMs: 1_800_000, ...limits };
     for (const [name, value] of Object.entries(this.limits)) {
       if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new RangeError(`Invalid ${name}.`);
@@ -101,7 +105,8 @@ export class BackgroundRunRegistry {
     if (this.planHolds.size) throw new Error("Registry admission is blocked by a Plan hold.");
   }
 
-  start(value: unknown): BackgroundSnapshot {
+  start(value: unknown, ...binding: BackgroundContextArgs<C>): BackgroundSnapshot {
+    const context = binding[0] as C;
     this.assertAdmission();
     if (!value || typeof value !== "object" || Object.hasOwn(value, "member")) throw new Error("Expected canonical input.");
     const input = validateInput(value);
@@ -114,7 +119,7 @@ export class BackgroundRunRegistry {
     this.records.set(id, record);
     record.lifetime = setTimeout(() => this.fail(record, "Run lifetime timeout."), this.limits.lifetimeMs);
     record.done = this.queue.enqueue(async signal => {
-      try { return await this.execute({ id, input, signal, ask: text => this.ask(record, text, signal) }); }
+      try { return await this.execute({ id, input, signal, context, ask: (text, questionSignal) => this.ask(record, text, signal, questionSignal) }); }
       finally {
         record.operationEnded = true;
         if (record.pending) this.fail(record, "Operation ended with a pending question.");
@@ -150,11 +155,12 @@ export class BackgroundRunRegistry {
 
   private notify(): void { for (const wake of this.waiters) wake(); }
 
-  private ask(record: RecordState, text: string, signal: AbortSignal): Promise<string> {
+  private ask(record: RecordState, text: string, signal: AbortSignal, questionSignal?: AbortSignal): Promise<string> {
     let promise: Promise<string>;
     try {
       if (record.operationEnded || isTerminal(record.status)) throw new Error("Operation already ended.");
       signal.throwIfAborted();
+      questionSignal?.throwIfAborted();
       validateText(text);
       if (record.pending) throw new Error("A question is already pending.");
       if (record.questions >= 8) throw new Error("Question count limit exceeded.");
@@ -164,14 +170,21 @@ export class BackgroundRunRegistry {
         const clear = () => {
           clearTimeout(timer);
           signal.removeEventListener("abort", abort);
+          questionSignal?.removeEventListener("abort", expire);
           record.pending = undefined;
           record.status = record.controller.signal.aborted ? "stopping" : "running";
           this.notify();
         };
         const abort = () => { clear(); reject(new Error("Question aborted.")); };
+        const expire = () => {
+          // Runner stop can expire the question before ask's operation-abort listener runs.
+          if (!signal.aborted && !record.controller.signal.aborted && record.pending?.id === id) this.fail(record, "Question lifetime cancelled.");
+        };
         record.pending = { id, text, settle: answer => { clear(); resolve(answer); }, reject: error => { clear(); reject(error); } };
         signal.addEventListener("abort", abort, { once: true });
         record.status = "waiting";
+        questionSignal?.addEventListener("abort", expire, { once: true });
+        if (questionSignal?.aborted) expire();
         this.notify();
       });
     } catch (error) {
@@ -253,13 +266,13 @@ export class BackgroundRunRegistry {
   }
 
   /** Blocking adapters share this scheduler; they may not enter while background work is live. */
-  runExclusive<T>(operation: (signal: AbortSignal) => T | PromiseLike<T>, signal?: AbortSignal): Promise<T> {
+  runExclusive<T>(operation: (signal: AbortSignal) => T | PromiseLike<T>, signal?: AbortSignal, onPhase?: ConcurrentRunQueueOptions["onPhase"]): Promise<T> {
     try { this.assertAdmission(); }
     catch (error) { return Promise.reject(error); }
     if ([...this.records.values()].some(record => !isTerminal(record.status))) return Promise.reject(new Error("Background work is still active."));
-    // enqueue can invoke operation synchronously; count ownership before reentrant hold requests.
+    // Both phase observers and the operation can reenter synchronously; own admission first.
     this.exclusiveOutstanding++;
-    return this.queue.enqueue(operation, { exclusive: true, signal }).finally(() => { this.exclusiveOutstanding--; });
+    return this.queue.enqueue(operation, { exclusive: true, signal, onPhase }).finally(() => { this.exclusiveOutstanding--; });
   }
 
   /** Close admission before signalling, then join all jobs and exclusive-operation cleanup. */
