@@ -1,0 +1,278 @@
+diff --git a/packages/coding-agent/src/core/extensions/runner.ts b/packages/coding-agent/src/core/extensions/runner.ts
+index 77712e6..d9c7122 100644
+--- a/packages/coding-agent/src/core/extensions/runner.ts
++++ b/packages/coding-agent/src/core/extensions/runner.ts
+@@ -365,6 +365,7 @@ export class ExtensionRunner {
+ 	private extensions: Extension[];
+ 	private runtime: ExtensionRuntime;
+ 	private uiContext: ExtensionUIContext;
++	private retireUIInterrupts: () => void = () => {};
+ 	private mode: ExtensionMode = "print";
+ 	private cwd: string;
+ 	private sessionManager: SessionManager;
+@@ -570,12 +571,14 @@ export class ExtensionRunner {
+ 	}
+ 
+ 	setUIContext(uiContext?: ExtensionUIContext, mode: ExtensionMode = "print"): void {
++		this.assertActive();
++		this.retireUIInterrupts();
+ 		this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext) : noOpUIContext;
+ 		this.mode = mode;
+ 	}
+ 
+ 	private wrapUIPromptContext(ui: ExtensionUIContext): ExtensionUIContext {
+-		return {
++		const wrapped: ExtensionUIContext = {
+ 			...ui,
+ 			select: (title, options, opts) => this.withUIPrompt("select", title, () => ui.select(title, options, opts)),
+ 			confirm: (title, message, opts) => this.withUIPrompt("confirm", title, () => ui.confirm(title, message, opts)),
+@@ -584,6 +587,41 @@ export class ExtensionRunner {
+ 			editor: (title, prefill) => this.withUIPrompt("editor", title, () => ui.editor(title, prefill)),
+ 			custom: (factory, options) => this.withUIPrompt("custom", undefined, () => ui.custom(factory, options)),
+ 		};
++		if (ui.onInterrupt) {
++			const register = ui.onInterrupt;
++			let active = true;
++			const subscriptions = new Set<() => void>();
++			this.retireUIInterrupts = () => {
++				// Retire this binding before cleanup can call back into a saved UI object.
++				active = false;
++				const pending = [...subscriptions];
++				subscriptions.clear();
++				for (const unsubscribe of pending) {
++					try {
++						unsubscribe();
++					} catch {
++						// One host cleanup failure must not retain the other subscriptions.
++					}
++				}
++			};
++			wrapped.onInterrupt = (handler) => {
++				this.assertActive();
++				if (!active) throw new Error("This extension UI binding is stale");
++				let subscribed = true;
++				const unsubscribe = register.call(ui, () => {
++					if (active && subscribed && !this.staleMessage) return handler();
++				});
++				const remove = () => {
++					if (!subscribed) return;
++					subscribed = false;
++					subscriptions.delete(remove);
++					unsubscribe();
++				};
++				subscriptions.add(remove);
++				return remove;
++			};
++		}
++		return wrapped;
+ 	}
+ 
+ 	private withUIPrompt<T>(kind: UIPromptKind, title: string | undefined, run: () => Promise<T>): Promise<T> {
+@@ -731,6 +769,7 @@ export class ExtensionRunner {
+ 	): void {
+ 		if (!this.staleMessage) {
+ 			this.staleMessage = message;
++			this.retireUIInterrupts();
+ 			this.runtime.invalidate(message);
+ 		}
+ 	}
+diff --git a/packages/coding-agent/src/core/extensions/types.ts b/packages/coding-agent/src/core/extensions/types.ts
+index 60388c0..5dba92f 100644
+--- a/packages/coding-agent/src/core/extensions/types.ts
++++ b/packages/coding-agent/src/core/extensions/types.ts
+@@ -162,6 +162,15 @@ export interface ExtensionUIContext {
+ 	/** Listen to raw terminal input (interactive mode only). Returns an unsubscribe function. */
+ 	onTerminalInput(handler: TerminalInputHandler): () => void;
+ 
++	/**
++	 * Observe native TUI interrupt dispatch, including while idle, before its built-in action.
++	 * Not raw input: consumed keys, dialogs, and autocomplete cancellation do not notify.
++	 * Handlers cannot consume the action; promises are observed but not awaited. Errors are isolated.
++	 * Each registration is independent. Unsubscribe, UI reset, or runtime retirement removes it.
++	 * Optional and TUI-only; feature-detect before registering.
++	 */
++	onInterrupt?(handler: () => void | Promise<void>): () => void;
++
+ 	/** Set status text in the footer/status bar. Pass undefined to clear. */
+ 	setStatus(key: string, text: string | undefined): void;
+ 
+diff --git a/packages/coding-agent/src/modes/interactive/interactive-mode.ts b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+index e24d150..18491f0 100644
+--- a/packages/coding-agent/src/modes/interactive/interactive-mode.ts
++++ b/packages/coding-agent/src/modes/interactive/interactive-mode.ts
+@@ -568,6 +568,10 @@ export class InteractiveMode {
+ 		unsubscribe: () => void;
+ 	}>();
+ 
++	private extensionInterruptSubscriptions = new Set<{ handler: () => void | Promise<void> }>();
++	private extensionInterruptsClosed = false;
++	private extensionUIResetDepth = 0;
++
+ 	// Extension widgets (components rendered above/below the editor)
+ 	private extensionWidgetsAbove = new Map<string, Component & { dispose?(): void }>();
+ 	private extensionWidgetsBelow = new Map<string, Component & { dispose?(): void }>();
+@@ -2246,7 +2250,7 @@ export class InteractiveMode {
+ 
+ 		// Create a context for shortcut handlers
+ 		const createContext = (): ExtensionContext => ({
+-			ui: this.createExtensionUIContext(),
++			ui: extensionRunner.getUIContext(),
+ 			mode: "tui",
+ 			hasUI: true,
+ 			cwd: this.sessionManager.getCwd(),
+@@ -2452,34 +2456,41 @@ export class InteractiveMode {
+ 	}
+ 
+ 	private resetExtensionUI(): void {
+-		if (this.extensionDialogs.length > 0) {
+-			for (const dialog of this.extensionDialogs) {
+-				dialog.component.dispose?.();
++		// Disposers can still hold an active runner binding; nested resets must not reopen registration.
++		this.extensionUIResetDepth++;
++		try {
++			this.extensionInterruptSubscriptions.clear();
++			if (this.extensionDialogs.length > 0) {
++				for (const dialog of this.extensionDialogs) {
++					dialog.component.dispose?.();
++				}
++				this.extensionDialogs = [];
++				this.showTopExtensionDialog();
++			}
++			this.ui.hideOverlay();
++			this.clearExtensionTerminalInputListeners();
++			this.setExtensionFooter(undefined);
++			this.setExtensionHeader(undefined);
++			this.clearExtensionWidgets();
++			this.footerDataProvider.clearExtensionStatuses();
++			this.footer.invalidate();
++			this.autocompleteProviderWrappers = [];
++			this.setCustomEditorComponent(undefined);
++			this.setupAutocompleteProvider();
++			this.defaultEditor.onExtensionShortcut = undefined;
++			this.updateTerminalTitle();
++			this.workingMessage = undefined;
++			this.workingVisible = true;
++			this.setWorkingIndicator();
++			if (this.activeStatusIndicator?.kind === "working") {
++				this.activeStatusIndicator.setMessage(
++					`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`,
++				);
+ 			}
+-			this.extensionDialogs = [];
+-			this.showTopExtensionDialog();
+-		}
+-		this.ui.hideOverlay();
+-		this.clearExtensionTerminalInputListeners();
+-		this.setExtensionFooter(undefined);
+-		this.setExtensionHeader(undefined);
+-		this.clearExtensionWidgets();
+-		this.footerDataProvider.clearExtensionStatuses();
+-		this.footer.invalidate();
+-		this.autocompleteProviderWrappers = [];
+-		this.setCustomEditorComponent(undefined);
+-		this.setupAutocompleteProvider();
+-		this.defaultEditor.onExtensionShortcut = undefined;
+-		this.updateTerminalTitle();
+-		this.workingMessage = undefined;
+-		this.workingVisible = true;
+-		this.setWorkingIndicator();
+-		if (this.activeStatusIndicator?.kind === "working") {
+-			this.activeStatusIndicator.setMessage(
+-				`${this.defaultWorkingMessage} (${keyText("app.interrupt")} to interrupt)`,
+-			);
++			this.setHiddenThinkingLabel();
++		} finally {
++			this.extensionUIResetDepth--;
+ 		}
+-		this.setHiddenThinkingLabel();
+ 	}
+ 
+ 	// Maximum total widget lines to prevent viewport overflow
+@@ -2600,6 +2611,38 @@ export class InteractiveMode {
+ 		};
+ 	}
+ 
++	private addExtensionInterruptListener(handler: () => void | Promise<void>): () => void {
++		if (this.extensionInterruptsClosed) throw new Error("Interactive UI is stopped");
++		if (this.extensionUIResetDepth > 0) throw new Error("Interactive UI is resetting");
++		const subscription = { handler };
++		this.extensionInterruptSubscriptions.add(subscription);
++		return () => {
++			this.extensionInterruptSubscriptions.delete(subscription);
++		};
++	}
++
++	private notifyExtensionInterrupt(): void {
++		// Snapshot entries, not functions: duplicate registrations have independent lifetimes.
++		for (const subscription of [...this.extensionInterruptSubscriptions]) {
++			if (!this.extensionInterruptSubscriptions.has(subscription)) continue;
++			const reportError = (error: unknown) => {
++				// A pending rejection must not repaint after unsubscribe, reset, or teardown.
++				if (!this.extensionInterruptSubscriptions.has(subscription)) return;
++				try {
++					this.showError(`Interrupt handler error: ${error instanceof Error ? error.message : String(error)}`);
++				} catch {
++					// Even error conversion or reporting must not block the native action.
++				}
++			};
++			try {
++				// Invoke every synchronous prefix now; never wait for a listener to settle.
++				Promise.resolve(subscription.handler()).catch(reportError);
++			} catch (error) {
++				reportError(error);
++			}
++		}
++	}
++
+ 	private rebindExtensionTerminalInputListeners(): void {
+ 		for (const subscription of this.extensionTerminalInputSubscriptions) {
+ 			subscription.unsubscribe();
+@@ -2637,6 +2680,7 @@ export class InteractiveMode {
+ 			input: (title, placeholder, opts) => this.showExtensionInput(title, placeholder, opts),
+ 			notify: (message, type) => this.showExtensionNotify(message, type),
+ 			onTerminalInput: (handler) => this.addExtensionTerminalInputListener(handler),
++			onInterrupt: (handler) => this.addExtensionInterruptListener(handler),
+ 			setStatus: (key, text) => this.setExtensionStatus(key, text),
+ 			setWorkingMessage: (message) => {
+ 				this.workingMessage = message;
+@@ -3025,6 +3069,7 @@ export class InteractiveMode {
+ 		// Set up handlers on defaultEditor - they use this.editor for text access
+ 		// so they work correctly regardless of which editor is active
+ 		this.defaultEditor.onEscape = () => {
++			this.notifyExtensionInterrupt();
+ 			if (this.session.isStreaming) {
+ 				this.restoreQueuedMessagesToEditor({ abort: true });
+ 			} else if (this.session.isBashRunning) {
+@@ -3633,6 +3678,7 @@ export class InteractiveMode {
+ 				// Keep editor active; submissions are queued during compaction.
+ 				this.autoCompactionEscapeHandler = this.defaultEditor.onEscape;
+ 				this.defaultEditor.onEscape = () => {
++					this.notifyExtensionInterrupt();
+ 					this.session.abortCompaction();
+ 				};
+ 				const colorFn = isEmbeddedStatus(this.editor)
+@@ -3702,6 +3748,7 @@ export class InteractiveMode {
+ 				// Set up escape to abort retry
+ 				this.retryEscapeHandler = this.defaultEditor.onEscape;
+ 				this.defaultEditor.onEscape = () => {
++					this.notifyExtensionInterrupt();
+ 					this.session.abortRetry();
+ 				};
+ 				this.showStatusIndicator(
+@@ -5609,6 +5656,7 @@ export class InteractiveMode {
+ 
+ 					if (wantsSummary) {
+ 						this.defaultEditor.onEscape = () => {
++							this.notifyExtensionInterrupt();
+ 							this.session.abortBranchSummary();
+ 						};
+ 						this.chatContainer.addChild(new Spacer(1));
+@@ -7061,6 +7109,8 @@ export class InteractiveMode {
+ 	}
+ 
+ 	stop(fullscreenExitOutput = this.settingsManager.getFullscreenExitOutput()): void {
++		this.extensionInterruptsClosed = true;
++		this.extensionInterruptSubscriptions.clear();
+ 		this.disposeActiveSelector();
+ 		if (this.settingsManager.getShowTerminalProgress()) {
+ 			this.ui.terminal.setProgress(false);
