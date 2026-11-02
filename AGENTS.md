@@ -17,6 +17,11 @@
 - There is no repository-wide lint, formatter, build, or type-check command. Preserve local formatting and avoid broad style-only changes.
 - Do not discard or overwrite unrelated working-tree changes.
 
+## Working approach
+
+- Follow TDD by default where it makes sense, especially for new behavior and bug fixes: write a focused failing test, implement the smallest change that passes it, then refactor. Use judgment for changes where a test-first approach adds little value, such as documentation, metadata, or purely mechanical edits.
+- Use sound judgment when delegating to subagents. Decide whether to delegate, which tasks to delegate, and how much work to delegate based on complexity, independence, and the value of focused expertise or parallel work. Keep straightforward work local when delegation would add unnecessary overhead. You remain responsible for the final result, not the subagent: review, integrate, and verify delegated work before treating it as complete.
+
 ## Validation
 
 For each changed package:
