@@ -726,15 +726,11 @@ it("isolates throwing update callbacks and honors reentrant cancellation before 
  assert.equal(cancelled.result.status, "cancelled");
  assert.equal(cancelled.result.output, "");
 });
-it("waits for cleanup and refuses completion when owned cleanup fails", async () => {
- const original = fsPromises.rm;
- fsPromises.rm = async () => {throw new Error("fixture cleanup failure");};
+for (const aborted of [false, true]) it(`owned cleanup rejects distinctly even when aborted=${aborted}`, async () => {
+ const original = fsPromises.rm; const controller = new AbortController();
+ fsPromises.rm = async path => {temporaryDirectories.push(String(path)); if (aborted) controller.abort(); throw new Error("private cleanup detail");};
  try {
-  const {capture, result} = await captureCanonicalRun({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true});
-  temporaryDirectories.push(dirname(capture.basePromptPath));
-  assert.equal(result.status, "failed");
-  assert.match(getRunFailure(result) ?? "", /cleanup failed/);
-  assert.equal(result.usage.input, 3);
+  await assert.rejects(captureCanonicalRun({role: "coder", profile: "general", task: "Work", cwd: process.cwd(), projectTrusted: true, signal: controller.signal}), {name: "GuildCleanupError", message: "Guild prompt cleanup failed."});
  } finally {fsPromises.rm = original;}
 });
 it("retains host run/task identity on failed terminals without a child report", async () => {
@@ -771,4 +767,24 @@ it("observes parsed child events without allowing observer failures or mutations
   assert.equal(result.usage.turns, 2);
   assert.equal(result.usage.input, 3);
   assert.equal(result.errorMessage, undefined);
+});
+
+// Rollback list: write failure + failed removal (normal/aborted); successful removal stays ordinary.
+for (const aborted of [false, true]) for (const removalFails of [true, false]) it(`setup rollback removalFails=${removalFails} aborted=${aborted}`, async () => {
+ const originalWrite = fsPromises.writeFile; const originalRm = fsPromises.rm;
+ const controller = new AbortController(); const directories: string[] = []; const events: any[] = [];
+ const telemetry = channel("pithos.guild.child"); const collect = (event: unknown) => events.push(event);
+ telemetry.subscribe(collect);
+ fsPromises.writeFile = async () => { if (aborted) controller.abort(); throw new Error("private setup detail"); };
+ fsPromises.rm = async (path, options) => { directories.push(String(path)); if (removalFails) throw new Error("private removal path"); await originalRm(path, options); };
+ try {
+  const run = runGuildRole({role: "coder", profile: "general", task: "work", cwd: process.cwd(), projectTrusted: true, signal: controller.signal});
+  if (removalFails) await assert.rejects(run, {name: "GuildCleanupError", message: "Guild prompt cleanup failed."});
+  else assert.equal((await run).status, aborted ? "cancelled" : "failed");
+  assert.deepEqual(events.map(event => event.type), ["start", "end"], "setup must not spawn and must end once before settlement");
+  assert.equal(directories.length, 1, "rollback owns removal exactly once");
+ } finally {
+  fsPromises.writeFile = originalWrite; fsPromises.rm = originalRm; telemetry.unsubscribe(collect);
+  for (const directory of directories) await originalRm(directory, {recursive: true, force: true});
+ }
 });

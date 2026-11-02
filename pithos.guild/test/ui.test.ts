@@ -446,3 +446,35 @@ it("shows code-comments receipts by ID only in tool and direct results", () => {
   }
  }
 });
+
+it("disposed handover progress ignores late updates without requesting render", () => {
+  let renders = 0;
+  const progress = createGuildHandoverProgress({
+    role: "coder", profile: "typescript", source: "package", task: "Work", startedAt: Date.now(),
+  }, { requestRender() { renders++; } }, theme, { matches: () => false });
+  try {
+    progress.dispose();
+    const before = renders;
+    progress.update({ activity: "Late result", phase: "running", turns: 4 });
+    assert.equal(renders, before);
+    assert.doesNotMatch(progress.render(100).join("\n"), /Late result/);
+  } finally {
+    progress.dispose();
+  }
+});
+
+it("handover cancellation does not request render after reentrant disposal", () => {
+  let renders = 0;
+  const progress = createGuildHandoverProgress({
+    role: "coder", profile: "typescript", source: "package", task: "Work", startedAt: Date.now(),
+  }, { requestRender() { renders++; } }, theme, { matches: () => true });
+  try {
+    progress.signal.addEventListener("abort", () => progress.dispose(), { once: true });
+    const before = renders;
+    progress.handleInput("escape");
+    assert.equal(progress.signal.aborted, true);
+    assert.equal(renders, before);
+  } finally {
+    progress.dispose();
+  }
+});

@@ -1,7 +1,10 @@
 import assert from "node:assert/strict";
-import {readFileSync} from "node:fs";
+import {readFileSync, promises as fsPromises, mkdtempSync, writeFileSync, rmSync} from "node:fs";
+import {tmpdir} from "node:os";
+import {join} from "node:path";
+import {runGuildRole} from "../src/runner";
 import { describe, it } from "node:test";
-import { initTheme } from "@earendil-works/pi-coding-agent";
+import { createEventBus, initTheme } from "@earendil-works/pi-coding-agent";
 import { Value } from "typebox/value";
 import { Check } from "typebox/value";
 import {
@@ -14,11 +17,174 @@ import {
 import { registerGuild, type GuildDependencies } from "../src/guild";
 import type { GuildRoleRunResult, RunGuildRoleOptions } from "../src/runner";
 import { LiveTranscriptStore } from "../src/live-transcript.ts";
-
-import { renderReport, validateResult } from "../src/protocol.ts";
+import { createGuildBackgroundRuntime, type GuildExecutionRuntime } from "../src/background-runtime.ts";
+import type { GuildOwner } from "../src/execution-authority.ts";
+import type { RunBackgroundGuildRoleOptions } from "../src/background-runner.ts";
+import { EventEmitter } from "node:events";
+import { buildTask as buildHostTask, renderReport, validateResult } from "../src/protocol.ts";
 import { buildTask, report } from "./protocol-fixtures.ts";
 
+function backgroundResult(options: RunBackgroundGuildRoleOptions) {
+ const task = buildHostTask({ role: options.role, profile: options.profile, task: options.task, practices: options.practices, runId: options.runId!, taskId: options.taskId! });
+ return resultFor(options, { runId: task.runId, taskId: task.taskId, report: validateResult(report(task), task) });
+}
+
+function runtimeFixture(runner: (options: RunBackgroundGuildRoleOptions) => Promise<GuildRoleRunResult>) {
+ const actual = createGuildBackgroundRuntime({ bus: { emit() {} }, parentEnvironment: { PITHOS_GUILD_PLAN_MODE: "standalone" }, runner });
+ let owner!: GuildOwner;
+ let activations = 0;
+ const runtime: GuildExecutionRuntime = { ...actual, activate() { activations++; owner = actual.activate(); return owner; } };
+ return { runtime, get owner() { return owner; }, get activations() { return activations; } };
+}
+const backgroundContext = () => ({ cwd: process.cwd(), projectTrusted: false, getBranch: () => [] });
+
+
 initTheme();
+
+it("shares one runtime participant Plan lease across live tool and direct handovers", async (t) => {
+ const fixture = runtimeFixture(() => assert.fail("blocking handovers must not start background runs"));
+ const pi = fakePi(); const ctx = context();
+ const calls: string[] = [];
+ let factories = 0;
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => { factories++; return fixture.runtime; },
+  run: async options => { calls.push(options.task); return resultFor(options); },
+ });
+ t.after(async () => { await pi.handlers.get("session_shutdown")({}, ctx); await fixture.runtime.shutdown(); });
+ const hold = fixture.runtime.planParticipant.tryAcquire({});
+ assert.equal(hold.kind, "held");
+ if (hold.kind !== "held") return;
+ const tool = () => pi.tool.execute("held-tool", {role: "explorer", profile: "general", task: "tool"}, undefined, undefined, ctx);
+ const direct = () => pi.commands.get("guild-handover").handler("architect/general direct", ctx);
+ const refused = await tool();
+ await direct();
+ assert.deepEqual(calls, [], "a real registry lease must prevent either runner path");
+ assert.equal(refused.details.status, "failed");
+ assert.match(refused.details.error, /Plan hold/i);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed"]);
+ assert.match(pi.messages[1].message.details.error, /Plan hold/i);
+ hold.lease.release();
+ assert.equal((await tool()).details.status, "completed");
+ await direct();
+ assert.deepEqual(calls, ["tool", "direct"]);
+ assert.equal(factories, 1);
+ assert.equal(fixture.activations, 1);
+ assert.deepEqual(fixture.runtime.list(fixture.owner), [], "blocking reports do not become background records");
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed", "started", "completed"]);
+});
+
+it("refuses both handover paths for every nonterminal background state and resumes after cleanup", async () => {
+ for (const state of ["queued", "running", "waiting", "stopping"] as const) {
+  const gate = deferred<void>(); const cleanup = deferred<void>();
+  const fixture = runtimeFixture(async options => {
+   const question = new AbortController();
+   try { if (state === "waiting") await options.onQuestion("Continue?", question.signal); }
+   finally { await cleanup.promise; }
+   return backgroundResult(options);
+  });
+  const pi = fakePi(); const ctx = context(); const calls: string[] = [];
+  registerGuild(pi.api as never, {
+   createExecutionRuntime: () => fixture.runtime,
+   run: async options => { calls.push(options.task); return resultFor(options); },
+  });
+  let barrier: Promise<void> | undefined;
+  try {
+   if (state === "queued") barrier = fixture.runtime.runExclusive(fixture.owner, () => gate.promise);
+   const background = fixture.runtime.start(fixture.owner, {role: "reviewer", profile: "general", task: "Background fixture"}, backgroundContext());
+   if (state === "stopping") void fixture.runtime.cancel(fixture.owner, background.id);
+   assert.equal(fixture.runtime.status(fixture.owner, background.id).status, state);
+   const tool = () => pi.tool.execute(`background-${state}`, {role: "coder", profile: "general", task: "tool"}, undefined, undefined, ctx);
+   const direct = () => pi.commands.get("guild-handover").handler("writer/general direct", ctx);
+   const refused = await tool();
+   await direct();
+   assert.deepEqual(calls, [], `${state} background ownership must veto both paths`);
+   assert.equal(refused.details.status, "failed");
+   assert.match(refused.details.error, /Background work is still active/);
+   assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed"]);
+   assert.match(pi.messages[1].message.details.error, /Background work is still active/);
+   const cancelled = fixture.runtime.cancel(fixture.owner, background.id);
+   gate.resolve(); cleanup.resolve();
+   await Promise.all([cancelled, barrier]);
+   assert.equal(fixture.runtime.status(fixture.owner, background.id).status, "cancelled");
+   assert.equal((await tool()).details.status, "completed");
+   await direct();
+   assert.deepEqual(calls, ["tool", "direct"]);
+   assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed", "started", "completed"]);
+   assert.equal(fixture.runtime.list(fixture.owner).length, 1, "retained terminal background records do not veto blocking work");
+  } finally {
+   gate.resolve(); cleanup.resolve();
+   await pi.handlers.get("session_shutdown")({}, ctx);
+   await fixture.runtime.shutdown(); await barrier;
+  }
+ }
+});
+
+it("drains more than eight mixed handovers FIFO before background work with once-only direct terminals", async (t) => {
+ const pi = fakePi(); const ctx = context();
+ const gates = Array.from({length: 12}, () => deferred<void>());
+ const backgroundGate = deferred<void>();
+ const starts: string[] = [];
+ const runs: Promise<any>[] = [];
+ let active = 0; let maximum = 0; let factories = 0;
+ const fixture = runtimeFixture(async options => {
+  starts.push("background");
+  maximum = Math.max(maximum, ++active);
+  try { await backgroundGate.promise; return backgroundResult(options); } finally { active--; }
+ });
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => { factories++; return fixture.runtime; },
+  run: async options => {
+   starts.push(options.task);
+   maximum = Math.max(maximum, ++active);
+   try { await gates[Number(options.task.slice(5))].promise; return resultFor(options); }
+   finally { active--; }
+  },
+ });
+ t.after(async () => {
+  gates.forEach(gate => gate.resolve()); backgroundGate.resolve();
+  await pi.handlers.get("session_shutdown")({}, ctx);
+  await fixture.runtime.shutdown(); await Promise.allSettled(runs);
+ });
+ for (let index = 0; index < gates.length; index++) {
+  const role = GUILD_ROLES[index % GUILD_ROLES.length];
+  runs.push(index % 2 === 0
+   ? pi.tool.execute(`mixed-${index}`, {role, profile: "general", task: `work-${index}`}, undefined, undefined, ctx)
+   : pi.commands.get("guild-handover").handler(`${role}/general work-${index}`, ctx));
+  // Direct commands await idle before admission; don't let later tool calls overtake that step.
+  await new Promise<void>(resolve => setImmediate(resolve));
+ }
+ assert.deepEqual(starts, ["work-0"]);
+ assert.deepEqual(fixture.runtime.planParticipant.tryAcquire({}), {kind: "busy", outstanding: 12});
+ assert.deepEqual(fixture.runtime.list(fixture.owner), [], "all roles use exclusive operations, not background records");
+ const background = fixture.runtime.start(fixture.owner, {role: "coder", profile: "general", task: "Background fixture"}, backgroundContext());
+ assert.equal(background.status, "queued");
+ assert.deepEqual(fixture.runtime.planParticipant.tryAcquire({}), {kind: "busy", outstanding: 13});
+ for (let index = 0; index < gates.length; index++) {
+  gates[index].resolve();
+  await new Promise<void>(resolve => setImmediate(resolve));
+  assert.deepEqual(starts, index === 11
+   ? [...Array.from({length: 12}, (_, i) => `work-${i}`), "background"]
+   : Array.from({length: index + 2}, (_, i) => `work-${i}`));
+ }
+ const results = await Promise.all(runs);
+ assert.equal(maximum, 1);
+ assert.equal(factories, 1);
+ assert.equal(fixture.activations, 1);
+ for (let index = 0; index < gates.length; index += 2) assert.equal(results[index].details.status, "completed");
+ assert.equal(pi.messages.length, 12);
+ for (let index = 1; index < gates.length; index += 2) {
+  const events = pi.messages.filter(({message}) => message.details.task === `work-${index}`);
+  assert.deepEqual(events.map(({message}) => message.details.status), ["started", "completed"]);
+  assert.equal(events[0].message.details.runId, events[1].message.details.runId);
+  assert.ok(events.every(event => event.options.triggerTurn === false));
+ }
+ backgroundGate.resolve();
+ assert.equal((await fixture.runtime.wait(fixture.owner, background.id, 1000)).reason, "terminal");
+ assert.equal(fixture.runtime.status(fixture.owner, background.id).status, "completed", fixture.runtime.status(fixture.owner, background.id).error);
+ const hold = fixture.runtime.planParticipant.tryAcquire({});
+ assert.equal(hold.kind, "held");
+ if (hold.kind === "held") hold.lease.release();
+});
 
 it("exposes a provider-compatible strict practices schema", () => {
  const pi = fakePi();
@@ -80,8 +246,10 @@ function fakePi() {
   const handlers = new Map<string, any>();
   const messages: Array<{ message: any; options: any }> = [];
   const messageRenderers = new Map<string, any>();
+  const events = new EventEmitter();
   return {
     api: {
+      events,
       registerShortcut(name: string, definition: any) { shortcuts.set(name, definition); },
       registerTool(definition: any) {
         tools.set(definition.name, definition);
@@ -96,7 +264,12 @@ function fakePi() {
         messages.push({ message, options });
       },
       on(name: string, handler: any) {
-        handlers.set(name, handler);
+        const previous = handlers.get(name);
+        handlers.set(name, previous ? async (event: any, ctx: any) => {
+          const result = await previous(event, ctx);
+          if (result?.action === "handled" || result?.cancel) return result;
+          return await handler(result?.action === "transform" ? {...event, text: result.text, images: result.images} : event, ctx) ?? result;
+        } : handler);
       },
     },
     get tool() {
@@ -1427,7 +1600,7 @@ it("binds each tool and direct handover to its parent session for trace recordin
  await pi.handlers.get("session_shutdown")({reason: "quit"}, context({sessionManager}));
  assert.equal(events.at(-1), "dispose");
  await pi.handlers.get("session_start")({reason: "new"}, context({sessionManager}));
- assert.equal(created, 2);
+ assert.equal(created, 1, "shutdown registrations cannot revive their recorder");
 });
 it("captures repository state only for traced runs and uses filesystem-safe run names", async () => {
  const directories: string[] = [];
@@ -1481,7 +1654,39 @@ it("settles exactly once when a phase observer reentrantly shuts down the queue"
   }, ctx);
   await shutdown;
   assert.equal(terminal.details.status, "cancelled");
-  assert.equal(calls, stopAt === "queued" ? 0 : 1);
+  assert.equal(calls, 0, "phase shutdown must suppress prelaunch runner setup");
+ }
+});
+
+it("seals one cancelled transcript without launch after reentrant queued or running abort", async () => {
+ for (const stopAt of ["queued", "running"]) {
+  const pi = fakePi(); const ctx = context();
+  const fixture = runtimeFixture(() => assert.fail("unexpected background start"));
+  const store = new LiveTranscriptStore(); const controller = new AbortController();
+  const terminals: string[] = []; const phases: string[] = [];
+  let launches = 0;
+  store.subscribe(() => {
+   const phase = store.get("phase-abort")?.phase;
+   if (phase === "cancelled" || phase === "completed" || phase === "failed") terminals.push(phase);
+  });
+  registerGuild(pi.api as never, {
+   createExecutionRuntime: () => fixture.runtime, createTranscriptStore: () => store,
+   run: async options => { launches++; return resultFor(options); },
+  });
+  try {
+   const result = await pi.tool.execute("phase-abort", {role: "coder", profile: "general", task: "Work"}, controller.signal, (update: any) => {
+    phases.push(update.details.phase);
+    if (update.details.phase === stopAt) controller.abort(new Error("phase abort"));
+   }, ctx);
+   assert.equal(result.details.status, "cancelled");
+   assert.match(result.details.error, /phase abort/);
+   assert.equal(launches, 0);
+   assert.deepEqual(phases, stopAt === "queued" ? ["queued"] : ["queued", "running"]);
+   assert.deepEqual(terminals, ["cancelled"]);
+   const hold = fixture.runtime.planParticipant.tryAcquire({});
+   assert.equal(hold.kind, "held");
+   if (hold.kind === "held") hold.lease.release();
+  } finally { await pi.handlers.get("session_shutdown")({}, ctx); await fixture.runtime.shutdown(); }
  }
 });
 
@@ -1803,10 +2008,10 @@ for (const terminal of ["completed", "failed", "cancelled", "shutdown", "dispose
   progress.handleInput("\r"); assert.equal(listeners, 0);
  }
  gate.resolve(); await command; await shutdown;
- assert.equal(doneCalls, 1); assert.equal(listeners, 0);
+ assert.equal(doneCalls, terminal === "disposed" ? 0 : 1); assert.equal(listeners, 0);
  const status = terminal === "shutdown" ? "cancelled" : terminal === "disposed" ? "completed" : terminal;
- assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", status]);
- assert.equal(pi.messages[0].message.details.runId, pi.messages[1].message.details.runId);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), terminal === "shutdown" || terminal === "disposed" ? ["started"] : ["started", status]);
+ if (terminal !== "shutdown" && terminal !== "disposed") assert.equal(pi.messages[0].message.details.runId, pi.messages[1].message.details.runId);
  progress.dispose();
 });
 
@@ -1893,4 +2098,1227 @@ for (const terminal of ["completed", "failed", "cancelled", "queued-cancelled"] 
  firstGate.resolve(); secondGate.resolve(); await first; await second;
  assert.equal(panel, undefined); assert.equal(listeners, 0); assert.equal(subscriptions, 0); assert.equal(capture("\x1b"), undefined);
  await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("owns a runtime for one registration and rejects transfer to a second registration", async (t) => {
+ const fixture = runtimeFixture(() => assert.fail("unexpected background start"));
+ const pi = fakePi(); const ctx = context();
+ let factories = 0;
+ const dependencies = {
+  createExecutionRuntime: () => { factories++; return fixture.runtime; },
+  run: async (options: RunGuildRoleOptions) => resultFor(options),
+ };
+ registerGuild(pi.api as never, dependencies);
+ t.after(() => pi.handlers.get("session_shutdown")({}, ctx));
+ assert.throws(() => registerGuild(fakePi().api as never, dependencies), /active|activation/i);
+ await pi.handlers.get("session_start")({}, ctx);
+ await pi.handlers.get("session_start")({}, ctx);
+ assert.equal(factories, 2, "one explicit activation per registration, no session-start rotation");
+ const result = await pi.tool.execute("registered", {role: "explorer", profile: "general", task: "Inspect"}, undefined, undefined, ctx);
+ assert.equal(result.details.status, "completed", "rejected transfer must not close the first owner");
+});
+
+it("keeps both blocking entry paths independent of the captured background Plan setting", async () => {
+ const previous = process.env.PITHOS_GUILD_PLAN_MODE;
+ try {
+  for (const mode of [undefined, "required", "standalone", "invalid"]) {
+   if (mode === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE;
+   else process.env.PITHOS_GUILD_PLAN_MODE = mode;
+   const pi = fakePi(); const ctx = context(); const calls: string[] = [];
+   registerGuild(pi.api as never, { run: async options => { calls.push(options.task); return resultFor(options); } });
+   try {
+    const tool = await pi.tool.execute("background-policy-compat", { role: "coder", profile: "general", task: "tool" }, undefined, undefined, ctx);
+    await pi.commands.get("guild-handover").handler("reviewer/general direct", ctx);
+    assert.equal(tool.details.status, "completed", String(mode));
+    assert.deepEqual(calls, ["tool", "direct"], String(mode));
+   } finally { await pi.handlers.get("session_shutdown")({}, ctx); }
+  }
+ } finally {
+  if (previous === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE;
+  else process.env.PITHOS_GUILD_PLAN_MODE = previous;
+ }
+});
+
+it("registration captures a lazy receiver-preserving bus and immutable parent-only policy", async () => {
+ const previous = process.env.PITHOS_GUILD_PLAN_MODE;
+ try {
+  for (const mode of [undefined, "standalone", "invalid"]) {
+   if (mode === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE;
+   else process.env.PITHOS_GUILD_PLAN_MODE = mode;
+   const pi = fakePi(); const ctx = context();
+   let captured!: Parameters<NonNullable<GuildDependencies["createExecutionRuntime"]>>[0];
+   let runtime!: GuildExecutionRuntime; let owner!: GuildOwner;
+   let emissions = 0; let launches = 0; let factories = 0; let activations = 0;
+   const events = pi.api.events;
+   const emit = events.emit;
+   events.emit = function(channel, request) {
+    assert.equal(this, events); emissions++;
+    return emit.call(this, channel, request);
+   };
+   registerGuild(pi.api as never, {
+    createExecutionRuntime(options) {
+     factories++; captured = options;
+     const actual = createGuildBackgroundRuntime({ ...options, runner: async options => { launches++; return backgroundResult(options); } });
+     runtime = { ...actual, activate() { activations++; owner = actual.activate(); return owner; } };
+     return runtime;
+    }, run: successfulRunner,
+   });
+   try {
+    assert.equal(factories, 1); assert.equal(activations, 1);
+    assert.deepEqual(captured.parentEnvironment, { PITHOS_GUILD_PLAN_MODE: mode });
+    assert.equal(Object.isFrozen(captured.parentEnvironment), true);
+    process.env.PITHOS_GUILD_PLAN_MODE = mode === "standalone" ? "required" : "standalone";
+    pi.api.events = new EventEmitter();
+    assert.equal(emissions, 0); assert.equal(launches, 0);
+    assert.deepEqual([...pi.tools.keys()].sort(), ["create_commit", "guild_handover"]);
+    assert.deepEqual([...pi.commands.keys()].sort(), ["commit", "guild", "guild-handover"]);
+    assert.equal((await pi.tool.execute("lazy", { role: "explorer", profile: "general", task: "tool" }, undefined, undefined, ctx)).details.status, "completed");
+    await pi.commands.get("guild-handover").handler("reviewer/general direct", ctx);
+    assert.ok(emissions > 0, "blocking work discovers on the captured bus"); assert.equal(launches, 0);
+    const blockingEmissions = emissions;
+    const input = { role: "reviewer", profile: "general", task: "background" };
+    if (mode === "standalone") {
+     const run = runtime.start(owner, input, backgroundContext());
+     await runtime.wait(owner, run.id, 1000);
+     assert.equal(runtime.status(owner, run.id).status, "completed");
+     assert.equal(launches, 1);
+     // An on-stack reply conflicts with explicit standalone even on the captured bus.
+     events.on("pithos.plan.coordination", request => request.reply({}));
+     assert.throws(() => runtime.start(owner, input, backgroundContext()), /standalone|provider|Plan/i);
+     assert.equal(launches, 1);
+    } else {
+     assert.throws(() => runtime.start(owner, input, backgroundContext()), /Plan|configuration|mode|provider/i);
+     assert.equal(launches, 0);
+     assert.equal(emissions - blockingEmissions, mode === undefined ? 1 : 0);
+    }
+    const beforeShutdown = emissions;
+    await pi.handlers.get("session_shutdown")({}, ctx);
+    assert.equal(emissions, beforeShutdown);
+   } finally { await pi.handlers.get("session_shutdown")({}, ctx); }
+  }
+ } finally {
+  if (previous === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE;
+  else process.env.PITHOS_GUILD_PLAN_MODE = previous;
+ }
+});
+
+it("registration shutdown aborts background immediately and joins cleanup without queued launch", async () => {
+ const cleanup = deferred<void>(); const signals: AbortSignal[] = [];
+ const fixture = runtimeFixture(async options => {
+  signals.push(options.signal!);
+  await cleanup.promise;
+  return backgroundResult(options);
+ });
+ const pi = fakePi(); const ctx = context();
+ registerGuild(pi.api as never, { createExecutionRuntime: () => fixture.runtime, run: successfulRunner });
+ const input = { role: "coder", profile: "general", task: "background" };
+ for (let index = 0; index < 4; index++) fixture.runtime.start(fixture.owner, input, backgroundContext());
+ assert.equal(signals.length, 3);
+ let joined = false;
+ const shutdown = pi.handlers.get("session_shutdown")({}, ctx).then(() => { joined = true; });
+ try {
+  assert.ok(signals.every(signal => signal.aborted));
+  await Promise.resolve(); assert.equal(joined, false);
+  assert.throws(() => fixture.runtime.start(fixture.owner, input, backgroundContext()), /stale|owner/i);
+  await assert.rejects(fixture.runtime.runExclusive(fixture.owner, () => assert.fail("closed operation")), /stale|owner/i);
+ } finally { cleanup.resolve(); await shutdown; await fixture.runtime.shutdown(); }
+ assert.equal(signals.length, 3);
+});
+
+// Registration lifetime: saved callbacks, capture/bind reentry, cleanup failure,
+// terminal session_start and execution-tail joining (custom/preparation are separate).
+it("terminal execution ignores saved runner callbacks before inspecting their arguments", async () => {
+ const pi = fakePi(); const ctx = context(); let saved!: RunGuildRoleOptions; let updates = 0;
+ registerGuild(pi.api as never, {run: async options => { saved = options; return resultFor(options); }});
+ await pi.tool.execute("terminal", {role: "coder", profile: "general", task: "Work"}, undefined, () => updates++, ctx);
+ const count = updates;
+ const poison = new Proxy({}, {get() { throw new Error("late argument read"); }});
+ assert.doesNotThrow(() => saved.onUpdate?.(poison as never));
+ assert.doesNotThrow(() => saved.onEvent?.(poison as never));
+ assert.equal(updates, count);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const mode of ["capture", "bind", "unbind", "ui"] as const) it(`terminal shutdown owns ${mode} cleanup and never revives`, async () => {
+ const pi = fakePi(); const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ const gate = deferred<void>(); const entered = deferred<void>();
+ let saved: RunGuildRoleOptions | undefined; let binds = 0; let unbinds = 0; let creates = 0; let runs = 0; let joined = false;
+ let shutdown: Promise<void> | undefined; let reentrant: Promise<void> | undefined;
+ const stop = () => pi.handlers.get("session_shutdown")({}, ctx) as Promise<void>;
+ const deps: GuildDependencies = {
+  createTraceRecorder: () => { creates++; return {bind() { binds++; if (mode === "bind") shutdown = stop(); return () => { unbinds++; if (mode === "unbind") throw new Error("unbind failed"); }; }, dispose() { reentrant = stop(); }}; },
+  captureRepoState: async () => { if (mode === "capture") { entered.resolve(); await gate.promise; } return {state: "x", head: "a", dirty: false, complete: true}; },
+  run: async options => { runs++; saved = options; entered.resolve(); await gate.promise; return resultFor(options); },
+ };
+ registerGuild(pi.api as never, deps);
+ await pi.handlers.get("session_start")({}, ctx);
+ const execution = pi.tool.execute("owned", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ const outcome = Promise.allSettled([execution]);
+ if (mode === "bind") { await new Promise(resolve => setImmediate(resolve)); }
+ else await entered.promise;
+ if (mode === "ui") ctx.ui.setWidget = () => { throw new Error("UI cleanup failed"); };
+ shutdown ??= stop();
+ const joinOutcome = shutdown.then(() => { joined = true; }, error => { joined = true; return error; });
+ assert.equal(reentrant, shutdown, "reentrant shutdown returns the installed join");
+ if (saved) assert.equal(saved.signal?.aborted, true);
+ if (mode !== "bind") { await Promise.resolve(); assert.equal(joined, false); }
+ const poison = new Proxy({}, {get() { throw new Error("stale context read"); }});
+ const late = await pi.tool.execute("late", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, poison);
+ assert.equal(late.details.status, "cancelled");
+ if (saved) { assert.doesNotThrow(() => saved!.onUpdate?.(poison as never)); assert.doesNotThrow(() => saved!.onEvent?.(poison as never)); }
+ gate.resolve(); await outcome; const error = await joinOutcome;
+ if (mode === "ui" || mode === "unbind") assert.ok(error instanceof Error);
+ assert.equal(runs, mode === "capture" || mode === "bind" ? 0 : 1);
+ assert.equal(binds, mode === "capture" ? 0 : 1); assert.equal(unbinds, binds);
+ await pi.handlers.get("session_start")({}, poison); assert.equal(creates, 1);
+ const replacement = fakePi(); registerGuild(replacement.api as never, deps);
+ await replacement.handlers.get("session_start")({}, ctx); assert.equal(creates, 2);
+});
+
+it("captures metadata before reentrant transcript publication closes the registration", async () => {
+ const pi = fakePi(); const ctx = context(); let closed = false; let shutdown!: Promise<void>; let readsAfterClose = 0;
+ const session = {getBranch: () => [], getSessionId: () => "one", getSessionDir: () => "/sessions"};
+ Object.defineProperty(ctx, "sessionManager", {get() { if (closed) readsAfterClose++; return session; }});
+ class ClosingStore extends LiveTranscriptStore {
+  override start(input: Parameters<LiveTranscriptStore["start"]>[0]) {
+   super.start(input); shutdown = pi.handlers.get("session_shutdown")({}, context()); closed = true;
+  }
+ }
+ registerGuild(pi.api as never, {createTranscriptStore: () => new ClosingStore(), run: async () => assert.fail("closed publication cannot launch")});
+ const result = await pi.tool.execute("reenter-store", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ await shutdown;
+ assert.equal(result.details.status, "cancelled"); assert.equal(readsAfterClose, 0);
+});
+
+it("does not clear replacement visibility after reentrant terminal widget cleanup", async () => {
+ const pi = fakePi(); const ctx = context(); let armed = false; let replaced = false; let lateWrites = 0; let shutdown!: Promise<void>;
+ ctx.ui.setWidget = ((_key: string, value: unknown) => {
+  if (armed && value === undefined && !replaced) { armed = false; shutdown = pi.handlers.get("session_shutdown")({}, ctx); replaced = true; }
+ }) as never;
+ ctx.ui.setStatus = (() => { if (replaced) lateWrites++; }) as never;
+ registerGuild(pi.api as never, {run: async options => { armed = true; return resultFor(options); }});
+ await pi.tool.execute("replacement", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ await shutdown; assert.equal(lateWrites, 0);
+});
+
+for (const stage of ["idle", "role", "profile", "practice", "editor"] as const) {
+ for (const reject of [false, true]) it(`direct preparation fences ${stage} late ${reject ? "rejection" : "success"}`, async () => {
+  const pi = fakePi(); const gate = deferred<any>(); const ready = deferred<void>();
+  const ctx = context(); let stale = false; let effects = 0; let choice: any;
+  const check = () => { if (stale) effects++; };
+  ctx.waitForIdle = async () => { check(); if (stage === "idle") {ready.resolve(); await gate.promise;} };
+  ctx.ui.select = (async (title: string, choices: string[]) => {
+   check(); const here = title.includes("role") ? "role" : title.includes("profile") ? "profile" : "practice";
+   const value = here === "role" ? choices.find(value => value.startsWith("coder "))! : choices[0];
+   if (stage === here) {choice = value; ready.resolve(); return gate.promise;}
+   return value;
+  }) as any;
+  ctx.ui.editor = async () => { check(); ready.resolve(); return gate.promise; };
+  ctx.ui.notify = (() => {check();}) as any;
+  Object.defineProperty(ctx, "model", {get() {check(); return undefined;}});
+  Object.defineProperty(ctx, "sessionManager", {get() {check(); return {getBranch: () => {check(); return [];}};}});
+  ctx.ui.custom = (() => {check(); throw new Error("must not launch custom");}) as any;
+  registerGuild(pi.api as never, {run: async () => assert.fail("must not launch")});
+  const command = pi.commands.get("guild-handover").handler("", ctx);
+  const settled = Promise.allSettled([command]);
+  await ready.promise; await pi.handlers.get("session_shutdown")({}, context()); stale = true;
+  if (reject) gate.reject(new Error("native preparation rejected")); else gate.resolve(stage === "editor" ? "Work" : choice);
+  assert.equal((await settled)[0].status, "fulfilled");
+  assert.equal(effects, 0); assert.deepEqual(pi.messages, []);
+  await pi.commands.get("guild-handover").handler("--help", new Proxy({}, {get() {assert.fail("terminal entry read");}}));
+ });
+}
+
+for (const boundary of ["sessionManager", "hasUI", "mode", "ui", "getBranch", "isProjectTrusted", "model", "thinkingLevel", "started"] as const) it(`direct preparation stops reentrant ${boundary}`, async () => {
+ const pi = fakePi(); const ctx = context(); let shutdown: Promise<void> | undefined; let closed = false; let late = 0; let armed = false;
+ const stop = () => {shutdown = pi.handlers.get("session_shutdown")({}, context()); closed = true;};
+ for (const key of ["sessionManager", "hasUI", "mode", "ui", "model", "thinkingLevel"] as const) {
+  const value = ctx[key]; Object.defineProperty(ctx, key, {get() {if (closed) late++; if (armed && boundary === key && !closed) stop(); return value;}});
+ }
+ ctx.sessionManager.getBranch = () => {if (boundary === "getBranch") stop(); return [];};
+ ctx.isProjectTrusted = () => {if (closed) late++; if (boundary === "isProjectTrusted") stop(); return true;};
+ let custom = 0; ctx.ui.custom = (() => {custom++; throw new Error("unexpected custom");}) as any;
+ const send = pi.api.sendMessage; pi.api.sendMessage = (message, options) => {send(message, options); if (boundary === "started") stop();};
+ registerGuild(pi.api as never, {run: async () => assert.fail("reentrant launch")});
+ armed = true;
+ await pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+ await shutdown; assert.equal(late, 0); assert.equal(custom, 0);
+});
+
+for (const ending of ["complete", "shutdown", "reset-resolve", "reset-reject", "native-reject"] as const) it(`direct custom ownership ${ending} protects replacement draft`, async () => {
+ const pi = fakePi(); const ctx = context(); const gate = deferred<void>(); const ready = deferred<void>(); const native = deferred<any>();
+ let component: any; let draft = "old draft"; let renders = 0; let doneCalls = 0;
+ ctx.ui.custom = ((factory: any) => {
+  const saved = draft;
+  component = factory({requestRender() {renders++;}}, inlineTheme, {matches: () => false}, (value: any) => {
+   doneCalls++; draft = saved; renders++; native.resolve(value); component?.dispose();
+  });
+  return native.promise;
+ }) as any;
+ registerGuild(pi.api as never, {run: async options => {ready.resolve(); await gate.promise; if (ending === "reset-reject") throw new Error("late runner"); return resultFor(options);}});
+ let settled = false;
+ const command = pi.commands.get("guild-handover").handler("coder/general Work", ctx).then(() => {settled = true;});
+ await ready.promise;
+ let shutdown: Promise<void> | undefined;
+ if (ending.startsWith("reset") || ending === "native-reject") {
+  component.dispose(); draft = "replacement draft";
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(settled, true, "host disposal settles Guild without resolving the native promise");
+  shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+ } else if (ending === "shutdown") shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+ const beforeLate = renders;
+ gate.resolve(); await command; await shutdown;
+ if (ending === "native-reject") {native.reject(new Error("late native rejection")); await new Promise(resolve => setImmediate(resolve));}
+ assert.equal(doneCalls, ending === "complete" || ending === "shutdown" ? 1 : 0);
+ if (ending !== "complete") assert.equal(renders, beforeLate);
+ assert.equal(draft, ending.startsWith("reset") || ending === "native-reject" ? "replacement draft" : "old draft");
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ending === "complete" ? ["started", "completed"] : ["started"]);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("direct custom native failure remains a live diagnostic", async () => {
+ const pi = fakePi(); const ctx = context(); const notices: unknown[] = [];
+ ctx.ui.custom = (async () => {throw new Error("native custom failure");}) as any;
+ ctx.ui.notify = ((...args: unknown[]) => {notices.push(args);}) as any;
+ registerGuild(pi.api as never, {run: successfulRunner});
+ await pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed"]);
+ assert.match(JSON.stringify(notices), /native custom failure/);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("direct custom delayed factory cancels locally without native close or launch", async () => {
+ const pi = fakePi(); const ctx = context(); const ready = deferred<void>(); const native = deferred<any>(); let factory: any; let done = 0;
+ ctx.ui.custom = ((value: any) => {factory = value; ready.resolve(); return native.promise;}) as any;
+ registerGuild(pi.api as never, {run: async () => assert.fail("delayed factory launched")});
+ let settled = false; const command = pi.commands.get("guild-handover").handler("coder/general Work", ctx).then(() => {settled = true;});
+ await ready.promise; await pi.handlers.get("session_shutdown")({}, ctx);
+ await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, true);
+ const poison = new Proxy({}, {get() {assert.fail("late factory inspected host");}});
+ const component = factory(poison, poison, poison, () => {done++;});
+ assert.deepEqual(component.render(80), []); component.dispose(); assert.equal(done, 0);
+ native.reject(new Error("delayed host rejection")); await command;
+});
+
+it("direct custom throwing disposal still closes once and joins runner cleanup", async () => {
+ const pi = fakePi(); const ctx = context(); const store = new LiveTranscriptStore(); const ready = deferred<void>(); const gate = deferred<void>();
+ const subscribe = store.subscribe.bind(store);
+ store.subscribe = listener => {const off = subscribe(listener); return () => {off(); throw new Error("detail disposal failed");};};
+ let component: any; let done = 0; let joined = false;
+ ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  component = factory({requestRender() {}}, inlineTheme, {matches: () => false}, (value: any) => {done++; resolve(value);});
+ })) as any;
+ registerGuild(pi.api as never, {createTranscriptStore: () => store, run: async options => {ready.resolve(); await gate.promise; return resultFor(options);}});
+ const command = pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+ await ready.promise; component.handleInput("\r");
+ const shutdown = pi.handlers.get("session_shutdown")({}, ctx).then(() => {joined = true;}, (error: unknown) => {joined = true; return error;});
+ assert.equal(done, 1); await Promise.resolve(); assert.equal(joined, false);
+ gate.resolve(); assert.ok(await shutdown instanceof AggregateError); await command;
+ component.dispose(); assert.equal(done, 1);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started"]);
+});
+
+it("direct custom creation reentry disposes the returned card before host use", async (t) => {
+ const pi = fakePi(); const ctx = context(); let shutdown: Promise<void> | undefined; let done = 0; let renders = 0;
+ const interval = globalThis.setInterval;
+ t.mock.method(globalThis, "setInterval", ((callback: any, delay: number, ...args: any[]) => {
+  const timer = interval(callback, delay, ...args);
+  if (delay === 80) shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+  return timer;
+ }) as typeof setInterval);
+ ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  const component = factory({requestRender() {renders++;}}, inlineTheme, {matches: () => false}, (value: any) => {done++; resolve(value);});
+  component.handleInput("\r");
+  component.dispose();
+ })) as any;
+ registerGuild(pi.api as never, {run: async () => assert.fail("creation reentry launched")});
+ await pi.commands.get("guild-handover").handler("coder/general Work", ctx); await shutdown;
+ assert.equal(renders, 0, "creation handshake must dispose before returning to host");
+ assert.equal(done, 1); assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started"]);
+});
+
+it("direct preparation preserves frozen host objects and method receivers", async () => {
+ const pi = fakePi(); const ctx = context();
+ ctx.waitForIdle = async function () {assert.equal(this, ctx);};
+ ctx.sessionManager.getBranch = function () {assert.equal(this, ctx.sessionManager); return [];};
+ ctx.ui.custom = (function (this: unknown, factory: any) {assert.equal(this, ctx.ui); return runCustom(factory);}) as any;
+ Object.freeze(ctx.ui); Object.freeze(ctx.sessionManager); Object.freeze(ctx.model); Object.freeze(ctx);
+ registerGuild(pi.api as never, {run: successfulRunner});
+ await pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "completed"]);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+// Tool admission/capture must stop at the first lifecycle boundary, without
+// consulting the retired context or turning cancellation into a failed join.
+for (const boundary of ["getBranch", "isProjectTrusted", "cwd", "model", "provider", "id", "thinkingLevel", "sessionManager", "getSessionId", "getSessionDir", "getSessionFile"] as const) it(`tool preparation stops reentrant ${boundary}`, async () => {
+ const pi = fakePi(); let closed = false; let late = 0; let captures = 0; let runs = 0;
+ let shutdown: Promise<void> | undefined;
+ const stop = () => { closed = true; shutdown = pi.handlers.get("session_shutdown")({}, context()); void shutdown?.catch(() => {}); };
+ const access = (key: string) => {
+  if (closed) { late++; throw new Error(`stale host access: ${key}`); }
+  if (key === boundary) stop();
+ };
+ const sessionManager = {
+  getBranch() { access("getBranch"); return []; },
+  getSessionId() { access("getSessionId"); return "one"; },
+  getSessionDir() { access("getSessionDir"); return "/sessions"; },
+  getSessionFile() { access("getSessionFile"); return "/sessions/one.jsonl"; },
+ };
+ const model = {get provider() { access("provider"); return "openai"; }, get id() { access("id"); return "test"; }};
+ const ctx = context({sessionManager, model, isProjectTrusted() { access("isProjectTrusted"); return true; }});
+ for (const key of ["cwd", "model", "thinkingLevel", "sessionManager", "hasUI", "ui"] as const) {
+  const value = ctx[key]; Object.defineProperty(ctx, key, {get() { access(key); return value; }});
+ }
+ registerGuild(pi.api as never, {
+  captureRepoState: async () => { captures++; return {state: "x", head: "a", dirty: false, complete: true}; },
+  run: async options => { runs++; return resultFor(options); },
+ });
+ await pi.handlers.get("session_start")({}, context());
+ const terminal = await pi.tool.execute(`reentry-${boundary}`, {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ assert.ok(shutdown, "the selected boundary was reached");
+ await shutdown;
+ assert.equal(terminal.details.status, "cancelled");
+ assert.equal(late, 0); assert.equal(captures, 0); assert.equal(runs, 0);
+ const poison = new Proxy({}, {get() { assert.fail("stale tool context read"); }});
+ const stale = await pi.tool.execute("stale", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, poison);
+ assert.equal(stale.details.status, "cancelled");
+});
+
+it("tool preparation preserves frozen host objects and method receivers", async () => {
+ const pi = fakePi(); const ctx = context();
+ ctx.sessionManager.getBranch = function () { assert.equal(this, ctx.sessionManager); return []; };
+ ctx.isProjectTrusted = function () { assert.equal(this, ctx); return true; };
+ Object.freeze(ctx.ui); Object.freeze(ctx.sessionManager); Object.freeze(ctx.model); Object.freeze(ctx);
+ registerGuild(pi.api as never, {run: successfulRunner});
+ const terminal = await pi.tool.execute("frozen", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ assert.equal(terminal.details.status, "completed");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const boundary of ["mode", "ui", "timer-hasUI"] as const) it(`visibility stops reentrant ${boundary}`, async () => {
+ const pi = fakePi(); const ctx = context(); let closed = false; let stopping = false; let late = 0; let reads = 0; let timers = 0;
+ let shutdown: Promise<void> | undefined;
+ const original = globalThis.setInterval;
+ globalThis.setInterval = ((...args: Parameters<typeof setInterval>) => { timers++; return original(...args); }) as typeof setInterval;
+ const stop = () => { stopping = true; shutdown = pi.handlers.get("session_shutdown")({}, ctx); closed = true; stopping = false; };
+ const key = boundary === "timer-hasUI" ? "hasUI" : boundary;
+ const ui = ctx.ui;
+ for (const property of ["mode", "ui", "hasUI"] as const) {
+  const value = ctx[property];
+  Object.defineProperty(ctx, property, {get() {
+   if (closed) { late++; throw new Error(`retired visibility getter: ${property}`); }
+   if (!stopping && property === key && (++reads === (boundary === "timer-hasUI" ? 2 : 1))) stop();
+   return value;
+  }});
+ }
+ ui.setWidget = () => { if (closed) late++; };
+ ui.setStatus = () => { if (closed) late++; };
+ registerGuild(pi.api as never, {run: async () => assert.fail("visibility reentry launched runner")});
+ try {
+  const terminal = await pi.tool.execute("visibility", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+  assert.ok(shutdown); await shutdown;
+  assert.equal(terminal.details.status, "cancelled"); assert.equal(late, 0); assert.equal(timers, 0);
+ } finally { globalThis.setInterval = original; await pi.handlers.get("session_shutdown")({}, context()); }
+});
+
+for (const boundary of ["tick", "factory-ui", "factory-listener"] as const) it(`visibility callback contains reentrant ${boundary}`, async () => {
+ const pi = fakePi(); const ctx = context(); const ui = ctx.ui;
+ const ready = deferred<void>(); const release = deferred<void>();
+ let armed = false; let closed = false; let stopping = false; let late = 0; let listeners = 0;
+ let shutdown: Promise<void> | undefined; let factory: any; let tick: (() => void) | undefined;
+ const timers = new Set<ReturnType<typeof setInterval>>();
+ const originalSet = globalThis.setInterval; const originalClear = globalThis.clearInterval;
+ globalThis.setInterval = ((callback: any, delay: number, ...args: any[]) => {
+  const timer = originalSet(callback, delay, ...args); timers.add(timer);
+  if (delay === 1000) tick = callback;
+  return timer;
+ }) as typeof setInterval;
+ globalThis.clearInterval = ((timer: any) => { timers.delete(timer); originalClear(timer); }) as typeof clearInterval;
+ const stop = () => { armed = false; stopping = true; shutdown = pi.handlers.get("session_shutdown")({}, ctx); closed = true; stopping = false; };
+ for (const key of ["mode", "ui"] as const) {
+  const value = ctx[key]; Object.defineProperty(ctx, key, {get() {
+   if (closed) { late++; throw new Error(`retired ${key}`); }
+   if (armed && !stopping && key === (boundary === "tick" ? "mode" : "ui") && boundary !== "factory-listener") stop();
+   return value;
+  }});
+ }
+ (ui as any).setWidget = (_key: any, value: any) => { if (closed) late++; if (typeof value === "function") factory = value; };
+ ui.setStatus = () => { if (closed) late++; };
+ ui.onTerminalInput = () => { listeners++; if (armed) stop(); return () => { listeners--; }; };
+ registerGuild(pi.api as never, {run: async options => { ready.resolve(); await release.promise; return resultFor(options); }});
+ const tool = pi.tool.execute("visibility-callback", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ try {
+  await ready.promise; armed = true;
+  if (boundary === "tick") { assert.ok(tick); assert.doesNotThrow(() => tick!()); }
+  else {
+   assert.ok(factory);
+   assert.doesNotThrow(() => factory({requestRender() {}, terminal: {rows: 30}}, {}));
+  }
+  assert.ok(shutdown); release.resolve(); await shutdown;
+  assert.equal((await tool).details.status, "cancelled");
+  assert.equal(late, 0); assert.equal(listeners, 0); assert.equal(timers.size, 0);
+ } finally {
+  try { release.resolve(); await tool; await pi.handlers.get("session_shutdown")({}, context()); }
+  finally {
+   for (const timer of timers) originalClear(timer);
+   globalThis.setInterval = originalSet; globalThis.clearInterval = originalClear;
+  }
+ }
+});
+
+it("visibility disposes ticker returned after shutdown reentry", async () => {
+ const pi = fakePi(); const ctx = context(); let shutdown: Promise<void> | undefined;
+ const timers = new Set<ReturnType<typeof setInterval>>();
+ const originalSet = globalThis.setInterval; const originalClear = globalThis.clearInterval;
+ globalThis.setInterval = ((callback: any, delay: number, ...args: any[]) => {
+  const timer = originalSet(callback, delay, ...args); timers.add(timer);
+  if (delay === 1000) shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+  return timer;
+ }) as typeof setInterval;
+ globalThis.clearInterval = ((timer: any) => { timers.delete(timer); originalClear(timer); }) as typeof clearInterval;
+ registerGuild(pi.api as never, {run: async () => assert.fail("retired timer launched runner")});
+ try {
+  const terminal = await pi.tool.execute("timer-install", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+  assert.ok(shutdown); await shutdown;
+  assert.equal(terminal.details.status, "cancelled"); assert.equal(timers.size, 0);
+ } finally {
+  try { await pi.handlers.get("session_shutdown")({}, context()); }
+  finally {
+   for (const timer of timers) originalClear(timer);
+   globalThis.setInterval = originalSet; globalThis.clearInterval = originalClear;
+  }
+ }
+});
+
+it("native tree retirement drains active work without launching queued work or disposing session observations", async () => {
+ const pi = fakePi(); const ctx = context(); const gate = deferred<void>();
+ const store = new LiveTranscriptStore(); let calls = 0; let disposed = 0;
+ let options!: RunGuildRoleOptions;
+ const fixture = runtimeFixture(() => assert.fail("no background route"));
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => fixture.runtime, createTranscriptStore: () => store,
+  createTraceRecorder: () => ({bind: () => () => {}, dispose: () => { disposed++; }}),
+  run: async value => { calls++; options = value; await gate.promise; return resultFor(value); },
+ });
+ await pi.handlers.get("session_start")({}, ctx);
+ const input = {role: "coder", profile: "general", task: "tree drain"};
+ const active = pi.tool.execute("tree-active", input, undefined, undefined, ctx);
+ const queued = pi.tool.execute("tree-queued", input, undefined, undefined, ctx);
+ const before = pi.handlers.get("session_before_tree");
+ assert.equal(typeof before, "function", "native before-tree handler must own cleanup");
+ let settled = false;
+ const join = before({}, ctx); void join.then(() => { settled = true; });
+ assert.equal(fixture.runtime.isCurrent(fixture.owner), false);
+ assert.equal(options.signal?.aborted, true);
+ await assertTerminal(queued, "cancelled");
+ assert.equal(settled, false);
+ assert.equal(disposed, 0);
+ gate.resolve(); await assertTerminal(active, "cancelled");
+ assert.equal(await join, undefined);
+ assert.equal(calls, 1);
+ assert.equal(store.list().active.length, 0);
+ assert.equal(store.get("tree-active")?.phase, "cancelled");
+ assert.equal(fixture.activations, 1, "retirement must not auto-activate");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+ assert.equal(disposed, 1);
+});
+
+it("native tree rearm accepts fresh idle interactive/rpc intent independently of background policy", async () => {
+ const previous = process.env.PITHOS_GUILD_PLAN_MODE;
+ try {
+  for (const mode of [undefined, "required", "standalone", "invalid"]) {
+   if (mode === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE; else process.env.PITHOS_GUILD_PLAN_MODE = mode;
+   const pi = fakePi(); const ctx = context(); let calls = 0; let activations = 0;
+   registerGuild(pi.api as never, {
+    createExecutionRuntime: options => { const runtime = createGuildBackgroundRuntime(options); return {...runtime, activate() { activations++; return runtime.activate(); }}; },
+    run: async options => { calls++; return resultFor(options); },
+   });
+   for (const source of ["interactive", "rpc"]) {
+    await pi.handlers.get("session_before_tree")({}, ctx);
+    const input = pi.handlers.get("input");
+    assert.equal(typeof input, "function", "fresh input must have a rearm boundary");
+    assert.deepEqual(await input({source, text: "continue"}, ctx), {action: "continue"});
+    const result = await pi.tool.execute(`rearmed-${source}`, {role: "coder", profile: "general", task: "ordinary blocking"}, undefined, undefined, ctx);
+    assert.equal(result.details.status, "completed", `${mode}/${source}`);
+   }
+   assert.equal(calls, 2); assert.equal(activations, 3);
+   await pi.handlers.get("session_shutdown")({}, ctx);
+  }
+ } finally { if (previous === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE; else process.env.PITHOS_GUILD_PLAN_MODE = previous; }
+});
+
+it("native tree direct intent rearms only at idle entry and old idle waits never reacquire", async () => {
+ const pi = fakePi(); const gate = deferred<void>(); const calls: string[] = []; const notices: string[] = [];
+ const fixture = runtimeFixture(() => assert.fail("no background route"));
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: async options => {calls.push(options.task); return resultFor(options);}});
+ const ctx = context(); const command = pi.commands.get("guild-handover").handler;
+ const old = command("coder/general old", context({waitForIdle: () => gate.promise}));
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ let waits = 0;
+ const busy = context({isIdle: () => false, waitForIdle: async () => {waits++;}});
+ busy.ui.notify = ((text: string) => {notices.push(text);}) as never;
+ await command("coder/general busy", busy);
+ assert.equal(waits, 0); assert.equal(fixture.activations, 1);
+ assert.match(notices.join("\n"), /unavailable/i);
+ await command("--help", ctx); assert.equal(fixture.activations, 1);
+ await command("coder/general fresh", ctx);
+ assert.deepEqual(calls, ["fresh"]);
+ assert.equal(fixture.activations, 2);
+ gate.resolve(); await old;
+ assert.deepEqual(calls, ["fresh"], "old command must retain its entry scope");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("native tree reentrant activation cannot let navigation outrun unpublished-owner cleanup", async () => {
+ const pi = fakePi(); const ctx = context(); const gate = deferred<void>(); const entered = deferred<void>();
+ const actual = createGuildBackgroundRuntime({bus: {emit() {}}, parentEnvironment: {PITHOS_GUILD_PLAN_MODE: "standalone"}});
+ let activations = 0; let nested: Promise<unknown> | undefined; let owner!: GuildOwner;
+ let nestedSettled = false; let holdRetire = false;
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => ({...actual,
+   activate() { owner = actual.activate(); activations++; if (activations === 2) {
+    holdRetire = true; nested = Promise.resolve(pi.handlers.get("session_before_tree")({}, ctx));
+    void nested.then(() => {nestedSettled = true;});
+   } return owner; },
+   retire(token) { const retired = actual.retire(token); if (!holdRetire) return retired;
+    entered.resolve(); return Promise.all([retired, gate.promise]).then(() => {});
+   },
+  }), run: async options => resultFor(options),
+ });
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "interactive", text: "fresh"}, ctx);
+ await entered.promise;
+ assert.equal(actual.isCurrent(owner), false);
+ assert.equal(nestedSettled, false, "reentrant navigation must join the unpublished token's actual cleanup");
+ await pi.handlers.get("input")({source: "rpc", text: "during drain"}, ctx);
+ assert.equal(activations, 2);
+ gate.resolve(); await nested;
+ assert.equal(activations, 2, "cleanup completion cannot bank intent");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const fault of ["capture", "unbind", "visibility"] as const) it(`native tree joins ${fault} cleanup and explicitly vetoes faults without rearming`, async () => {
+ const pi = fakePi(); const gate = deferred<void>(); const entered = deferred<void>();
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "tree"}});
+ const fixture = runtimeFixture(() => assert.fail("no background route"));
+ let disposed = 0; let unbound = 0; let runs = 0;
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => fixture.runtime,
+  createTraceRecorder: () => ({bind() {return () => {unbound++; if (fault === "unbind") throw new Error("trace unbind fault");};}, dispose() {disposed++;}}),
+  captureRepoState: async () => {if (fault === "capture") {entered.resolve(); await gate.promise;} return {state: "x", head: "a", dirty: false, complete: true};},
+  run: async options => {runs++; entered.resolve(); await gate.promise; return resultFor(options);},
+ });
+ await pi.handlers.get("session_start")({}, ctx);
+ const execution = pi.tool.execute(`tree-${fault}`, {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ const result = Promise.allSettled([execution]); await entered.promise;
+ if (fault === "visibility") ctx.ui.setWidget = () => {throw new Error("widget cleanup fault");};
+ const before = pi.handlers.get("session_before_tree"); const join = before({}, ctx);
+ assert.equal(before({}, ctx), join, "duplicate handler shares its latched join");
+ let settled = false; void join.then(() => {settled = true;});
+ await Promise.resolve(); assert.equal(settled, false); assert.equal(disposed, 0);
+ gate.resolve(); await result;
+ assert.deepEqual(await join, fault === "capture" ? undefined : {cancel: true});
+ assert.equal(runs, fault === "capture" ? 0 : 1); assert.equal(unbound, runs);
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, context());
+ assert.equal(fixture.activations, fault === "capture" ? 2 : 1);
+ await pi.handlers.get("session_shutdown")({}, context()); assert.equal(disposed, 1);
+});
+
+it("native tree terminal shutdown dominates a pending retirement and late input", async () => {
+ const pi = fakePi(); const gate = deferred<void>(); const ctx = context();
+ const fixture = runtimeFixture(() => assert.fail("no background route"));
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: async options => {await gate.promise; return resultFor(options);}});
+ const active = pi.tool.execute("shutdown-tree", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ const before = pi.handlers.get("session_before_tree")({}, ctx);
+ const shutdown = pi.handlers.get("session_shutdown")({}, ctx);
+ assert.equal(pi.handlers.get("session_shutdown")({}, ctx), shutdown);
+ await pi.handlers.get("input")({source: "interactive", text: "during drain"}, ctx);
+ gate.resolve(); await active; await shutdown;
+ assert.deepEqual(await before, {cancel: true});
+ await pi.handlers.get("session_start")({}, ctx);
+ await pi.handlers.get("input")({source: "rpc", text: "after shutdown"}, ctx);
+ assert.equal(fixture.activations, 1);
+});
+
+it("native tree rejects nonfresh and unsafe activation while preserving frozen context receivers", async () => {
+ const pi = fakePi(); const fixture = runtimeFixture(() => assert.fail("no background route")); const ctx = context();
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: successfulRunner});
+ const before = pi.handlers.get("session_before_tree"); const input = pi.handlers.get("input");
+ // No-op/earlier veto means no Guild hook dispatch, not a synthetic completion event.
+ await input({source: "interactive", text: "same leaf"}, ctx); assert.equal(fixture.activations, 1);
+ await before({}, ctx);
+ for (const source of ["extension", undefined, "unknown"]) {
+  assert.deepEqual(await input({source, text: "not fresh"}, ctx), {action: "continue"});
+ }
+ const accessor = Object.defineProperty({}, "type", {get() {assert.fail("persistence accessor executed");}});
+ const active = [{type: "custom", customType: "plan-theme-state", data: {active: true}}];
+ const unknown = [{type: "custom", customType: "plan-theme-state", data: {active: "no"}}];
+ const readers = [() => active, () => unknown, () => [accessor], () => new Proxy([], {}), () => {throw new Error("read fault");}];
+ for (const getBranch of readers) await input({source: "rpc", text: "unsafe"}, context({sessionManager: {getBranch}}));
+ for (const isIdle of [undefined, false, () => false, () => {throw new Error("idle fault");}]) {
+  await input({source: "interactive", text: "busy"}, context({isIdle}));
+ }
+ await pi.handlers.get("session_start")({}, ctx);
+ if (pi.handlers.has("session_tree")) await pi.handlers.get("session_tree")({}, ctx);
+ await Promise.resolve(); assert.equal(fixture.activations, 1);
+ const frozen = context();
+ frozen.isIdle = function () {assert.equal(this, frozen); return true;};
+ frozen.sessionManager.getBranch = function () {assert.equal(this, frozen.sessionManager); return [];};
+ Object.freeze(frozen.sessionManager); Object.freeze(frozen.ui); Object.freeze(frozen);
+ await input({source: "rpc", text: "fresh"}, frozen); assert.equal(fixture.activations, 2);
+ await input({source: "interactive", text: "already active"}, frozen); assert.equal(fixture.activations, 2);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const boundary of ["idle-getter", "idle-call", "branch-getter", "branch-call", "shutdown", "nested-direct"] as const) it(`native tree activation fences reentrant ${boundary}`, async () => {
+ const pi = fakePi(); const ctx = context(); const fixture = runtimeFixture(() => assert.fail("no background route"));
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: successfulRunner});
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ let reentered = false; let nested: Promise<unknown> | undefined;
+ const transition = () => {
+  if (reentered) return; reentered = true;
+  if (boundary === "shutdown") nested = pi.handlers.get("session_shutdown")({}, context());
+  else if (boundary === "nested-direct") nested = pi.commands.get("guild-handover").handler("coder/general nested", context());
+  else nested = Promise.resolve(pi.handlers.get("session_before_tree")({}, context()));
+ };
+ if (boundary === "idle-getter") Object.defineProperty(ctx, "isIdle", {get() {transition(); return () => true;}});
+ else if (["idle-call", "shutdown", "nested-direct"].includes(boundary)) ctx.isIdle = () => {transition(); return true;};
+ else if (boundary === "branch-getter") Object.defineProperty(ctx.sessionManager, "getBranch", {get() {transition(); return () => [];}});
+ else ctx.sessionManager.getBranch = () => {transition(); return [];};
+ await pi.handlers.get("input")({source: "interactive", text: "fresh"}, ctx);
+ await nested; assert.equal(reentered, true); assert.equal(fixture.activations, 1);
+ await pi.handlers.get("session_shutdown")({}, context());
+});
+
+for (const pendingHost of ["picker", "editor"] as const) it(`native tree stale ${pendingHost} and runner observers cannot publish into a new scope`, async () => {
+ const pi = fakePi(); const picker = deferred<string | undefined>(); const gate = deferred<void>();
+ const ctx = context(); const store = new LiveTranscriptStore(); const calls: string[] = []; let saved!: RunGuildRoleOptions;
+ registerGuild(pi.api as never, {createTranscriptStore: () => store, run: async options => {calls.push(options.task); saved = options; if (options.task === "old") await gate.promise; return resultFor(options);}});
+ const selectContext = context(); let selectedValue: string | undefined;
+ selectContext.ui.select = ((_title: string, choices: string[]) => {selectedValue = choices.find(choice => choice.startsWith("writer ")); return picker.promise;}) as never;
+ selectContext.ui.editor = (() => pendingHost === "editor" ? picker.promise : Promise.resolve("stale dialog work")) as never;
+ const pending = pi.commands.get("guild-handover").handler(pendingHost === "editor" ? "writer/general" : "", selectContext);
+ await new Promise(resolve => setImmediate(resolve));
+ const active = pi.tool.execute("old-observer", {role: "coder", profile: "general", task: "old"}, undefined, undefined, ctx);
+ const old = saved; const drain = pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "interactive", text: "busy intent"}, ctx);
+ gate.resolve(); await active; await drain;
+ assert.equal((await pi.tool.execute("no-banked-intent", {role: "coder", profile: "general", task: "must not run"}, undefined, undefined, ctx)).details.status, "cancelled");
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+ await pi.tool.execute("new-observer", {role: "coder", profile: "general", task: "new"}, undefined, undefined, ctx);
+ const snapshot = store.get("new-observer");
+ const poison = new Proxy({}, {get() {assert.fail("stale observer read");}});
+ old.onEvent?.(poison as never); old.onUpdate?.(poison as never);
+ picker.resolve(pendingHost === "editor" ? "stale dialog work" : selectedValue); await pending;
+ assert.deepEqual(calls, ["old", "new"]); assert.equal(store.get("new-observer"), snapshot); assert.deepEqual(pi.messages, []);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("native tree keeps participant holds across generation activation and independent lease release", async () => {
+ const pi = fakePi(); const fixture = runtimeFixture(() => assert.fail("no background route")); const ctx = context();
+ let calls = 0; registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: async options => {calls++; return resultFor(options);}});
+ const participant = fixture.runtime.planParticipant;
+ const first = participant.tryAcquire({}); const second = participant.tryAcquire({});
+ assert.equal(first.kind, "held"); assert.equal(second.kind, "held");
+ if (first.kind !== "held" || second.kind !== "held") return;
+ const old = fixture.owner; await pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "rpc", text: "activate under hold"}, ctx);
+ assert.equal(fixture.activations, 2); assert.equal(fixture.runtime.planParticipant, participant);
+ assert.throws(() => fixture.runtime.list(old), /stale|owner/i);
+ const tool = () => pi.tool.execute("held-new", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ assert.equal((await tool()).details.status, "failed"); first.lease.release();
+ assert.equal((await tool()).details.status, "failed"); assert.equal(calls, 0);
+ second.lease.release(); assert.equal((await tool()).details.status, "completed"); assert.equal(calls, 1);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("native tree message publication fences a reentrant host sendMessage getter", async () => {
+ const pi = fakePi(); const ctx = context(); let publishes = 0; let drain: Promise<unknown> | undefined;
+ registerGuild(pi.api as never, {run: successfulRunner});
+ Object.defineProperty(pi.api, "sendMessage", {get() {
+  drain = Promise.resolve(pi.handlers.get("session_before_tree")({}, ctx));
+  return () => {publishes++;};
+ }});
+ await pi.commands.get("guild-handover").handler("coder/general work", ctx);
+ await drain;
+ assert.equal(publishes, 0, "retired message getter must not yield callable publication authority");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const disposedByHost of [false, true]) it(`native tree closes only owned custom dialogs (host-disposed=${disposedByHost}) and ignores late completion`, async () => {
+ const pi = fakePi(); const ctx = context(); const gate = deferred<void>();
+ let done = 0; let card: any; let calls = 0;
+ ctx.ui.custom = ((factory: any) => {
+  card = factory({requestRender() {}}, {fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text}, {matches: () => false}, () => {done++;});
+  return new Promise(() => {}); // Host promise is deliberately never joined.
+ }) as never;
+ registerGuild(pi.api as never, {run: async options => {calls++; await gate.promise; return resultFor(options);}});
+ const command = pi.commands.get("guild-handover").handler("coder/general old", ctx);
+ await new Promise(resolve => setImmediate(resolve)); assert.ok(card);
+ if (disposedByHost) card.dispose();
+ const drain = pi.handlers.get("session_before_tree")({}, context());
+ assert.equal(done, disposedByHost ? 0 : 1);
+ gate.resolve(); await drain; await command;
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, context());
+ await pi.commands.get("guild-handover").handler("coder/general new", context());
+ card.dispose(); assert.equal(done, disposedByHost ? 0 : 1); assert.equal(calls, 2);
+ assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "started", "completed"]);
+ await pi.handlers.get("session_shutdown")({}, context());
+});
+
+it("native tree retains bounded terminal history and a single trace recorder until shutdown", async () => {
+ const pi = fakePi(); const store = new LiveTranscriptStore({maxRecentRuns: 2}); let creates = 0; let disposes = 0; let binds = 0; let unbinds = 0;
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ registerGuild(pi.api as never, {
+  createTranscriptStore: () => store,
+  createTraceRecorder: () => {creates++; return {bind() {binds++; return () => {unbinds++;};}, dispose() {disposes++;}};},
+  captureRepoState: async () => ({state: "x", head: "a", dirty: false, complete: true}), run: successfulRunner,
+ });
+ for (let index = 0; index < 4; index++) {
+  await pi.handlers.get("session_start")({}, ctx);
+  await pi.tool.execute(`history-${index}`, {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+  await pi.handlers.get("session_before_tree")({}, ctx);
+  assert.equal(store.list().active.length, 0); assert.ok(store.list().recent.length <= 2);
+  assert.equal(store.get(`history-${index}`)?.phase, "completed");
+  await pi.handlers.get("input")({source: "interactive", text: "fresh"}, ctx);
+ }
+ assert.equal(creates, 1); assert.equal(disposes, 0); assert.equal(binds, 4); assert.equal(unbinds, 4);
+ await pi.handlers.get("session_shutdown")({}, ctx); assert.equal(disposes, 1); assert.equal(store.list().retainedBytes, 0);
+});
+
+it("native tree retains disposed Plan coordinator protection across activation without rediscovery", async () => {
+ const {createPlanCoordinator} = await import("../../pithos.plan/extensions/plan-coordination.ts");
+ const coordinator = createPlanCoordinator();
+ assert.equal(coordinator.confirmInactive(coordinator.provider.inspect().generation).kind, "ok");
+ const pi = fakePi(); const fixture = runtimeFixture(() => assert.fail("no background route")); const ctx = context();
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: successfulRunner});
+ assert.equal(coordinator.provider.attachParticipant(fixture.runtime.planParticipant).kind, "attached");
+ assert.equal(coordinator.transition(coordinator.provider.inspect().generation, "entering").kind, "ok");
+ coordinator.dispose();
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+ assert.equal(fixture.activations, 2);
+ const result = await pi.tool.execute("disposed-plan", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ assert.equal(result.details.status, "failed"); assert.match(result.details.error, /Plan hold/i);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("native tree closes owned dialogs before disposing the panel and joins local command cleanup", async () => {
+ const pi = fakePi(); const gate = deferred<void>(); const ctx = context(); const order: string[] = []; let card: any;
+ ctx.ui.setWidget = ((_key: string, value: any) => {
+  if (typeof value === "function") value({requestRender() {}, terminal: {rows: 24}, hasOverlay: () => false}, inlineTheme);
+ }) as never;
+ ctx.ui.onTerminalInput = (() => () => {order.push("panel-dispose"); card?.dispose();}) as never;
+ ctx.ui.custom = ((factory: any) => {
+  card = factory({requestRender() {}}, {fg: (_: string, text: string) => text, bg: (_: string, text: string) => text, bold: (text: string) => text}, {matches: () => false}, () => {order.push("dialog-close");});
+  return new Promise(() => {});
+ }) as never;
+ registerGuild(pi.api as never, {run: async options => {await gate.promise; return resultFor(options);}});
+ const active = pi.tool.execute("panel-active", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ let localSettled = false;
+ const direct = pi.commands.get("guild-handover").handler("coder/general queued", ctx).then(() => {localSettled = true;});
+ await new Promise(resolve => setImmediate(resolve)); assert.ok(card);
+ const drain = pi.handlers.get("session_before_tree")({}, ctx);
+ gate.resolve(); await drain;
+ assert.deepEqual(order.slice(0, 2), ["dialog-close", "panel-dispose"]);
+ assert.equal(localSettled, true);
+ await Promise.all([active, direct]); await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+it("native tree activation does not relax captured background admission policy", async () => {
+ const previous = process.env.PITHOS_GUILD_PLAN_MODE;
+ try {
+  for (const mode of [undefined, "required", "standalone", "invalid"]) {
+   if (mode === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE; else process.env.PITHOS_GUILD_PLAN_MODE = mode;
+   const pi = fakePi(); const ctx = context(); let runtime!: GuildExecutionRuntime; let owner!: GuildOwner;
+   registerGuild(pi.api as never, {createExecutionRuntime: options => {
+    runtime = createGuildBackgroundRuntime({...options, runner: async options => backgroundResult(options)});
+    return {...runtime, activate() {owner = runtime.activate(); return owner;}};
+   }, run: successfulRunner});
+   await pi.handlers.get("session_before_tree")({}, ctx);
+   process.env.PITHOS_GUILD_PLAN_MODE = mode === "standalone" ? "invalid" : "standalone";
+   await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+   const start = () => runtime.start(owner, {role: "coder", profile: "general", task: "internal fixture"}, backgroundContext());
+   if (mode === "standalone") {
+    const run = start(); assert.equal((await runtime.wait(owner, run.id, 1000)).reason, "terminal");
+   } else assert.throws(start, /configuration|admission blocked/i);
+   await pi.handlers.get("session_shutdown")({}, ctx);
+  }
+ } finally {if (previous === undefined) delete process.env.PITHOS_GUILD_PLAN_MODE; else process.env.PITHOS_GUILD_PLAN_MODE = previous;}
+});
+
+it("native tree activation rechecks current idle after activation callbacks before publishing", async () => {
+ const pi = fakePi(); let idle = true; let count = 0; let owner!: GuildOwner;
+ const ctx = context({isIdle: () => idle});
+ const runtime = createGuildBackgroundRuntime({bus: {emit() {}}});
+ registerGuild(pi.api as never, {createExecutionRuntime: () => ({...runtime, activate() {
+  owner = runtime.activate(); if (++count === 2) idle = false; return owner;
+ }}), run: successfulRunner});
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "interactive", text: "fresh"}, ctx);
+ assert.equal(runtime.isCurrent(owner), false, "busy activation callback must revoke the unpublished token");
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const boundary of ["idle", "activate"] as const) for (const data of [{active: true}, {active: "unknown"}, Object.defineProperty({}, "active", {get() {throw new Error("unsafe");}})]) it(`native tree persistence changes at ${boundary} (${String(Object.getOwnPropertyDescriptor(data, "active")?.value)})`, async () => {
+ const pi = fakePi(); let branch: unknown[] = []; let idleCalls = 0; let activations = 0; let calls = 0; let owner!: GuildOwner;
+ const changed = () => {branch = [{type: "custom", customType: "plan-theme-state", data}];};
+ const ctx = context({isIdle() {if (++idleCalls === 2 && boundary === "idle") changed(); return true;}});
+ ctx.sessionManager.getBranch = (() => branch) as never;
+ const runtime = createGuildBackgroundRuntime({bus: {emit() {}}});
+ registerGuild(pi.api as never, {createExecutionRuntime: () => ({...runtime, activate() {
+  owner = runtime.activate(); if (++activations === 2 && boundary === "activate") changed(); return owner;
+ }}), run: async options => {calls++; return resultFor(options);}});
+ await pi.handlers.get("session_before_tree")({}, ctx);
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+ assert.equal(runtime.isCurrent(owner), false, "ineligible persistence must not publish an owner");
+ assert.equal(activations, boundary === "idle" ? 1 : 2);
+ await pi.tool.execute("denied", {role: "coder", profile: "general", task: "no launch"}, undefined, undefined, ctx);
+ assert.equal(calls, 0);
+ assert.equal(await pi.handlers.get("session_before_tree")({}, ctx), undefined);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+for (const aborted of [false, true, "blocking"] as const) it(`native tree real prompt cleanup fault fails closed (aborted=${aborted})`, async () => {
+ const directory = mkdtempSync(join(tmpdir(), "guild-cleanup-test-"));
+ const child = join(directory, "child.mjs");
+ writeFileSync(child, `process.stdout.write(JSON.stringify({type: "fixture-ready", pid: process.pid}) + "\\n"); setInterval(() => {}, 1000); process.on("SIGTERM", () => {}); process.on("SIGUSR2", () => process.exit(0));`);
+ const originalScript = process.argv[1]; const originalRm = fsPromises.rm;
+ const ready = deferred<number>(); const cleaning = deferred<void>(); const release = deferred<void>();
+ let promptDir = ""; let launches = 0;
+ const pi = fakePi(); const ctx = context({cwd: process.cwd()}); const fixture = runtimeFixture(() => assert.fail("background"));
+ process.argv[1] = child;
+ fsPromises.rm = async path => {promptDir = String(path); cleaning.resolve(); await release.promise; throw new Error("private filesystem detail");};
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: options => {
+  launches++;
+  return runGuildRole({...options, onEvent(event) {if (event.type === "fixture-ready") ready.resolve(event.pid as number);}});
+ }});
+ let execution: Promise<unknown> | undefined;
+ try {
+  execution = pi.tool.execute("cleanup", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+  const outcome = execution!.then(() => "fulfilled", error => (error as Error).name);
+  const pid = await ready.promise;
+  let navigation: Promise<unknown> | undefined;
+  if (aborted === true) navigation = pi.handlers.get("session_before_tree")({}, ctx);
+  process.kill(pid, "SIGUSR2");
+  await cleaning.promise;
+  assert.throws(() => process.kill(pid, 0), /ESRCH/, "cleanup follows actual close");
+  if (aborted === "blocking") {
+   release.resolve();
+   assert.equal(await outcome, "GuildCleanupError");
+  }
+  navigation ??= pi.handlers.get("session_before_tree")({}, ctx);
+  let settled = false; void navigation!.then(() => {settled = true;});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, aborted === "blocking");
+  release.resolve();
+  assert.deepEqual(await navigation, {cancel: true});
+  assert.equal(await outcome, "GuildCleanupError");
+  await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+  await pi.commands.get("guild-handover").handler("coder/general denied", ctx);
+  assert.equal(fixture.activations, 1); assert.equal(launches, 1);
+ } finally {
+  try {
+   release.resolve(); await execution?.catch(() => {});
+   await assert.rejects(pi.handlers.get("session_shutdown")({}, ctx), /Guild shutdown cleanup failed/);
+  } finally {
+   fsPromises.rm = originalRm; process.argv[1] = originalScript;
+   rmSync(directory, {recursive: true, force: true}); if (promptDir) rmSync(promptDir, {recursive: true, force: true});
+  }
+ }
+});
+
+it("ordinary task diagnostics mentioning cleanup do not fail registration ownership", async () => {
+ const pi = fakePi(); const ctx = context(); const fixture = runtimeFixture(() => assert.fail("background"));
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: async options => resultFor(options, {status: "failed", errorMessage: "Guild prompt cleanup failed.", exitCode: 1})});
+ const result = await pi.tool.execute("task-failure", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+ assert.equal(result.details.status, "failed");
+ assert.equal(await pi.handlers.get("session_before_tree")({}, ctx), undefined);
+ await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+ assert.equal(fixture.activations, 2);
+ await pi.handlers.get("session_shutdown")({}, ctx);
+});
+
+// Followup test list: latch before queued admission; settle owned direct UI on cleanup failure.
+it("real cleanup fault latches before queued runner admission", {timeout: 5000}, async () => {
+ const directory = mkdtempSync(join(tmpdir(), "guild-followup-"));
+ const child = join(directory, "child.mjs");
+ writeFileSync(child, `process.stdout.write(JSON.stringify({type: "fixture-ready", pid: process.pid}) + "\\n"); setInterval(() => {}, 1000); process.on("SIGUSR2", () => process.exit(0));`);
+ const originalScript = process.argv[1]; const originalRm = fsPromises.rm;
+ const ready = deferred<number>(); const cleaning = deferred<void>(); const release = deferred<void>();
+ const prompts: string[] = []; let launches = 0; let pid: number | undefined;
+ const pi = fakePi(); const ctx = context({cwd: process.cwd()});
+ process.argv[1] = child;
+ fsPromises.rm = async path => {prompts.push(String(path)); cleaning.resolve(); await release.promise; throw new Error("private filesystem detail");};
+ registerGuild(pi.api as never, {run: options => {
+  launches++;
+  if (launches > 1) return Promise.resolve(resultFor(options));
+  return runGuildRole({...options, onEvent(event) {if (event.type === "fixture-ready") ready.resolve(event.pid as number);}});
+ }});
+ try {
+  const first = pi.tool.execute("first", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+  const failed = assert.rejects(first, {name: "GuildCleanupError"});
+  pid = await ready.promise;
+  const queued = ["second", "third"].map(id => pi.tool.execute(id, {role: "coder", profile: "general", task: "queued"}, undefined, undefined, ctx));
+  process.kill(pid, "SIGUSR2"); await cleaning.promise; release.resolve();
+  await failed; await Promise.all(queued);
+  assert.equal(launches, 1, "queued dependency must not be entered (and cannot spawn a child)");
+ } finally {
+  release.resolve();
+  if (pid) {try {process.kill(pid, "SIGKILL");} catch {}}
+  await pi.handlers.get("session_shutdown")({}, ctx).catch(() => {});
+  fsPromises.rm = originalRm; process.argv[1] = originalScript;
+  for (const path of [directory, ...prompts]) rmSync(path, {recursive: true, force: true});
+ }
+});
+
+it("real cleanup fault settles still-owned direct dialog without navigation", {timeout: 5000}, async (t) => {
+ const directory = mkdtempSync(join(tmpdir(), "guild-followup-direct-"));
+ const child = join(directory, "child.mjs");
+ writeFileSync(child, `process.stdout.write(JSON.stringify({type: "fixture-ready", pid: process.pid}) + "\\n"); setInterval(() => {}, 1000); process.on("SIGUSR2", () => process.exit(0));`);
+ const originalScript = process.argv[1]; const originalRm = fsPromises.rm;
+ const ready = deferred<number>(); const prompts: string[] = [];
+ let pid: number | undefined; let card: any; let done = 0; let cleared = 0; let renders = 0;
+ const timers = new Set<ReturnType<typeof setInterval>>();
+ const interval = globalThis.setInterval; const clear = globalThis.clearInterval;
+ t.mock.method(globalThis, "setInterval", ((callback: any, delay: number, ...args: any[]) => {
+  const timer = interval(callback, delay, ...args); if (delay === 80) timers.add(timer); return timer;
+ }) as typeof setInterval);
+ t.mock.method(globalThis, "clearInterval", ((timer: any) => {if (timers.has(timer)) cleared++; clear(timer);}) as typeof clearInterval);
+ const pi = fakePi(); const ctx = context({cwd: process.cwd()});
+ ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  card = factory({requestRender() {renders++;}}, inlineTheme, {matches: () => false}, (value: any) => {
+   done++; card.dispose(); resolve(value);
+  });
+ })) as never;
+ process.argv[1] = child;
+ fsPromises.rm = async path => {prompts.push(String(path)); throw new Error("private filesystem detail");};
+ registerGuild(pi.api as never, {run: options => runGuildRole({...options, onEvent(event) {
+  if (event.type === "fixture-ready") ready.resolve(event.pid as number);
+ }})});
+ let deadline: ReturnType<typeof setTimeout> | undefined;
+ try {
+  const command = pi.commands.get("guild-handover").handler("coder/general work", ctx);
+  pid = await ready.promise; process.kill(pid, "SIGUSR2");
+  const outcome = await Promise.race([command.then(() => "settled"), new Promise(resolve => {deadline = setTimeout(() => resolve("hung"), 500);})]);
+  assert.equal(outcome, "settled", "owned dialog and local cleanup tail must settle before navigation");
+  assert.equal(done, 1); assert.equal(timers.size, 1); assert.equal(cleared, 1);
+  const priorRenders = renders;
+  card.handleInput("\u001b"); card.dispose();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(renders, priorRenders); assert.equal(done, 1); assert.equal(cleared, 1);
+  assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started"]);
+  await assert.rejects(pi.handlers.get("session_shutdown")({}, ctx), /Guild shutdown cleanup failed/);
+ } finally {
+  if (deadline) clearTimeout(deadline);
+  if (pid) {try {process.kill(pid, "SIGKILL");} catch {}}
+  await pi.handlers.get("session_shutdown")({}, ctx).catch(() => {});
+  fsPromises.rm = originalRm; process.argv[1] = originalScript;
+  for (const path of [directory, ...prompts]) rmSync(path, {recursive: true, force: true});
+ }
+});
+
+it("setup rollback fault joins native navigation and never rearms", async () => {
+ const originalWrite = fsPromises.writeFile; const originalRm = fsPromises.rm;
+ const cleaning = deferred<void>(); const release = deferred<void>(); const directories: string[] = [];
+ const pi = fakePi(); const ctx = context({cwd: process.cwd()}); const fixture = runtimeFixture(() => assert.fail("background"));
+ let launches = 0;
+ fsPromises.writeFile = async () => {throw new Error("private setup detail");};
+ fsPromises.rm = async path => {directories.push(String(path)); cleaning.resolve(); await release.promise; throw new Error("private removal detail");};
+ registerGuild(pi.api as never, {createExecutionRuntime: () => fixture.runtime, run: options => {launches++; return runGuildRole(options);}});
+ let execution: Promise<unknown> | undefined;
+ try {
+  execution = pi.tool.execute("setup", {role: "coder", profile: "general", task: "work"}, undefined, undefined, ctx);
+  const outcome = execution!.then(() => "fulfilled", error => (error as Error).name);
+  await cleaning.promise;
+  const navigation = pi.handlers.get("session_before_tree")({}, ctx);
+  let settled = false; void navigation.then(() => {settled = true;});
+  await new Promise(resolve => setImmediate(resolve)); assert.equal(settled, false);
+  release.resolve();
+  assert.deepEqual(await navigation, {cancel: true});
+  assert.equal(await outcome, "GuildCleanupError");
+  await pi.handlers.get("input")({source: "rpc", text: "fresh"}, ctx);
+  await pi.commands.get("guild-handover").handler("coder/general denied", ctx);
+  assert.equal(fixture.activations, 1); assert.equal(launches, 1);
+  assert.equal(directories.length, 1);
+ } finally {
+  release.resolve(); await execution?.catch(() => {});
+  await pi.handlers.get("session_shutdown")({}, ctx).catch(() => {});
+  fsPromises.writeFile = originalWrite; fsPromises.rm = originalRm;
+  for (const directory of directories) await originalRm(directory, {recursive: true, force: true});
+ }
+});
+
+it("live blocking discovery attaches the coordinator and vetoes active Plan on both routes", async () => {
+ const { createPlanCoordinator } = await import("../../pithos.plan/extensions/plan-coordination.ts");
+ const c = createPlanCoordinator(); c.confirmInactive(c.provider.inspect().generation);
+ const pi = fakePi(); const ctx = context(); const gate = deferred<void>(); let runs = 0;
+ Object.defineProperty(pi.api, "events", {value: createEventBus()});
+ pi.api.events.on("pithos.plan.coordination", request => request.reply(c.provider));
+ registerGuild(pi.api as never, {run: async options => {runs++; await gate.promise; return resultFor(options);}});
+ const work = pi.tool.execute("live-plan", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ try {
+  assert.equal(runs, 1);
+  assert.equal(c.transition(c.provider.inspect().generation, "active").kind, "blocked");
+  gate.resolve(); await work;
+  assert.equal(c.transition(c.provider.inspect().generation, "active").kind, "ok");
+  assert.equal((await pi.tool.execute("active-plan", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx)).details.status, "failed");
+  await pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+  assert.equal(runs, 1);
+  assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed"]);
+ } finally {gate.resolve(); await work; await pi.handlers.get("session_shutdown")({}, ctx);}
+});
+
+it("trace unbind retains the exclusive reservation against real Plan acquisition", async () => {
+ const { createPlanCoordinator } = await import("../../pithos.plan/extensions/plan-coordination.ts");
+ const c = createPlanCoordinator(); c.confirmInactive(c.provider.inspect().generation);
+ const fixture = runtimeFixture(() => assert.fail("no background"));
+ // Isolate cleanup ownership from discovery, which has its own un-pre-attached test.
+ c.provider.attachParticipant(fixture.runtime.planParticipant);
+ const pi = fakePi(); const attempts: string[] = [];
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ registerGuild(pi.api as never, {
+  createExecutionRuntime: () => fixture.runtime, run: successfulRunner,
+  captureRepoState: async () => ({state: "x", head: "a", dirty: false, complete: true}),
+  createTraceRecorder: () => ({bind() {return () => {attempts.push(c.transition(c.provider.inspect().generation, "active").kind);};}, dispose() {}}),
+ });
+ try {
+  await pi.handlers.get("session_start")({}, ctx);
+  await pi.tool.execute("cleanup-plan", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+  assert.deepEqual(attempts, ["blocked"]);
+  assert.equal(c.transition(c.provider.inspect().generation, "active").kind, "ok");
+ } finally {await pi.handlers.get("session_shutdown")({}, ctx);}
+});
+
+for (const boundary of ["queue", "capture", "bind"] as const) it(`live Plan recheck at ${boundary} prevents downstream side effects`, async () => {
+ const { createPlanCoordinator } = await import("../../pithos.plan/extensions/plan-coordination.ts");
+ const c = createPlanCoordinator(); c.confirmInactive(c.provider.inspect().generation);
+ c.transition(c.provider.inspect().generation, "active");
+ const pi = fakePi(); const gate = deferred<void>(); const entered = deferred<void>();
+ let captures = 0; let binds = 0; let runs = 0; let unbinds = 0;
+ Object.defineProperty(pi.api, "events", {value: createEventBus()});
+ const appear = () => pi.api.events.on("pithos.plan.coordination", request => request.reply(c.provider));
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ registerGuild(pi.api as never, {
+  run: async options => {runs++; if (boundary === "queue") {entered.resolve(); await gate.promise;} return resultFor(options);},
+  captureRepoState: async () => {captures++; if (boundary === "capture") {entered.resolve(); await gate.promise;} return {state: "x", head: "a", dirty: false, complete: true};},
+  createTraceRecorder: () => ({bind() {binds++; if (boundary === "bind") appear(); return () => {unbinds++;};}, dispose() {}}),
+ });
+ const tool = (id: string) => pi.tool.execute(id, {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+ await pi.handlers.get("session_start")({}, ctx);
+ const first = tool("first"); let second: Promise<any> | undefined;
+ try {
+  if (boundary !== "bind") {
+   await entered.promise;
+   if (boundary === "queue") second = tool("second");
+   appear(); gate.resolve();
+  }
+  const result = await (second ?? first);
+  assert.equal(result.details.status, "failed");
+  assert.equal(captures, 1);
+  assert.equal(binds, boundary === "capture" ? 0 : 1);
+  assert.equal(runs, boundary === "queue" ? 1 : 0);
+  assert.equal(unbinds, binds);
+ } finally {gate.resolve(); await Promise.allSettled([first, second]); await pi.handlers.get("session_shutdown")({}, ctx);}
+});
+
+it("final blocking reservation follows tool metadata and delayed direct custom factories", async () => {
+ for (const route of ["metadata", "custom"] as const) {
+  const {createPlanCoordinator} = await import("../../pithos.plan/extensions/plan-coordination.ts");
+  const c = createPlanCoordinator(); c.confirmInactive(c.provider.inspect().generation);
+  const pi = fakePi(); const ctx = context(); let runs = 0;
+  Object.defineProperty(pi.api, "events", {value: createEventBus()});
+  pi.api.events.on("pithos.plan.coordination", request => request.reply(c.provider));
+  const activate = () => assert.equal(c.transition(c.provider.inspect().generation, "active").kind, "ok");
+  if (route === "metadata") Object.defineProperty(ctx, "model", {get() {activate(); return undefined;}});
+  else ctx.ui.custom = async factory => {await Promise.resolve(); activate(); return runCustom(factory);};
+  registerGuild(pi.api as never, {run: async options => {runs++; return resultFor(options);}});
+  try {
+   if (route === "metadata") {
+    const result = await pi.tool.execute("metadata-plan", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+    assert.equal(result.details.status, "failed");
+   } else {
+    await pi.commands.get("guild-handover").handler("coder/general Work", ctx);
+    assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started", "failed"]);
+   }
+   assert.equal(runs, 0, route);
+  } finally {await pi.handlers.get("session_shutdown")({}, ctx);}
+ }
+});
+
+it("ordinary undefined runner rejection remains a failed result rather than a cleanup fault", async () => {
+ const pi = fakePi(); const ctx = context();
+ registerGuild(pi.api as never, {run: async () => {throw undefined;}});
+ try {
+  const result = await pi.tool.execute("undefined-error", {role: "coder", profile: "general", task: "Work"}, undefined, undefined, ctx);
+  assert.equal(result.details.status, "failed");
+ } finally {await pi.handlers.get("session_shutdown")({}, ctx);}
+});
+
+it("trace cleanup cannot revive runner publication after execution settles", async () => {
+ const pi = fakePi(); let saved!: RunGuildRoleOptions; let updates = 0; let atCleanup = 0;
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ registerGuild(pi.api as never, {
+  run: async options => {saved = options; return resultFor(options);},
+  captureRepoState: async () => ({state: "x", head: "a", dirty: false, complete: true}),
+  createTraceRecorder: () => ({bind() {return () => {atCleanup = updates; saved.onUpdate?.(resultFor(saved));};}, dispose() {}}),
+ });
+ try {
+  await pi.handlers.get("session_start")({}, ctx);
+  await pi.tool.execute("cleanup-publication", {role: "coder", profile: "general", task: "Work"}, undefined, () => updates++, ctx);
+  assert.equal(updates, atCleanup);
+ } finally {await pi.handlers.get("session_shutdown")({}, ctx);}
+});
+
+// Regression list: trace unbind Error/null/undefined must close only the owned dialog,
+// release its progress timer, suppress late publication, and retain shutdown diagnostics.
+for (const fault of [new Error("trace unbind fault"), null, undefined]) it(`trace cleanup settles owned direct dialog before navigation (${String(fault)})`, {timeout: 5000}, async (t) => {
+ const pi = fakePi();
+ const ctx = context({sessionManager: {getBranch: () => [], getSessionDir: () => "/sessions", getSessionId: () => "one"}});
+ let saved!: RunGuildRoleOptions; let card: any; let done = 0; let cleared = 0; let renders = 0; let unbound = 0; let disposed = 0;
+ const timers = new Set<ReturnType<typeof setInterval>>();
+ const interval = globalThis.setInterval; const clear = globalThis.clearInterval;
+ t.mock.method(globalThis, "setInterval", ((callback: any, delay: number, ...args: any[]) => {
+  const timer = interval(callback, delay, ...args); if (delay === 80) timers.add(timer); return timer;
+ }) as typeof setInterval);
+ t.mock.method(globalThis, "clearInterval", ((timer: any) => {if (timers.has(timer)) cleared++; clear(timer);}) as typeof clearInterval);
+ ctx.ui.custom = ((factory: any) => new Promise(resolve => {
+  card = factory({requestRender() {renders++;}}, inlineTheme, {matches: () => false}, (value: any) => {
+   done++; card.dispose(); resolve(value);
+  });
+ })) as never;
+ registerGuild(pi.api as never, {
+  run: async options => {saved = options; return resultFor(options);},
+  captureRepoState: async () => ({state: "x", head: "a", dirty: false, complete: true}),
+  createTraceRecorder: () => ({bind() {return () => {unbound++; throw fault;};}, dispose() {disposed++;}}),
+ });
+ let deadline: ReturnType<typeof setTimeout> | undefined;
+ try {
+  await pi.handlers.get("session_start")({}, ctx);
+  const command = pi.commands.get("guild-handover").handler("coder/general work", ctx);
+  const outcome = await Promise.race([command.then(() => "settled"), new Promise(resolve => {deadline = setTimeout(() => resolve("hung"), 500);})]);
+  assert.equal(outcome, "settled", "owned dialog and local cleanup tail must settle before navigation");
+  assert.equal(done, 1); assert.equal(unbound, 1); assert.equal(timers.size, 1); assert.equal(cleared, 1);
+  const priorRenders = renders;
+  saved.onUpdate?.(resultFor(saved));
+  card.handleInput("\u001b"); card.dispose();
+  await new Promise(resolve => setTimeout(resolve, 100));
+  assert.equal(renders, priorRenders); assert.equal(done, 1); assert.equal(cleared, 1);
+  assert.deepEqual(pi.messages.map(({message}) => message.details.status), ["started"]);
+  await assert.rejects(pi.handlers.get("session_shutdown")({}, ctx), (error: unknown) => {
+   assert.ok(error instanceof AggregateError);
+   assert.match(error.message, /Guild shutdown cleanup failed/);
+   if (fault instanceof Error) assert.equal(error.errors[0], fault);
+   else {
+    assert.ok(error.errors[0] instanceof Error);
+    assert.equal(error.errors[0].message, "Guild trace cleanup failed.");
+    assert.equal(error.errors[0].cause, fault);
+   }
+   return true;
+  });
+  assert.equal(disposed, 1);
+ } finally {
+  if (deadline) clearTimeout(deadline);
+  await pi.handlers.get("session_shutdown")({}, ctx).catch(() => {});
+ }
 });

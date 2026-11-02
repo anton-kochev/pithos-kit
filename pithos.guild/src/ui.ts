@@ -336,6 +336,7 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 	}
 
 	update(update: { activity?: string; activityTool?: string; phase?: GuildRunPhase; turns?: number }): void {
+		if (this.disposed) return;
 		if (update.activity) this.activity = update.activity;
 		this.activityTool = update.activityTool;
 		if (update.phase) this.phase = update.phase;
@@ -363,7 +364,7 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 		this.activity = "Stopping Guild member";
 		this.activityTool = undefined;
 		this.controller.abort();
-		this.tui.requestRender();
+		if (!this.disposed) this.tui.requestRender();
 	}
 
 	dispose(): void {

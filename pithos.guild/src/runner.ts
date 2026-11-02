@@ -14,6 +14,11 @@ import {
 	type GuildRole,
 } from "./agents.ts";
 
+// Host-only ownership failure: never inferred from child reports or diagnostic text.
+export class GuildCleanupError extends Error {
+	constructor() { super("Guild prompt cleanup failed."); this.name = "GuildCleanupError"; }
+}
+
 export interface RunUsage {
 	input: number;
 	output: number;
@@ -360,7 +365,7 @@ export async function writeGuildRoleSystemPrompts(
 		);
 		return { directory, baseSystemPromptFile, roleProfileSystemPromptFile };
 	} catch (error) {
-		await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => undefined);
+		await fs.promises.rm(directory, { recursive: true, force: true }).catch(() => { throw new GuildCleanupError(); });
 		throw error;
 	}
 }
@@ -503,6 +508,7 @@ async function runGuildRoleFromPackage(options: RunGuildRoleOptions, packageRoot
 	let prompts: GuildRolePromptFiles | undefined;
 	let wasAborted = false;
 	let settled = false;
+	let cleanupFailed = false;
 
 	observe?.({ type: "start" });
 	try {
@@ -522,16 +528,18 @@ async function runGuildRoleFromPackage(options: RunGuildRoleOptions, packageRoot
 		wasAborted = await runGuildChild(result, args, { ...options, observe, nativeBinding, stream, taskFile });
 		settled = true;
 	} catch (error) {
+		// Setup rollback can own a directory before prompts is assigned; retain its cleanup veto through end observation.
+		if (error instanceof GuildCleanupError) cleanupFailed = true;
 		result.errorMessage = error instanceof Error ? error.message : String(error);
 		stream?.fail(result.errorMessage);
 	} finally {
-		if (prompts) await fs.promises.rm(prompts.directory, { recursive: true, force: true }).catch((error) => {
-			result.errorMessage = `Guild cleanup failed: ${String(error).slice(0, 1024)}`;
-			stream?.fail(result.errorMessage);
+		if (prompts) await fs.promises.rm(prompts.directory, { recursive: true, force: true }).catch(() => {
+			cleanupFailed = true;
 		});
 		observe?.({ type: "end", exitCode: settled ? result.exitCode : null, aborted: wasAborted, selectedSkills: result.selectedSkills.map(receipt => ({...receipt})) });
 	}
 
+	if (cleanupFailed) throw new GuildCleanupError();
 	const terminal = stream?.finish(result.exitCode, wasAborted || options.signal?.aborted === true) ?? {status: options.signal?.aborted ? "cancelled" : "failed", diagnostic: result.errorMessage} as const;
 	result.status = terminal.status;
 	result.report = "report" in terminal ? terminal.report : undefined;
