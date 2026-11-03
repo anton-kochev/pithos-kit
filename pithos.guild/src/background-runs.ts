@@ -28,6 +28,12 @@ export interface BackgroundRequest<C = undefined> {
  * Process kill deadlines and report validation remain the adapter's responsibility.
  */
 export type BackgroundOperation<C = undefined> = (request: BackgroundRequest<C>) => unknown | PromiseLike<unknown>;
+export interface BackgroundLifecycle<C> {
+  /** Synchronous durable reservation; throwing prevents scheduling. */
+  beforeSchedule?(request: Readonly<{ id: string; input: GuildInput; context: C }>): void;
+  /** Observation only. Never await this registry's cancel/shutdown from this callback. */
+  onTerminal?(snapshot: BackgroundSnapshot, context: C): void | PromiseLike<void>;
+}
 interface RecordState {
   id: string;
   status: BackgroundStatus;
@@ -40,6 +46,8 @@ interface RecordState {
   failure?: string;
   lifetime?: ReturnType<typeof setTimeout>;
   operationEnded?: boolean;
+  frozen?: boolean;
+  publicationFault?: boolean;
   pending?: { id: string; text: string; settle: (answer: string) => void; reject: (error: Error) => void };
 }
 
@@ -73,12 +81,15 @@ export class BackgroundRunRegistry<C = undefined> {
   private readonly queue = new ConcurrentRunQueue({ unboundedExclusivePending: true });
   private readonly records = new Map<string, RecordState>();
   private closed = false;
+  private closing?: Promise<void>;
+  private reserving = false;
+  private reservationReentered = false;
   private exclusiveOutstanding = 0;
   private readonly planHolds = new Map<object, Readonly<{ release(): void }>>();
   private readonly waiters = new Set<() => void>();
 
   private readonly limits: Required<BackgroundLimits>;
-  constructor(private readonly execute: BackgroundOperation<C>, limits: BackgroundLimits = {}) {
+  constructor(private readonly execute: BackgroundOperation<C>, limits: BackgroundLimits = {}, private readonly lifecycle: BackgroundLifecycle<C> = {}) {
     this.limits = { records: 16, resultBytes: 64 * 1024, questionTimeoutMs: 300_000, lifetimeMs: 1_800_000, ...limits };
     for (const [name, value] of Object.entries(this.limits)) {
       if (!Number.isSafeInteger(value) || value < 1 || value > 2147483647) throw new RangeError(`Invalid ${name}.`);
@@ -106,6 +117,7 @@ export class BackgroundRunRegistry<C = undefined> {
   }
 
   start(value: unknown, ...binding: BackgroundContextArgs<C>): BackgroundSnapshot {
+    if (this.reserving) { this.reservationReentered = true; throw new Error("Reentrant background reservation."); }
     const context = binding[0] as C;
     this.assertAdmission();
     if (!value || typeof value !== "object" || Object.hasOwn(value, "member")) throw new Error("Expected canonical input.");
@@ -114,34 +126,72 @@ export class BackgroundRunRegistry<C = undefined> {
     // Input getters can reenter the registry while validation copies the canonical input.
     this.assertAdmission();
     if (this.records.size >= this.limits.records) throw new Error("Registry record capacity exceeded.");
+    this.queue.assertAdmission();
     const id = `${this.owner}:${++this.sequence}`;
     const record: RecordState = { id, status: "queued", controller: new AbortController(), questions: 0, consumed: false, done: Promise.resolve() };
     this.records.set(id, record);
+    this.reserving = true;
+    this.reservationReentered = false;
+    try {
+      this.lifecycle.beforeSchedule?.(Object.freeze({ id, input: copyResult(input, 64 * 1024) as GuildInput, context }));
+      this.assertAdmission();
+      if (this.reservationReentered) throw new Error("Reentrant background reservation.");
+    } catch (error) { this.records.delete(id); throw error; }
+    finally { this.reserving = false; }
     record.lifetime = setTimeout(() => this.fail(record, "Run lifetime timeout."), this.limits.lifetimeMs);
+    let finalization: Promise<void> | undefined;
+    let terminalStatus: BackgroundStatus = "failed";
+    const finalize = (result?: unknown, error?: unknown): Promise<void> => {
+      if (finalization) return finalization;
+      // Freeze cancellation at transport cleanup, before copying/publication. Publication
+      // keeps ownership but cannot retroactively change an already persisted outcome.
+      record.frozen = true;
+      clearTimeout(record.lifetime);
+      if (error !== undefined) record.error = errorText(error);
+      else {
+        try { record.result = copyResult(result, this.limits.resultBytes); }
+        catch { record.error = "Result is not bounded serializable JSON."; }
+      }
+      record.error = record.failure ?? record.error;
+      const runnerStatus = record.result && typeof record.result === "object" && "status" in record.result ? record.result.status : undefined;
+      const status: BackgroundStatus = record.failure ? "failed" : record.controller.signal.aborted ? "cancelled"
+        : record.error || runnerStatus === "failed" ? "failed" : runnerStatus === "cancelled" ? "cancelled" : "completed";
+      const snapshot = Object.freeze({ ...this.status(id), status });
+      finalization = Promise.resolve().then(async () => {
+        try {
+          await this.lifecycle.onTerminal?.(snapshot, context);
+          terminalStatus = status;
+        } catch (failure) {
+          record.publicationFault = true;
+          terminalStatus = "failed";
+          record.error = errorText(`Terminal persistence fault: ${errorText(failure)}`);
+          // Close and signal synchronously before queue settlement can launch a waiter.
+          // The shared join includes this publication, so own it without self-awaiting.
+          void this.shutdown();
+          throw new Error(record.error);
+        }
+      });
+      return finalization;
+    };
     record.done = this.queue.enqueue(async signal => {
-      try { return await this.execute({ id, input, signal, context, ask: (text, questionSignal) => this.ask(record, text, signal, questionSignal) }); }
+      let result: unknown, failure: unknown;
+      try { result = await this.execute({ id, input, signal, context, ask: (text, questionSignal) => this.ask(record, text, signal, questionSignal) }); }
+      catch (error) { failure = error ?? new Error("Operation failed."); }
       finally {
         record.operationEnded = true;
         if (record.pending) this.fail(record, "Operation ended with a pending question.");
       }
+      await finalize(result, failure);
     }, {
       signal: record.controller.signal,
+      onPendingCancel: error => finalize(undefined, error),
       onPhase: phase => { record.status = phase; },
-    }).then(result => {
-      clearTimeout(record.lifetime);
-      try { record.result = copyResult(result, this.limits.resultBytes); }
-      catch { record.error = "Result is not bounded serializable JSON."; }
-      record.error = record.failure ?? record.error;
-      const runnerStatus = record.result && typeof record.result === "object" && "status" in record.result ? record.result.status : undefined;
-      record.status = record.failure ? "failed" : record.controller.signal.aborted ? "cancelled"
-        : record.error || runnerStatus === "failed" ? "failed" : runnerStatus === "cancelled" ? "cancelled" : "completed";
-      this.notify();
-    }, error => {
-      clearTimeout(record.lifetime);
-      record.error = record.failure ?? errorText(error);
-      record.status = record.failure ? "failed" : record.controller.signal.aborted ? "cancelled" : "failed";
+    }).then(() => undefined, error => finalize(undefined, error)).finally(() => {
+      record.status = terminalStatus;
       this.notify();
     });
+    // Observation failures remain on done for cancel/shutdown, but are always owned.
+    void record.done.catch(() => {});
     return this.status(id);
   }
 
@@ -233,6 +283,7 @@ export class BackgroundRunRegistry<C = undefined> {
   collect(id: string): Readonly<{ claimed: boolean; snapshot: BackgroundSnapshot }> {
     const record = this.records.get(id);
     if (!record || !isTerminal(record.status)) throw new Error("Run is not terminal.");
+    if (record.publicationFault) throw new Error("Terminal persistence fault prevents collection.");
     const claimed = !record.consumed;
     record.consumed = true;
     return Object.freeze({ claimed, snapshot: this.status(id) });
@@ -245,7 +296,7 @@ export class BackgroundRunRegistry<C = undefined> {
   }
 
   private fail(record: RecordState, message: string): void {
-    if (isTerminal(record.status) || record.controller.signal.aborted) return;
+    if (record.frozen || isTerminal(record.status) || record.controller.signal.aborted) return;
     record.failure = message;
     record.status = "stopping";
     record.controller.abort(new Error(message));
@@ -256,7 +307,7 @@ export class BackgroundRunRegistry<C = undefined> {
   cancel(id: string): Promise<void> {
     const record = this.records.get(id);
     if (!record) throw new Error("Unknown run ID.");
-    if (!isTerminal(record.status)) {
+    if (!record.frozen && !isTerminal(record.status)) {
       record.status = "stopping";
       record.controller.abort(new Error("Run cancelled."));
       this.notify();
@@ -276,12 +327,20 @@ export class BackgroundRunRegistry<C = undefined> {
   }
 
   /** Close admission before signalling, then join all jobs and exclusive-operation cleanup. */
-  async shutdown(): Promise<void> {
+  shutdown(): Promise<void> {
+    if (this.closing) return this.closing;
     this.closed = true;
+    // Latch before abort listeners can reenter shutdown; defer only the joins.
+    this.closing = Promise.resolve().then(async () => {
+      const outcomes = await Promise.allSettled([drained, ...jobs]);
+      const failures = outcomes.filter((outcome): outcome is PromiseRejectedResult => outcome.status === "rejected");
+      if (failures.length) throw new AggregateError(failures.map(outcome => outcome.reason), "Background terminal publication failed.");
+    });
+    void this.closing.catch(() => {});
     const drained = this.queue.shutdown();
-    for (const id of this.records.keys()) this.cancel(id);
-    await drained;
-    await Promise.all([...this.records.values()].map(record => record.done));
+    const jobs = [...this.records.keys()].map(id => this.cancel(id));
+    for (const job of jobs) void job.catch(() => {});
+    return this.closing;
   }
 }
 
@@ -296,7 +355,7 @@ function validateText(text: string): void {
   if (typeof text !== "string" || !text.trim() || text.includes("\0") || Buffer.byteLength(text) > 8192) throw new Error("Invalid question/reply text.");
 }
 
-function copyResult(result: unknown, cap: number): unknown {
+export function copyResult(result: unknown, cap: number): unknown {
   if (result === undefined) return undefined;
   const values: unknown[] = [result];
   const visited = new Set<object>();

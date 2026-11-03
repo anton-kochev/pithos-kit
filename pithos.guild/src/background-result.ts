@@ -1,4 +1,5 @@
 import { types } from "node:util";
+import type { Usage } from "@earendil-works/pi-ai";
 import { validateTask, validateResult, type GuildTask, type GuildReport } from "./protocol.ts";
 import type { GuildRoleRunResult, RunUsage } from "./runner.ts";
 
@@ -10,6 +11,7 @@ export interface BackgroundTerminalResult {
  profile: GuildTask["profile"];
  exitCode: number;
  usage: RunUsage;
+ providerUsage?: Usage | null;
  report?: GuildReport;
  model?: string;
  diagnostic?: string;
@@ -43,6 +45,7 @@ export function projectBackgroundResult(result: GuildRoleRunResult, task: GuildT
  const dto: BackgroundTerminalResult = {
   status: result.status!, runId: task.runId, taskId: task.taskId, role: result.role, profile: result.profile,
   exitCode: result.exitCode, usage: result.usage,
+  ...(result.providerUsage === undefined ? {} : {providerUsage: result.providerUsage}),
   ...(result.report === undefined ? {} : {report: result.report}),
   ...(result.model === undefined ? {} : {model: result.model}),
   ...(result.errorMessage === undefined ? {} : {diagnostic: boundDiagnostic(result.errorMessage)}),
@@ -50,6 +53,7 @@ export function projectBackgroundResult(result: GuildRoleRunResult, task: GuildT
   ...(result.usageFields === undefined ? {} : {usageFields: result.usageFields}),
  };
  assertJson(dto);
+ if (dto.providerUsage !== undefined && dto.providerUsage !== null) validateBackgroundProviderUsage(dto.providerUsage);
  if (!Number.isInteger(dto.exitCode) || !dto.usage || Object.keys(dto.usage).length !== usageKeys.length
   || usageKeys.some(key => typeof dto.usage[key] !== "number" || !Number.isFinite(dto.usage[key]))) throw new Error("Invalid background numeric usage or exit code");
  if (dto.model !== undefined && typeof dto.model !== "string"
@@ -59,6 +63,21 @@ export function projectBackgroundResult(result: GuildRoleRunResult, task: GuildT
  const json = JSON.stringify(dto);
  if (Buffer.byteLength(json) > RESULT_BYTES) throw new Error("Background result byte limit exceeded");
  return JSON.parse(json) as BackgroundTerminalResult;
+}
+
+export function validateBackgroundProviderUsage(value: unknown): asserts value is Usage {
+ assertJson(value);
+ const tokens = ["input", "output", "cacheRead", "cacheWrite", "totalTokens"];
+ const optional = ["cacheWrite1h", "reasoning"];
+ const costs = ["input", "output", "cacheRead", "cacheWrite", "total"];
+ const count = (v: unknown) => typeof v === "number" && Number.isFinite(v) && v >= 0;
+ const usage = value as Usage;
+ if (!usage || typeof usage !== "object" || Array.isArray(usage)
+  || tokens.some(key => !count((usage as any)[key]))
+  || Object.keys(usage).some(key => ![...tokens, ...optional, "cost"].includes(key))
+  || optional.some(key => Object.hasOwn(usage, key) && !count((usage as any)[key]))
+  || !usage.cost || typeof usage.cost !== "object" || Array.isArray(usage.cost)
+  || Object.keys(usage.cost).length !== costs.length || costs.some(key => !count((usage.cost as any)[key]))) throw new Error("Invalid background provider usage");
 }
 
 function boundDiagnostic(text: string): string {

@@ -9,6 +9,8 @@ function deferred() {
   let resolve!: () => void;
   let reject!: (error: unknown) => void;
   const promise = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+  // Lifecycle joins remain rejecting for callers, but their authority owns late faults.
+  void promise.catch(() => {});
   return { promise, resolve, reject };
 }
 

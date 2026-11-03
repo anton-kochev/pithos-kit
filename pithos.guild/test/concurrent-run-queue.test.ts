@@ -325,3 +325,157 @@ describe("ConcurrentRunQueue", () => {
     assert.deepEqual(await Promise.all(runs), Array.from({ length: 11 }, (_, i) => i));
   });
 });
+
+it("pending cleanup pin: owns disposal without occupying free active slots or losing drain", async () => {
+  const queue = new ConcurrentRunQueue({ concurrency: 1, pendingCapacity: 1, unboundedExclusivePending: true });
+  const active = deferred(), disposal = deferred(), next = deferred();
+  const controller = new AbortController();
+  let calls = 0, drained = false, cancelledLaunched = false;
+  const running = queue.enqueue(() => active.promise);
+  const cancelled = queue.enqueue(() => { cancelledLaunched = true; }, {
+    signal: controller.signal,
+    async onPendingCancel() { calls++; await disposal.promise; throw Error("disposal fault"); },
+  });
+  const rejected = assert.rejects(cancelled, /disposal fault/);
+  controller.abort(); controller.abort();
+  try {
+    assert.throws(() => queue.assertAdmission(), /capacity/);
+    active.resolve(); await running;
+    let started = false;
+    const available = queue.enqueue(async () => { started = true; await next.promise; });
+    assert.equal(started, true, "disposal must not occupy an active slot");
+    let exclusiveStarted = false;
+    const exclusive = queue.enqueue(() => { exclusiveStarted = true; }, { exclusive: true });
+    const exclusiveRejected = assert.rejects(exclusive, /shut down/);
+    const shutdown = queue.shutdown().then(() => { drained = true; });
+    next.resolve(); await available;
+    await new Promise(resolve => setImmediate(resolve));
+    assert.equal(drained, false);
+    assert.equal(calls, 1);
+    assert.equal(cancelledLaunched, false);
+    assert.equal(exclusiveStarted, false);
+    disposal.resolve(); await rejected; await exclusiveRejected; await shutdown;
+  } finally { active.resolve(); next.resolve(); disposal.resolve(); await rejected; await queue.shutdown(); }
+});
+
+it("queued cleanup credits bound repeated observer aborts and join every disposal", { timeout: 5000 }, async () => {
+  for (const [concurrency, pendingCapacity] of [[1, 1], [1, 0], [3, 8]]) {
+    const queue = new ConcurrentRunQueue({ concurrency, pendingCapacity });
+    const limit = concurrency + pendingCapacity;
+    const gates = Array.from({ length: limit + 3 }, () => deferred());
+    const runs: Promise<unknown>[] = [];
+    let admitted = 0, launched = 0, drained = false;
+    const disposalFailure = new Error("disposal rejected");
+    try {
+      for (const gate of gates) {
+        const controller = new AbortController();
+        const index = runs.length;
+        runs.push(queue.enqueue(() => { launched++; }, {
+          signal: controller.signal,
+          onPhase(phase) {
+            if (phase === "queued") { admitted++; controller.abort(new Error("queued abort")); }
+          },
+          async onPendingCancel() { await gate.promise; if (index === 0) throw disposalFailure; },
+        }));
+        // Own all rejections immediately, including unexpected admissions in the red run.
+        void runs.at(-1)!.catch(() => {});
+      }
+      assert.equal(admitted, limit, "only active plus pending credits may own disposal");
+      assert.equal(launched, 0);
+      for (const run of runs.slice(limit)) await assert.rejects(run, /capacity/i);
+      const drain = queue.shutdown().then(() => { drained = true; });
+      for (let i = 0; i < limit; i++) {
+        await new Promise(resolve => setImmediate(resolve));
+        assert.equal(drained, false, "each admitted disposal must remain joined");
+        gates[i].resolve();
+        await assert.rejects(runs[i], i === 0 ? error => error === disposalFailure : /queued abort/);
+      }
+      await drain;
+      assert.equal(drained, true);
+    } finally {
+      gates.forEach(gate => gate.resolve());
+      await Promise.allSettled(runs);
+      await queue.shutdown();
+    }
+  }
+});
+
+it("queued reservations prevent nested waiters borrowing cleanup credits", { timeout: 5000 }, async () => {
+  for (const stop of ["abort", "shutdown"] as const) {
+    const queue = new ConcurrentRunQueue({ concurrency: 1, pendingCapacity: 1 });
+    const controller = new AbortController();
+    const disposal = deferred();
+    const events: string[] = [];
+    const runs: Promise<unknown>[] = [];
+    let inside: string[] = [], drain: Promise<void> | undefined;
+    try {
+      const outer = queue.enqueue(() => { events.push("outer"); }, {
+        signal: controller.signal,
+        onPendingCancel: () => disposal.promise,
+        onPhase(phase) {
+          if (phase !== "queued") return;
+          const nested = queue.enqueue(() => { events.push("nested"); });
+          runs.push(nested); void nested.catch(() => {});
+          if (stop === "abort") controller.abort(new Error("outer cancelled"));
+          else drain = queue.shutdown();
+          inside = [...events];
+          events.push("observer returned");
+        },
+      });
+      runs.push(outer); void outer.catch(() => {});
+      assert.deepEqual(inside, []);
+      assert.deepEqual(events, ["observer returned"], "waiter cannot borrow the cancelled reservation");
+      disposal.resolve();
+      await assert.rejects(outer, stop === "abort" ? /outer cancelled/ : /shut down/);
+      if (stop === "abort") {
+        await runs[0];
+        assert.deepEqual(events, ["observer returned", "nested"]);
+      } else {
+        await assert.rejects(runs[0], /shut down/);
+        await drain;
+        assert.deepEqual(events, ["observer returned"]);
+      }
+    } finally {
+      disposal.resolve();
+      await queue.shutdown();
+      await Promise.allSettled(runs);
+    }
+  }
+});
+
+it("queued exclusive reservations hold exclusion through disposal without bypassing FIFO", { timeout: 5000 }, async () => {
+  const queue = new ConcurrentRunQueue({ concurrency: 3, pendingCapacity: 1, unboundedExclusivePending: true });
+  const disposal = deferred(), running = deferred();
+  const controller = new AbortController();
+  const runs: Promise<unknown>[] = [];
+  const starts: string[] = [];
+  let inside: string[] = [];
+  try {
+    const reserved = queue.enqueue(() => { starts.push("cancelled exclusive"); }, {
+      exclusive: true, signal: controller.signal, onPendingCancel: () => disposal.promise,
+      onPhase(phase) {
+        if (phase !== "queued") return;
+        const background = queue.enqueue(async () => { starts.push("background"); await running.promise; });
+        runs.push(background); void background.catch(() => {});
+        for (let i = 0; i < 12; i++) {
+          const barrier = queue.enqueue(() => { starts.push(`barrier-${i}`); }, { exclusive: true });
+          runs.push(barrier); void barrier.catch(() => {});
+        }
+        controller.abort();
+        inside = [...starts];
+      },
+    });
+    runs.push(reserved); void reserved.catch(() => {});
+    assert.deepEqual(inside, []);
+    assert.deepEqual(starts, []);
+    await assert.rejects(queue.enqueue(() => assert.fail("overflow launched")), /capacity/);
+    disposal.resolve(); await assert.rejects(reserved);
+    await new Promise(resolve => setImmediate(resolve));
+    assert.deepEqual(starts, ["background"], "exclusive waiters cannot overlap running background");
+    running.resolve(); await Promise.all(runs.slice(0, -1));
+    assert.deepEqual(starts, ["background", ...Array.from({ length: 12 }, (_, i) => `barrier-${i}`)]);
+  } finally {
+    disposal.resolve(); running.resolve();
+    await queue.shutdown(); await Promise.allSettled(runs);
+  }
+});

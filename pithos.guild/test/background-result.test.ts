@@ -140,3 +140,38 @@ test("rejects executable top-level input without invoking getters or proxy traps
  assert.throws(() => projectBackgroundResult(new Proxy(fixture(), {get() { invoked = true; }}), task));
  assert.equal(invoked, false);
 });
+
+test("preserves independently owned complete native provider usage, null and missing", () => {
+ const source = fixture();
+ const usage = {input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10,
+  cacheWrite1h: 1, reasoning: 2, cost: {input: .1, output: .2, cacheRead: .3, cacheWrite: .4, total: 1}};
+ source.providerUsage = usage;
+ const dto = projectBackgroundResult(source, task);
+ assert.deepEqual(dto.providerUsage, usage);
+ usage.cost.total = 99;
+ assert.equal(dto.providerUsage!.cost.total, 1);
+ source.providerUsage = null;
+ assert.equal(projectBackgroundResult(source, task).providerUsage, null);
+ delete source.providerUsage;
+ assert.equal(Object.hasOwn(projectBackgroundResult(source, task), "providerUsage"), false);
+});
+
+test("rejects malformed native usage before projection, without executing input", () => {
+ const valid = {input: 1, output: 2, cacheRead: 3, cacheWrite: 4, totalTokens: 10,
+  cost: {input: .1, output: .2, cacheRead: .3, cacheWrite: .4, total: 1}};
+ const invalid: unknown[] = [{...valid, input: -1}, {...valid, output: Infinity}, {...valid, reasoning: -1},
+  {...valid, cacheWrite1h: NaN}, {...valid, cost: {...valid.cost, total: -1}}, {...valid, totalTokens: undefined},
+  {...valid, extra: 1}, {...valid, cost: {...valid.cost, extra: 1}}, new Proxy(valid, {})];
+ let invoked = false;
+ invalid.push(Object.defineProperty({...valid}, "input", {get() { invoked = true; return 1; }}));
+ const cyclic = {...valid, cost: {} as any}; cyclic.cost = cyclic; invalid.push(cyclic);
+ for (const usage of invalid) {
+  const source = fixture(); source.providerUsage = usage as never;
+  assert.throws(() => projectBackgroundResult(source, task));
+ }
+ assert.equal(invoked, false);
+ const source = fixture(); source.providerUsage = valid; source.model = ""; source.model = "x".repeat(65536 - Buffer.byteLength(JSON.stringify(projectBackgroundResult(source, task))));
+ assert.ok(Buffer.byteLength(JSON.stringify(projectBackgroundResult(source, task))) <= 65536);
+ source.providerUsage = {...valid, reasoning: 1};
+ assert.throws(() => projectBackgroundResult(source, task), /byte limit/);
+});

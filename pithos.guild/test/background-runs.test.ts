@@ -582,3 +582,194 @@ it("already cancelled lifetimes and same-turn reply/cancellation races cannot st
     } finally { await registry.shutdown(); }
   }
 });
+
+it("reserves final identity before launch under tentative Plan ownership", async () => {
+  let reserved = "", launched = "";
+  const registry = new BackgroundRunRegistry(request => { launched = request.id; assert.equal(launched, reserved); }, {}, {
+    beforeSchedule(request) {
+      reserved = request.id;
+      assert.ok(Object.isFrozen(request));
+      assert.ok(Object.isFrozen(request.input));
+      assert.deepEqual(registry.tryAcquirePlanHold({}), { kind: "busy", outstanding: 1 });
+      assert.equal(launched, "");
+    },
+  });
+  const run = registry.start(input);
+  assert.equal(reserved, run.id);
+  await registry.shutdown();
+});
+
+it("vetoes reservation throws, shutdown and caught nested admission without leaks", async () => {
+  for (const action of ["throw", "shutdown", "nested"] as const) {
+    let launches = 0, calls = 0;
+    let drain: Promise<void> | undefined;
+    const registry = new BackgroundRunRegistry(() => { launches++; }, {}, {
+      beforeSchedule() {
+        if (++calls > 1) return;
+        if (action === "throw") throw Error("reserve fault");
+        if (action === "shutdown") drain = registry.shutdown();
+        if (action === "nested") { try { registry.start(input); } catch {} }
+      },
+    });
+    assert.throws(() => registry.start(input), /reserve fault|shut down|Reentrant/);
+    assert.equal(launches, 0);
+    assert.deepEqual(registry.list(), []);
+    await drain;
+    const hold = registry.tryAcquirePlanHold({});
+    assert.equal(hold.kind, action === "shutdown" ? "unavailable" : "held");
+    if (hold.kind === "held") hold.lease.release();
+    await registry.shutdown();
+  }
+});
+
+it("awaits terminal publication before releasing active capacity, Plan ownership or terminal waits", async () => {
+  const cleanup = deferred(), publication = deferred();
+  let launches = 0, observations = 0;
+  const registry = new BackgroundRunRegistry(async () => { launches++; await cleanup.promise; return { value: 1 }; }, {}, {
+    async onTerminal(snapshot) {
+      observations++;
+      assert.ok(Object.isFrozen(snapshot));
+      assert.ok(Object.isFrozen(snapshot.result));
+      await publication.promise;
+    },
+  });
+  try {
+    const runs = Array.from({ length: 4 }, () => registry.start(input));
+    cleanup.resolve(); await tick();
+    assert.equal(observations, 3);
+    assert.equal(launches, 3);
+    assert.deepEqual(registry.tryAcquirePlanHold({}), { kind: "busy", outstanding: 4 });
+    assert.equal((await registry.wait(runs[0].id, 1)).reason, "timeout");
+    assert.throws(() => registry.collect(runs[0].id), /terminal/);
+    publication.resolve();
+    await registry.wait(runs[3].id, 1000);
+    assert.equal(launches, 4);
+    assert.equal(observations, 4);
+  } finally { cleanup.resolve(); publication.resolve(); await registry.shutdown(); }
+});
+
+it("joins all publications after a persistence fault and retains uncollectable child evidence", async () => {
+  const cleanup = deferred(), publication = deferred();
+  let launches = 0, observed = 0;
+  const registry = new BackgroundRunRegistry(async () => { launches++; await cleanup.promise; return { status: "completed", childClaim: "success" }; }, {}, {
+    async onTerminal() { if (++observed === 1) throw Error("journal unavailable"); await publication.promise; },
+  });
+  const runs = Array.from({ length: 4 }, () => registry.start(input));
+  let settled = false;
+  const shutdown = registry.shutdown();
+  const outcome = shutdown.then(() => { settled = true; return undefined; }, error => { settled = true; return error; });
+  try {
+    await tick(); // queued cancellation publishes without running
+    assert.equal(observed, 1);
+    assert.equal(launches, 3);
+    cleanup.resolve(); await tick();
+    assert.equal(observed, 4);
+    assert.equal(settled, false);
+    assert.throws(() => registry.collect(runs[3].id), /persistence/i);
+    publication.resolve();
+    const error = await outcome;
+    assert.ok(error instanceof AggregateError);
+    assert.equal(error.errors.length, 1);
+    assert.match(registry.status(runs[3].id).error!, /Terminal persistence fault/);
+    assert.equal(registry.status(runs[0].id).status, "cancelled");
+    assert.equal((registry.status(runs[0].id).result as any).childClaim, "success");
+  } finally { cleanup.resolve(); publication.resolve(); await outcome; }
+});
+
+it("observation pin: cancellation freezes after cleanup, not during runner cleanup", async () => {
+  for (const cancelBeforeCleanup of [false, true]) {
+    const cleanup = deferred(), publication = deferred();
+    let signal!: AbortSignal, observed: string | undefined;
+    const registry = new BackgroundRunRegistry(async request => { signal = request.signal; await cleanup.promise; return { status: "completed" }; }, {}, {
+      async onTerminal(snapshot) { observed = snapshot.status; await publication.promise; },
+    });
+    try {
+      const run = registry.start(input);
+      let cancel: Promise<void> | undefined;
+      if (cancelBeforeCleanup) cancel = registry.cancel(run.id);
+      cleanup.resolve(); await tick();
+      assert.equal(observed, cancelBeforeCleanup ? "cancelled" : "completed");
+      cancel ??= registry.cancel(run.id);
+      assert.equal(signal.aborted, cancelBeforeCleanup);
+      assert.equal((await registry.wait(run.id, 1)).reason, "timeout");
+      publication.resolve(); await cancel;
+      assert.equal(registry.status(run.id).status, observed);
+    } finally { cleanup.resolve(); publication.resolve(); await registry.shutdown(); }
+  }
+});
+
+it("publication fault autonomously stops queued work and joins siblings", async () => {
+  for (const queuedFault of [false, true]) {
+    const cleanup = [deferred(), deferred(), deferred()], publication = deferred();
+    const signals: AbortSignal[] = [], observed: string[] = [];
+    let faultId = "";
+    const registry = new BackgroundRunRegistry(async ({ signal }) => {
+      const index = signals.push(signal) - 1;
+      await cleanup[index]?.promise;
+      return { child: "evidence" };
+    }, {}, { async onTerminal(snapshot) {
+      observed.push(snapshot.id);
+      if (snapshot.id === faultId) throw Error("first persistence fault");
+      await publication.promise;
+    } });
+    const runs = Array.from({ length: 4 }, () => registry.start(input));
+    faultId = runs[queuedFault ? 3 : 0].id;
+    let cancelled: Promise<unknown> | undefined;
+    try {
+      if (queuedFault) cancelled = registry.cancel(faultId).catch(error => error);
+      else cleanup[0].resolve();
+      await tick();
+      assert.equal(signals.length, 3, "queued writer must never launch");
+      assert.throws(() => registry.start(input), /shut down/);
+      assert.ok(signals.slice(1).every(signal => signal.aborted));
+      let joined = false;
+      const outcome = registry.shutdown().catch(error => error).then(error => { joined = true; return error; });
+      await tick();
+      assert.equal(joined, false);
+      cleanup.forEach(gate => gate.resolve());
+      await tick();
+      assert.equal(joined, false);
+      assert.equal(observed.length, 4);
+      assert.equal(new Set(observed).size, 4);
+      publication.resolve();
+      const error = await outcome;
+      assert.ok(error instanceof AggregateError);
+      assert.equal(error.errors.length, 1);
+      assert.match(error.errors[0].message, /first persistence fault/);
+      await cancelled;
+    } finally {
+      cleanup.forEach(gate => gate.resolve()); publication.resolve();
+      await registry.shutdown().catch(() => {}); await cancelled;
+    }
+  }
+});
+
+it("queued cancellation retains pending capacity until publication finishes", async () => {
+  const cleanup = deferred(), publication = deferred();
+  let launches = 0, reservations = 0, observations = 0;
+  const registry = new BackgroundRunRegistry(async () => { launches++; await cleanup.promise; }, {}, {
+    beforeSchedule() { reservations++; },
+    async onTerminal() { observations++; await publication.promise; },
+  });
+  try {
+    const runs = Array.from({ length: 11 }, () => registry.start(input));
+    const cancellations = runs.slice(3).flatMap(run => [registry.cancel(run.id), registry.cancel(run.id)]);
+    await tick();
+    assert.equal(observations, 8);
+    assert.equal(launches, 3);
+    assert.deepEqual(registry.tryAcquirePlanHold({}), { kind: "busy", outstanding: 11 });
+    for (let i = 0; i < 20; i++) assert.throws(() => registry.start(input), /pending capacity/);
+    assert.equal(reservations, 11);
+    assert.equal(registry.list().length, 11);
+    assert.equal((await registry.wait(runs[3].id, 1)).reason, "timeout");
+    publication.resolve(); await Promise.all(cancellations);
+    runs.slice(3).forEach(run => { registry.collect(run.id); registry.release(run.id); });
+    const next = Array.from({ length: 8 }, () => registry.start(input));
+    assert.ok(next.every(run => run.status === "queued"));
+    assert.throws(() => registry.start(input), /pending capacity/);
+    const shutdown = registry.shutdown();
+    cleanup.resolve(); await shutdown;
+    assert.equal(launches, 3);
+    assert.equal(observations, 19);
+  } finally { cleanup.resolve(); publication.resolve(); await registry.shutdown(); }
+});
