@@ -29,19 +29,46 @@ export class GuildExecutionAuthority<C = undefined> {
     tryAcquire: (owner: object): PlanHoldResult => this.acquirePlan(owner),
   });
 
+  private acquiringPlan = false;
+  private mutation = 0;
+
   private acquirePlan(owner: object): PlanHoldResult {
+    if (this.acquiringPlan) {
+      this.mutation++;
+      return { kind: "unavailable", reason: "Recursive Plan acquisition." };
+    }
     if (this.isClosed()) return { kind: "unavailable", reason: "Authority is closed." };
     const existing = this.holds.get(owner);
     if (existing) return { kind: "held", lease: existing };
     if (this.state === "activating" || this.state === "retiring") return { kind: "unavailable", reason: `Authority is ${this.state}.` };
+    let provisional: Readonly<{ release(): void }> | undefined;
     if (this.scope && !this.bridge) {
       const result = this.scope.registry.tryAcquirePlanHold(this.bridgeOwner);
       if (result.kind !== "held") return result;
-      this.bridge = result.lease;
+      this.bridge = provisional = result.lease;
+    }
+    const generation = this.mutation;
+    const scope = this.scope;
+    const bridge = this.bridge;
+    const state = this.state;
+    let allowed = false;
+    this.acquiringPlan = true;
+    try {
+      allowed = this.options.beforePlanHold ? this.options.beforePlanHold(scope?.owner) === true : true;
+    } catch { /* Refuse without transferring protection. */ }
+    finally { this.acquiringPlan = false; }
+    allowed &&= generation === this.mutation && scope === this.scope && bridge === this.bridge && state === this.state;
+    if (!allowed) {
+      if (provisional && this.bridge === provisional && !this.holds.size && this.state === "active") {
+        this.bridge = undefined;
+        provisional.release();
+      }
+      return { kind: "unavailable", reason: "Plan prehold refused." };
     }
     const lease = Object.freeze({ release: () => {
       if (this.holds.get(owner) !== lease) return;
       this.holds.delete(owner);
+      this.mutation++;
       // A retired bridge stays in place until its registry has actually drained.
       if (!this.holds.size && this.state === "active") {
         this.bridge?.release();
@@ -49,16 +76,19 @@ export class GuildExecutionAuthority<C = undefined> {
       }
     } });
     this.holds.set(owner, lease);
+    this.mutation++;
     return { kind: "held", lease };
   }
 
   /** Factory transfers a fresh, unused registry exclusively and synchronously.
    * It must not retain a production bypass; resources not returned remain its responsibility.
    */
-  constructor(private readonly createRegistry: () => BackgroundRunRegistry<C>) {}
+  constructor(private readonly createRegistry: () => BackgroundRunRegistry<C>,
+    private readonly options: { beforePlanHold?: (owner: GuildOwner | undefined) => boolean } = {}) {}
 
   activate(): GuildOwner {
     if (this.state !== "inactive") throw new Error(`Authority is ${this.state}.`);
+    this.mutation++;
     this.state = "activating";
     this.retirement = undefined;
     const activation = this.activation = deferred();
@@ -108,6 +138,7 @@ export class GuildExecutionAuthority<C = undefined> {
     const scope = this.require(owner);
     const join = deferred();
     this.retirement = { owner, promise: join.promise };
+    this.mutation++;
     this.state = "retiring";
     scope.invalidated.abort();
     void this.drain(scope.registry).then(() => {
@@ -123,6 +154,7 @@ export class GuildExecutionAuthority<C = undefined> {
   shutdown(): Promise<void> {
     if (this.closing) return this.closing;
     const join = deferred();
+    this.mutation++;
     this.closing = join.promise;
     const scope = this.scope;
     this.state = "closed";

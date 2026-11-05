@@ -1,17 +1,13 @@
+import { files, newFiles, protectedFiles, digests, qualifySource, transpileOverlay } from './overlay.mjs';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { createHash } from 'node:crypto';
-import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const version = '1.4.0';
-const files = ['core/extensions/types', 'core/extensions/runner', 'modes/interactive/interactive-mode'];
-const protectedFiles = ['package.json', 'dist/bundle/cli.js', ...files.flatMap(file => [
-  `dist/${file}.js`, `dist/${file}.d.ts`, `dist/${file}.js.map`,
-])];
 const sourcePackages = {
   agent: 'pi-agent-core', ai: 'pi-ai', chord: 'chord', codemode: 'pi-codemode',
   'coding-agent': 'pi-coding-agent', durable: 'pi-durable', env: 'pi-env', evals: 'pi-evals',
@@ -52,14 +48,6 @@ function sdk(manifest) {
   assert.equal(manifest.types, './dist/index.d.ts', 'Expected SDK declarations');
   assert.equal(manifest.exports?.['.']?.import, './dist/index.js', 'Expected public SDK import export');
   assert.equal(manifest.exports?.['.']?.types, './dist/index.d.ts', 'Expected public SDK types export');
-}
-
-function digests(installed) {
-  return Object.fromEntries(protectedFiles.map(file => {
-    const target = path.join(installed, file);
-    checked(target, 'file');
-    return [file, createHash('sha256').update(readFileSync(target)).digest('hex')];
-  }));
 }
 
 function runTests(sandbox, node) {
@@ -162,6 +150,7 @@ try {
   checked(path.join(installed, 'dist/index.d.ts'), 'file');
   const sourceFiles = files.map(file => path.join(source, 'packages/coding-agent/src', `${file}.ts`));
   for (const file of sourceFiles) checked(file, 'file');
+  qualifySource(source, fileURLToPath(new URL('./pi-v1.4.0.patch', import.meta.url)));
   const dependencies = realpathSync(path.join(installed, 'node_modules'));
   checked(dependencies, 'directory');
   const typescriptRoot = path.dirname(path.dirname(typescriptFile));
@@ -169,6 +158,7 @@ try {
   assert.equal(typescriptManifest.main, './lib/typescript.js', 'Expected TypeScript compiler module');
   assert.equal(path.join(typescriptRoot, 'lib/typescript.js'), typescriptFile, 'Expected TypeScript module path');
   before = digests(installed);
+  note(`Protected SHA-256 before: ${JSON.stringify(before)}`);
   const ts = createRequire(import.meta.url)(typescriptFile);
   assert.equal(ts.version, typescriptManifest.version, 'TypeScript module/manifest version mismatch');
   assert.equal(typeof ts.transpileModule, 'function', 'Expected TypeScript transpileModule API');
@@ -203,19 +193,7 @@ try {
   const copiedTest = path.join(sandbox, 'interrupt.test.mjs');
   cpSync(localTest, copiedTest, { errorOnExist: true, force: false });
   assert(readFileSync(localTest).equals(readFileSync(copiedTest)), 'Test copy must be byte-exact');
-  for (const [index, file] of files.entries()) {
-    const output = path.join(runtime, 'dist', `${file}.js`);
-    assert(inside(sandbox, output), `Output outside sandbox: ${output}`);
-    assert.equal(checked(output, 'file').nlink, 1, `Refuse hardlinked output: ${output}`);
-    const result = ts.transpileModule(readFileSync(sourceFiles[index], 'utf8'), {
-      fileName: sourceFiles[index], reportDiagnostics: true,
-      compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext, rewriteRelativeImportExtensions: true },
-    });
-    const errors = (result.diagnostics ?? []).filter(diagnostic => diagnostic.category === ts.DiagnosticCategory.Error);
-    if (errors.length) throw new Error(errors.map(error => ts.flattenDiagnosticMessageText(error.messageText, '\n')).join('\n'));
-    writeFileSync(output, result.outputText);
-    note(`Transpiled: ${sourceFiles[index]} -> ${output}`);
-  }
+  transpileOverlay(source, runtime, sandbox, ts);
   childResult = await runTests(sandbox, node);
   process.stdout.write(childResult.stdout);
   process.stderr.write(childResult.stderr);
@@ -230,7 +208,7 @@ try {
   if (before) {
     try {
       assert.deepEqual(digests(installed), before, 'Installed protected files changed');
-      note(`Installed SHA-256: unchanged (${protectedFiles.length} files); not a digest of all dependencies`);
+      note(`Installed SHA-256: unchanged (${protectedFiles.length - newFiles.length * 4} files, ${newFiles.length * 4} absence assertions); not a digest of all dependencies`);
     } catch (error) {
       console.error(`Installed SHA-256 check failed: ${error.message}`);
       process.exitCode = 1;

@@ -75,7 +75,7 @@ async function loadGuild() {
   assert.equal(control.createAssistantMessageEventStream, ai.createAssistantMessageEventStream);
   return { loaded, control };
 }
-async function createSession({ cwd, agentDir, sessionManager, sessionStartEvent }, loaded) {
+async function createSession({ cwd, agentDir, sessionManager, sessionStartEvent }, loaded, reload) {
   const credentials = new ai.InMemoryCredentialStore();
   const modelRuntime = await sdk.ModelRuntime.create({ credentials, modelsPath: null,
     modelsStore: new ai.InMemoryModelsStore(), allowModelNetwork: false, refreshOnCreate: false });
@@ -91,7 +91,10 @@ async function createSession({ cwd, agentDir, sessionManager, sessionStartEvent 
     getSystemPromptSource: () => undefined,
     getAppendSystemPrompt: () => [], getAppendSystemPromptSources: () => [],
     extendResources: () => { throw new Error("Unexpected resource discovery"); },
-    reload: async () => { throw new Error("Unexpected resource reload"); },
+    reload: async () => {
+      if (!reload) throw new Error("Unexpected resource reload");
+      loaded = await reload();
+    },
   };
   const services = { cwd, agentDir, modelRuntime, settingsManager, resourceLoader, diagnostics: [] };
   const created = await sdk.createAgentSession({ ...services, sessionManager, sessionStartEvent,
@@ -395,5 +398,165 @@ log({ phase: "case", case: "interactive-smoke", status: uiFailure ? "failed" : "
   failure: uiFailure, events, starts: terminal.starts, stops: terminal.stops,
   terminalBytes: Buffer.byteLength(terminal.output), registrations: registrations.length,
   errorCount: uiErrors.length, errors: uiErrors });
-log({ phase: "summary", passed, skipped: 0, coreComplete, complete: passed === 5 });
-if (passed !== 5) process.exitCode = 1;
+// Reset-first pin: public command reload, native dialog disposal, local settlement,
+// held shutdown, fresh registration on the same session, and stale draft/publication.
+async function resetBeforeShutdown(variant = "normal") {
+  const terminal = new ProbeTerminal();
+  const events = [], registrations = [], errors = [], unsubscribers = [];
+  const entered = deferred(), release = deferred(), shutdown = deferred();
+  let runtime, mode, command, reloadCommand, runOptions, failure;
+  let aborts = 0;
+  const shutdownDrafts = [];
+  const observeErrors = () => {
+    const registrationIndex = registrations.length - 1;
+    unsubscribers.push(runtime.session.extensionRunner.onError(({ event, error }) => {
+      errors.push({ registrationIndex, event: errorDisplay(event), error: errorDisplay(error) });
+    }));
+  };
+  const load = async () => {
+    const guild = await loadGuild();
+    events.push("register");
+    registrations.push(guild.control);
+    guild.control.observe = event => events.push(event);
+    // Fresh runners are created after ResourceLoader.reload returns. session_start
+    // attaches the observer before Guild's start handler; retain it through disposal.
+    guild.control.onStart = observeErrors;
+    guild.control.onShutdown = ctx => {
+      events.push("shutdown-entry");
+      shutdownDrafts.push(ctx.ui.getEditorText());
+      shutdown.resolve();
+    };
+    return guild.loaded;
+  };
+  try {
+    runtime = await sdk.createAgentSessionRuntime(async options => {
+      options.sessionManager.getSessionDir = () => process.env.TMPDIR;
+      return createSession(options, await load(), load);
+    }, { cwd: process.cwd(), agentDir: process.env.PI_CODING_AGENT_DIR,
+      sessionManager: sdk.SessionManager.inMemory(process.cwd()) });
+    mode = new sdk.InteractiveMode(runtime, { terminal, tuiMode: "regular" });
+    await bounded(mode.init(), "reset-first mode init");
+    const original = runtime.session;
+    const oldRunner = original.extensionRunner;
+    const control = registrations[0];
+    control.failCleanup = variant === "cleanup-fault";
+    const ctx = control.context;
+    let screen;
+    // Native reset disposes dialogs before widgets. This public widget observes
+    // that boundary and writes a new draft; native custom/done are never wrapped.
+    ctx.ui.setWidget("reset-first-observer", activeTui => {
+      screen = activeTui;
+      return { render: () => [], invalidate() {}, dispose() {
+        events.push("reset-after-dialog");
+        ctx.ui.setEditorText("reset-draft");
+      } };
+    });
+    assert.ok(screen instanceof tui.TuiMainScreen);
+    const editor = screen.getFocusedComponent();
+    ctx.ui.setEditorText("old-draft");
+    control.run = async options => {
+      runOptions = options;
+      options.signal.addEventListener("abort", () => { aborts++; events.push("abort"); }, { once: true });
+      entered.resolve();
+      await release.promise;
+      events.push("runner-release");
+      if (variant === "late-rejection") {
+        events.push("runner-rejection");
+        throw new Error("scripted-late-runner-rejection");
+      }
+      return result(options);
+    };
+    command = settle(original.prompt("/guild-handover coder/general reset-first cleanup gate"));
+    await bounded(entered.promise, "reset-first runner entry");
+    // Self-deadlining polling, not a detached loop raced against a timeout.
+    const deadline = performance.now() + 1500;
+    while (!terminal.output.includes("F6 / Enter inspect") && performance.now() < deadline) await delay(10);
+    assert.match(terminal.output, /F6 \/ Enter inspect/);
+    assert.match(terminal.output, /Guild Relay/);
+    assert.notEqual(screen.getFocusedComponent(), editor);
+    assert.equal(original.isStreaming, false);
+    assert.equal(original.isCompacting, false);
+    const entries = structuredClone(original.sessionManager.getEntries());
+    assert.equal(entries.filter(entry => entry.type === "custom_message").length, 1);
+    const lifecycle = entries.find(entry => entry.type === "custom_message");
+    assert.equal(lifecycle.details.status, "started");
+    let reloadFinished = false;
+    reloadCommand = settle(original.prompt("/shutdown-probe-reload"))
+      .then(value => { reloadFinished = true; return value; });
+    await bounded(shutdown.promise, "reset-first shutdown entry");
+    assert.ok(events.indexOf("reset-after-dialog") < events.indexOf("shutdown-entry"));
+    assert.deepEqual(shutdownDrafts, ["reset-draft"]);
+    assert.equal((await bounded(command, "reset-first owned local settlement")).error, undefined);
+    await delay(25);
+    assert.equal(ctx.ui.getEditorText(), "reset-draft", "revoked native done must not restore old-draft");
+    assert.equal(aborts, 1);
+    assert.equal(runOptions.signal.aborted, true);
+    assert.equal(reloadFinished, false);
+    assert.equal(runtime.session, original);
+    assert.equal(original.extensionRunner, oldRunner);
+    assert.equal(registrations.length, 1);
+    assert.equal(control.unbinds, 0);
+    assert.deepEqual(errors, [], "no cleanup error before release");
+    assert.deepEqual(original.sessionManager.getEntries(), entries, "no end publication before cleanup release");
+    release.resolve();
+    assert.equal((await bounded(reloadCommand, "reset-first reload completion")).error, undefined);
+    assert.equal(runtime.session, original, "reload retains AgentSession");
+    assert.notEqual(original.extensionRunner, oldRunner);
+    assert.equal(registrations.length, 2);
+    assert.notEqual(registrations[1], control);
+    assert.equal(registrations[1].starts, 1);
+    assert.equal(control.shutdowns, 1);
+    assert.equal(control.unbinds, 1);
+    assert.equal(aborts, 1);
+    assert.throws(() => ctx.cwd, /stale/);
+    const fresh = registrations[1].context;
+    assert.equal(fresh.ui.getEditorText(), "reset-draft");
+    runOptions.onUpdate({ output: "stale reset-first update", usage: { turns: 2 } });
+    runOptions.onEvent({ type: "agent_end", messages: [] });
+    await delay(25);
+    assert.equal(fresh.ui.getEditorText(), "reset-draft");
+    assert.deepEqual(original.sessionManager.getEntries(), entries, "no stale lifecycle publication after reload");
+    assert.ok(events.indexOf("runner-release") < events.indexOf("unbind"));
+    assert.ok(events.indexOf("unbind") < events.lastIndexOf("register"));
+    assert.equal(events.includes("runner-rejection"), variant === "late-rejection");
+    assert.doesNotMatch(terminal.output, /scripted-late-runner-rejection|scripted-trace-cleanup-failure/);
+    // Exercise the fresh registration, not just its start hook: the retired
+    // instance's cleanup fault must not poison a different Guild instance.
+    let freshCalls = 0;
+    registrations[1].run = async options => { freshCalls++; return result(options); };
+    const freshRunner = original.extensionRunner;
+    await bounded(freshRunner.getToolDefinition("guild_handover").execute("fresh", input,
+      undefined, undefined, freshRunner.createContext()), "reset-first fresh tool");
+    assert.equal(freshCalls, 1);
+  } catch (error) { failure = error.stack ?? String(error); }
+  finally {
+    release.resolve();
+    try {
+      await bounded(Promise.all([command, reloadCommand]), "reset-first final command cleanup");
+      if (runtime) await bounded(runtime.dispose(), "reset-first final disposal");
+    } catch (error) { failure ??= error.stack ?? String(error); }
+    finally {
+      try { mode?.stop(); }
+      catch (error) { failure ??= error.stack ?? String(error); }
+      finally { for (const unsubscribe of unsubscribers) unsubscribe(); }
+    }
+  }
+  try {
+    const expectedErrors = variant === "cleanup-fault"
+      ? [{ registrationIndex: 0, event: "session_shutdown", error: "Guild shutdown cleanup failed" }]
+      : [];
+    assert.deepEqual(errors, expectedErrors, "exact reset-first extension errors through final disposal");
+    assert.equal(terminal.starts, 1);
+    assert.equal(terminal.stops, terminal.starts);
+  } catch (error) { failure ??= error.stack ?? String(error); }
+  log({ phase: "case", case: variant === "normal" ? "reset-before-shutdown" : `reset-before-shutdown-${variant}`, status: failure ? "failed" : "passed",
+    failure, events, shutdownDrafts, aborts, registrations: registrations.length, errors,
+    starts: terminal.starts, stops: terminal.stops,
+    seam: "public widget disposal observer writes reset-draft after native dialog disposal; in-process runner gate" });
+  return !failure;
+}
+for (const variant of ["normal", "late-rejection", "cleanup-fault"]) {
+  if (await resetBeforeShutdown(variant)) passed++;
+}
+log({ phase: "summary", passed, skipped: 0, coreComplete, complete: passed === 8 });
+if (passed !== 8) process.exitCode = 1;

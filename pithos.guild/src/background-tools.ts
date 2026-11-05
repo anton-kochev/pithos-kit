@@ -14,6 +14,8 @@ interface Options {
  context(ctx: ExtensionContext): GuildBackgroundContext;
  isCurrent(): boolean;
  canActivate(ctx: ExtensionContext): boolean;
+ onRetire?(): void;
+ onFault?(): void;
 }
 const owners = new WeakMap<ExtensionAPI, object>();
 const names = ["guild_start", "guild_status", "guild_send", "guild_wait", "guild_cancel"] as const;
@@ -72,7 +74,14 @@ export function createBackgroundToolRegistration(pi: ExtensionAPI, options: Opti
  }
  let visible = false, disposed = false, cleanupFault = false;
  let unsubscribe: (() => void) | undefined;
- const registered = new Set<ToolDefinition>();
+ type Handle = {
+  protocol: "pi-atomic-owned-tools-v1";
+  isActive(): boolean;
+  update(batch: readonly {definition: ToolDefinition; activation: "activate" | "deactivate"}[]): {status: string};
+  dispose(): {status: string};
+ };
+ let handle: Handle | undefined;
+ let showing = false, providerRetired = false, revision = 0;
  const definitions: ToolDefinition[] = names.map(name => ({name, label: name, description: descriptions[name],
   parameters: schemas[name], defaultActive: false, exposure: "direct",
   async execute(_callId, args, signal, _update, ctx) {
@@ -123,54 +132,148 @@ export function createBackgroundToolRegistration(pi: ExtensionAPI, options: Opti
     return resultWithBudget(text, details, usage);
    } catch { throw unavailable(); }
   }}));
- function live() { return !disposed && !cleanupFault && isCurrent() && owners.get(pi) === token; }
- // A throwing host unsubscribe may retain its resource; the local callback stays
- // inert, and a sticky fault prevents this registration from reopening.
- function cleanup(action: () => void) {
-  try { action(); } catch { cleanupFault = true; }
+ function local() { return isCurrent() && !disposed && !cleanupFault && owners.get(pi) === token; }
+ function live() {
+  const intent = revision;
+  if (!local() || !handle) return false;
+  const owned = handle;
+  try { return owned.isActive() === true && local() && revision === intent; }
+  catch { if (operationCurrent(owned, intent)) fault(); return false; }
  }
- let withdrawing = false;
- function hide() {
+ function notify(callback: (() => void) | undefined) {
+  try { void Promise.resolve(callback?.()).catch(() => {}); } catch { /* Local fences already closed. */ }
+ }
+ function fault() {
+  visible = false;
+  if (cleanupFault) return;
+  cleanupFault = true;
+  notify(options.onFault?.bind(options));
+ }
+ // A throwing unsubscribe may retain its resource; its callback stays inert.
+ function cleanup(action: () => void) { try { action(); } catch { fault(); } }
+ function detach() {
+  const off = unsubscribe; unsubscribe = undefined;
+  if (off) cleanup(off);
+ }
+ function retired() {
+  providerRetired = true;
+  if (disposed) return;
+  disposed = true; visible = false; handle = undefined;
+  notify(options.onRetire?.bind(options));
+  detach();
+ }
+ function cleanupCurrent(owned: Handle | undefined) {
+  return !providerRetired && owners.get(pi) === token && handle === owned;
+ }
+ function operationCurrent(owned: Handle | undefined, intent: number) {
+  return cleanupCurrent(owned) && revision === intent;
+ }
+ let withdrawing = false, pendingDisposal = false;
+ function withdraw(dispose: boolean) {
+  if (dispose) pendingDisposal = true;
+  revision++;
   visible = false;
   if (withdrawing) return;
   withdrawing = true;
+  dispose = pendingDisposal; pendingDisposal = false;
+  const owned = handle;
   try {
-   const off = unsubscribe; unsubscribe = undefined; if (off) cleanup(off);
-   if (owners.get(pi) !== token) return;
-   for (const definition of registered) {
-    if (owners.get(pi) !== token) break;
-    cleanup(() => pi.registerTool({...definition, exposure: "hidden"}));
+   detach();
+   if (!owned || owners.get(pi) !== token) return;
+   // Provider retirement is final: never issue writes through an old handle.
+   if (owned.isActive() !== true || handle !== owned || owners.get(pi) !== token) return;
+   dispose = dispose || pendingDisposal;
+   if (dispose) pendingDisposal = false;
+   const result = dispose ? owned.dispose() : owned.update(definitions.map(definition => ({
+    definition: {...definition, exposure: "hidden"}, activation: "deactivate" as const,
+   })));
+   // Local intent changes cannot make a failed release safe; only lost ownership can.
+   if (result?.status !== "committed" && cleanupCurrent(owned)) fault();
+   if (dispose && result?.status === "committed" && handle === owned) handle = undefined;
+  } catch { if (cleanupCurrent(owned)) fault(); }
+  finally {
+   visible = false; withdrawing = false;
+   if (pendingDisposal) {
+    pendingDisposal = false;
+    if (owned && !providerRetired && handle === owned && owners.get(pi) === token) withdraw(true);
    }
-  } finally {
-   visible = false;
-   withdrawing = false;
   }
  }
+ function hide() { withdraw(false); }
  return Object.freeze({
   show(ctx: ExtensionContext) {
-   if (withdrawing || disposed || cleanupFault || !isCurrent() || !canActivate(ctx) || !isCurrent()) return;
-   owners.set(pi, token); visible = true;
+   if (withdrawing || showing || disposed || cleanupFault) return;
+   showing = true;
+   const intent = revision;
+   const eligible = () => local() && revision === intent;
+   let owned = handle;
    try {
+    if (!isCurrent() || !canActivate(ctx) || !isCurrent()) return;
+    const capability = (pi as unknown as {atomicOwnedTools?: {protocol?: unknown; bind?: unknown}}).atomicOwnedTools;
+    if (capability?.protocol !== "pi-atomic-owned-tools-v1") return;
+    const bind = capability.bind;
+    if (typeof bind !== "function") return;
+    if (!isCurrent() || disposed || cleanupFault || revision !== intent) return;
+    owners.set(pi, token);
+    // Install the nested-wait preclaim fence before acquiring a provider claim.
     if (!unsubscribe) {
      const off = pi.on("tool_call", event => {
       if (visible && live() && event.toolName === "guild_wait" && event.parentToolCallId !== undefined)
        return {block: true, reason: "Nested background collection unavailable"};
      });
-     if (!visible || !live()) { cleanup(off); hide(); return; }
+     if (typeof off !== "function") { fault(); return; }
+     if (!eligible()) { cleanup(off); return; }
      unsubscribe = off;
     }
-    for (const definition of definitions) {
-     if (!visible || !live()) { hide(); return; }
-     registered.add(definition);
-     pi.registerTool(definition);
+    if (!eligible() || !canActivate(ctx) || !eligible()) { hide(); return; }
+    if (!handle) {
+     const candidate = Reflect.apply(bind, capability, [names, retired]) as Handle;
+     if (providerRetired) return;
+     let accepted = false;
+     let release: Handle["dispose"] | undefined;
+     try {
+      // Acquire cleanup before qualification: even a malformed return owns a resource.
+      const dispose = candidate?.dispose;
+      if (typeof dispose === "function") {
+       let released = false;
+       release = () => {
+        if (released) return {status: "aborted"};
+        // A failed release may retain the claim, but must not be retried by reentry.
+        released = true;
+        return Reflect.apply(dispose, candidate, []);
+       };
+      }
+      const protocol = candidate?.protocol;
+      const active = candidate?.isActive, update = candidate?.update;
+      if (providerRetired || owners.get(pi) !== token) return;
+      if (protocol !== "pi-atomic-owned-tools-v1" || typeof active !== "function"
+       || typeof update !== "function" || !release) throw unavailable();
+      if (!eligible()) return;
+      handle = {protocol, isActive: () => Reflect.apply(active, candidate, []),
+       update: batch => Reflect.apply(update, candidate, [batch]), dispose: release};
+      owned = handle;
+      accepted = true;
+     } finally {
+      // Never clean a replacement or a provider-retired claim, including getter reentry.
+      if (!accepted && release && cleanupCurrent(owned)) {
+       // This closure releases exactly the returned candidate, even if bind changed intent.
+       try {
+        const result = release();
+        if (result?.status !== "committed" && cleanupCurrent(owned)) fault();
+       } catch { if (cleanupCurrent(owned)) fault(); }
+      }
+     }
     }
-    if (!visible || !live() || !canActivate(ctx) || !live()) { hide(); return; }
-    const active = pi.getActiveTools();
-    if (!visible || !live() || !canActivate(ctx) || !live()) { hide(); return; }
-    pi.setActiveTools([...new Set([...active, ...names])]);
-    if (!visible || !live() || !canActivate(ctx) || !live()) hide();
-   } catch { hide(); }
+    if (!eligible() || !live() || !canActivate(ctx) || !eligible() || !live()) { hide(); return; }
+    owned = handle!;
+    const result = owned.update(definitions.map(definition => ({definition, activation: "activate" as const})));
+    if (result?.status !== "committed") { if (operationCurrent(owned, intent)) fault(); hide(); return; }
+    if (!eligible() || !live() || handle !== owned || !canActivate(ctx) || !eligible() || !live()) { hide(); return; }
+    visible = true;
+   } catch { if (operationCurrent(owned, intent)) fault(); hide(); }
+   finally { showing = false; }
   }, hide,
-  dispose() { if (disposed) return; disposed = true; hide(); },
+  isActive: () => visible && live(),
+  dispose() { if (disposed) return; disposed = true; withdraw(true); },
  });
 }

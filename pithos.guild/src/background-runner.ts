@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { channel } from "node:diagnostics_channel";
 import { randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import { join } from "node:path";
@@ -24,6 +25,11 @@ interface TestSeam {
  limits?: Partial<Deadlines>;
 }
 const DEFAULTS: Deadlines = {command: 30_000, handshake: 60_000, run: 1_800_000, question: 300_000, eof: 5000, term: 3000, kill: 3000};
+const childChannel = channel("pithos.guild.child");
+type ChildObservation =
+ | {type: "start"}
+ | {type: "stdout" | "stderr"; base64: string}
+ | {type: "end"; exitCode: number | null; aborted: boolean; selectedSkills: GuildRoleRunResult["selectedSkills"]};
 const packageRoot = fileURLToPath(new URL("../", import.meta.url));
 
 export function runBackgroundGuildRole(options: RunBackgroundGuildRoleOptions): Promise<GuildRoleRunResult> {
@@ -42,6 +48,17 @@ async function run(options: RunBackgroundGuildRoleOptions, seam: TestSeam): Prom
  result.usageKnown = false;
  result.usageFields = [];
  result.selectedSkills = [];
+ // Capture identity before asynchronous setup; observations contain owned data only.
+ const identity = {runId: result.runId, taskId: result.taskId, role: options.role, profile: options.profile};
+ let childId: string | undefined;
+ let sequence = 0;
+ let settled = false;
+ const publish = (event: ChildObservation) => {
+  if (!childId || !childChannel.hasSubscribers) return;
+  // diagnostics_channel subscribers must contain their own exceptions: Node rethrows
+  // them on nextTick, outside a publisher's try/catch. Never install a global handler.
+  childChannel.publish(freeze({version: 1, childId, ...identity, sequence: sequence++, ...event}));
+ };
  let directory: string | undefined;
  let stream: ResultStream | undefined;
  try {
@@ -51,6 +68,7 @@ async function run(options: RunBackgroundGuildRoleOptions, seam: TestSeam): Prom
   const task = buildTask({role: options.role, profile: options.profile, task: options.task, runId: result.runId, taskId: result.taskId, ...(options.practices === undefined ? {} : {practices: options.practices})});
   stream = new ResultStream(task, BACKGROUND_CAPABILITY);
   options.signal?.throwIfAborted();
+  if (childChannel.hasSubscribers) {childId = randomUUID(); publish({type: "start"});}
   const cores = await loadGuildSkillCores(seam.packageRoot ?? packageRoot, task.role, task.practices);
   result.selectedSkills = cores.map(core => core.receipt);
   const prompts = await writeGuildRoleSystemPrompts(task.role, task.profile, cores);
@@ -62,7 +80,8 @@ async function run(options: RunBackgroundGuildRoleOptions, seam: TestSeam): Prom
   if (options.thinkingLevel) args.push("--thinking", options.thinkingLevel);
   args.push("--system-prompt", prompts.baseSystemPromptFile, "--append-system-prompt", prompts.roleProfileSystemPromptFile);
   options.signal?.throwIfAborted();
-  await transport(options, result, stream, taskFile, (seam.invocation ?? getPiInvocation)(args), limits, seam.spawn);
+  await transport(options, result, stream, taskFile, (seam.invocation ?? getPiInvocation)(args), limits, publish, seam.spawn);
+  settled = true;
  } catch (error) {
   result.errorMessage = String(error).slice(0, 2048);
   stream?.fail(result.errorMessage);
@@ -71,6 +90,8 @@ async function run(options: RunBackgroundGuildRoleOptions, seam: TestSeam): Prom
    result.errorMessage = `Guild cleanup failed: ${String(error).slice(0, 1024)}`;
    stream?.fail(result.errorMessage);
   });
+  publish({type: "end", exitCode: settled ? result.exitCode : null, aborted: options.signal?.aborted === true,
+   selectedSkills: structuredClone(result.selectedSkills)});
  }
  const terminal = stream?.finish(result.exitCode, options.signal?.aborted === true) ?? {status: options.signal?.aborted ? "cancelled" : "failed", diagnostic: result.errorMessage} as const;
  result.status = terminal.status;
@@ -88,7 +109,7 @@ function freeze(value: any): any {
  return value;
 }
 
-async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRoleRunResult, stream: ResultStream, taskFile: string, invocation: {command: string; args: string[]}, limits: Deadlines, spawnChild: typeof spawn = spawn): Promise<void> {
+async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRoleRunResult, stream: ResultStream, taskFile: string, invocation: {command: string; args: string[]}, limits: Deadlines, publish: (event: ChildObservation) => void, spawnChild: typeof spawn = spawn): Promise<void> {
  await new Promise<void>(resolve => {
   const child = spawnChild(invocation.command, invocation.args, {cwd: options.cwd, shell: false, stdio: ["pipe", "pipe", "pipe"], env: {...process.env, PI_SKIP_VERSION_CHECK: "1", GUILD_TASK_FILE: taskFile}});
   const timers = new Set<NodeJS.Timeout>();
@@ -274,6 +295,7 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
   // Inspect only a short prefix before retaining a line. Duplicate aggregates can be enormous.
   const aggregate = (bytes: Buffer) => ["{\"type\":\"agent_end\"", "{\"type\":\"turn_end\""].some(prefix => bytes.length > prefix.length && bytes.subarray(0, prefix.length).toString() === prefix && [44, 125].includes(bytes[prefix.length]));
   child.stdout.on("data", (chunk: Buffer) => {
+   if (childChannel.hasSubscribers) publish({type: "stdout", base64: chunk.toString("base64")});
    if (closed || stopping) return;
    try {
     let rest = chunk;
@@ -300,6 +322,7 @@ async function transport(options: RunBackgroundGuildRoleOptions, result: GuildRo
   });
   const stderrDecoder = new TextDecoder("utf-8", {fatal: true});
   child.stderr.on("data", (chunk: Buffer) => {
+   if (childChannel.hasSubscribers) publish({type: "stderr", base64: chunk.toString("base64")});
    if (closed || stopping) return;
    stderrBytes += chunk.length;
    if (stderrBytes > LIMITS.stderr) {fail("Guild stderr byte limit exceeded"); return;}

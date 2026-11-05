@@ -330,3 +330,55 @@ it("suppresses retained phase observations after replacement and drains transfer
   assert.throws(() => candidate.start(input), /shut down/);
   assert.throws(() => invalid.activate(), /closed/);
 });
+
+it("calls the Plan prehold hook only under idle protection and rolls back refusal", async () => {
+  let calls = 0;
+  let allow = false;
+  let seen: GuildOwner | undefined;
+  const a = new GuildExecutionAuthority(() => new BackgroundRunRegistry(() => {}), {
+    beforePlanHold(owner) { calls++; seen = owner; return allow; },
+  });
+  const owner = a.activate();
+  const gate = deferred();
+  const run = a.runExclusive(owner, () => gate.promise);
+  assert.equal(a.planParticipant.tryAcquire({}).kind, "busy");
+  assert.equal(calls, 0);
+  gate.resolve(); await run;
+  assert.equal(a.planParticipant.tryAcquire({}).kind, "unavailable");
+  assert.equal(seen, owner);
+  assert.equal(await a.runExclusive(owner, () => 42), 42);
+  allow = true;
+  const held = a.planParticipant.tryAcquire({});
+  assert.equal(held.kind, "held");
+  await assert.rejects(a.runExclusive(owner, () => {}), /Plan hold/);
+  if (held.kind === "held") held.lease.release();
+  await a.shutdown();
+});
+
+it("vetoes recursive and mutating preholds without releasing prior or replacement protection", async () => {
+  for (const action of ["reenter", "release", "retire", "shutdown", "activate", "throw"] as const) {
+    let hook = () => true;
+    const a: GuildExecutionAuthority = new GuildExecutionAuthority(() => new BackgroundRunRegistry(() => {}), {
+      beforePlanHold: () => hook(),
+    });
+    let owner = action === "activate" ? undefined : a.activate();
+    const prior = a.planParticipant.tryAcquire({});
+    assert.equal(prior.kind, "held");
+    hook = () => {
+      if (action === "reenter") assert.equal(a.planParticipant.tryAcquire({}).kind, "unavailable");
+      if (action === "release" && prior.kind === "held") prior.lease.release();
+      if (action === "retire") void a.retire(owner!);
+      if (action === "shutdown") void a.shutdown();
+      if (action === "activate") owner = a.activate();
+      if (action === "throw") throw Error("callback fault");
+      return true;
+    };
+    assert.equal(a.planParticipant.tryAcquire({}).kind, "unavailable", action);
+    if (["reenter", "activate", "throw"].includes(action)) {
+      await assert.rejects(a.runExclusive(owner!, () => {}), /Plan hold/, action);
+    }
+    if (action === "release") assert.equal(await a.runExclusive(owner!, () => 7), 7);
+    if (prior.kind === "held") prior.lease.release();
+    await a.shutdown();
+  }
+});

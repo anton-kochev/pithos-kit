@@ -31,9 +31,9 @@ describe("Guild member run visibility", () => {
     const lines = tracker.formatLines(6_000);
 
     assert.deepEqual(lines, [
-      "Guild · 2 active",
-      "⏳ architect/dotnet · queued · 5s · 2 turns · Inspect task · queued",
-      "⏳ coder/angular · running · 4s",
+      "Guild · 1 occupied · 1 queued · 0 waiting · 0 stopping",
+      "⏳ architect/dotnet · run-1 · queued · 5s · 2 turns · Inspect task · queued",
+      "⏳ coder/angular · run-2 · running · 4s",
     ]);
     assert.doesNotMatch(lines.join("\n"), /do-not-show|\bread\b/);
   });
@@ -72,7 +72,7 @@ describe("Guild member run visibility", () => {
     assert.deepEqual(tracker.formatLines(2_000), []);
 
     tracker.start({ ...base, id: "three", member: "dotnet-architect", startedAt: 3_000 });
-    assert.match(tracker.formatLines(4_000)[0], /^Guild · 1 active$/);
+    assert.match(tracker.formatLines(4_000)[0], /^Guild · 1 occupied · 0 queued · 0 waiting · 0 stopping$/);
     assert.doesNotMatch(tracker.formatLines(4_000).join("\n"), /frontend-architect|recent|completed/);
   });
 });
@@ -83,10 +83,23 @@ it("sanitizes and bounds previews without changing the original task", () => {
   const run = { id: "preview", role: "coder" as const, profile: "typescript" as const,
     phase: "queued" as const, startedAt: 0, task };
   tracker.start(run);
-  const preview = tracker.formatLines(0)[1].split(" · ").slice(3).join(" · ");
+  const preview = tracker.formatLines(0)[1].split(" · ").slice(4).join(" · ");
   assert.equal(run.task, task);
   assert.match(preview, /^Inspect 界/);
   assert.match(preview, /…$/);
   assert.ok(visibleWidth(preview) <= 80);
   assert.doesNotMatch(preview, /[\x00-\x1f\x7f-\x9f]/);
+});
+
+it("counts occupied waiting and stopping slots separately from queued rows with distinct IDs", () => {
+  const tracker = new GuildRunTracker();
+  for (const [index, phase] of (["running", "waiting", "stopping", ...Array(8).fill("queued")] as const).entries()) {
+    tracker.start({id: `run-${index}`, role: "coder", profile: "typescript", startedAt: 0, phase});
+  }
+  const lines = tracker.formatLines(0);
+  assert.equal(lines[0], "Guild · 3 occupied · 8 queued · 1 waiting · 1 stopping");
+  assert.equal(lines.length, 12);
+  for (let index = 0; index < 11; index++) assert.ok(lines[index + 1].includes(` · run-${index} · `));
+  tracker.update("run-1", {phase: "running"});
+  assert.equal(tracker.formatLines(0)[0], "Guild · 3 occupied · 8 queued · 0 waiting · 1 stopping");
 });

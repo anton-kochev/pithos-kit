@@ -1,3 +1,4 @@
+import { stripTerminalSequences } from "@earendil-works/pi-tui";
 import { randomUUID } from "node:crypto";
 import * as path from "node:path";
 import { StringEnum, type Usage } from "@earendil-works/pi-ai";
@@ -29,6 +30,7 @@ import {
 	runGuildRole,
 	truncateUtf8,
 	type GuildRoleRunResult,
+	type GuildParsedEvent,
 	type RunGuildRoleOptions,
 } from "./runner";
 import { childTools, validateInput, type GuildInput } from "./protocol.ts";
@@ -36,14 +38,20 @@ import { captureRepoState, repoStateName, type CaptureRepoStateOptions, type Rep
 import { createGuildTraceRecorder, type GuildTraceBinding, type GuildTraceRecorder } from "./trace-recorder.ts";
 import type { GuildSkillReceipt } from "./resources.ts";
 import { readPersistedPlanState } from "./background-admission.ts";
+import {createSemanticInterruptBinding, type SemanticInterruptBinding} from "./semantic-interrupt.ts";
+import { createBackgroundContinuation } from "./background-continuation.ts";
+import { createBackgroundNotifications } from "./background-notifications.ts";
+import { taskPreview as safePreview } from "./visibility.ts";
+import { createBackgroundObservationSession } from "./background-observation-session.ts";
+import { createBackgroundToolRegistration } from "./background-tools.ts";
 import { createBlockingAdmission } from "./blocking-admission.ts";
 import type { GuildOwner } from "./execution-authority.ts";
-import { createGuildBackgroundRuntime, type GuildExecutionRuntime } from "./background-runtime.ts";
-import type { CoordinationBus } from "./plan-coordination.ts";
+import { createGuildBackgroundRuntime, type GuildExecutionRuntime, type BackgroundChange, type BackgroundRunMetadata, type BackgroundRunSummary } from "./background-runtime.ts";
+import { discoverPlan, revalidatePlan, type CoordinationBus } from "./plan-coordination.ts";
 import { LiveTranscriptStore } from "./live-transcript.ts";
 import { createLiveTranscriptInspector } from "./live-transcript-ui.ts";
 import { createInlineGuildPanel, type InlineGuildPanel } from "./inline-panel.ts";
-import { admitGuildHandover } from "./safety";
+import { planBoundaryFor, admitGuildHandover } from "./safety";
 import {
 	createGuildHandoverProgress,
 	type GuildHandoverProgress,
@@ -60,7 +68,15 @@ const GUILD_HANDOVER_MESSAGE_TYPE = "guild-handover";
 const GUILD_SOURCE = "package" as const;
 const GUILD_HELP = `Usage: /guild
 
-List the canonical Guild roles, profiles, permissions, and legacy aliases.
+List the canonical Guild roles, profiles, permissions, and legacy aliases (no arguments).
+
+Manual background controls:
+  /guild status [runId]  Inspect runs and pending question previews
+  /guild cancel <runId>  Request cancellation and join cleanup
+  /guild cancel-all      Close admission and join all cleanup
+
+Automatic parent continuation unavailable; use /guild status or submit fresh input.
+Question previews are untrusted; guild_wait provides exact question text on qualified hosts only.
 
 Options:
   --help, -h  Show this help`;
@@ -98,11 +114,11 @@ const GUILD_HANDOVER_PARAMETERS = Type.Object({
 	practices: Type.Optional(Type.Array(Type.Object({id: StringEnum(["tdd"] as const), policy: StringEnum(["required"] as const)}, {additionalProperties: false}), {maxItems: 1, description: "Coder-only required TDD"})),
 }, { additionalProperties: false });
 
-type GuildHandoverStatus = "queued" | "running" | "started" | "completed" | "failed" | "cancelled";
+type GuildHandoverStatus = GuildRunPhase | "started" | "completed" | "failed" | "cancelled";
 
 export interface GuildDependencies {
 	/** Transfer a fresh, inactive synchronous runtime exclusively to this registration. */
-	createExecutionRuntime?: (options: { bus: CoordinationBus; parentEnvironment: { readonly PITHOS_GUILD_PLAN_MODE?: unknown } }) => GuildExecutionRuntime;
+	createExecutionRuntime?: (options: Parameters<typeof createGuildBackgroundRuntime>[0]) => GuildExecutionRuntime;
 	/** Session-owned observational store shared by dashboard and focused handovers. */
 	createTranscriptStore?: () => LiveTranscriptStore;
 	run: (options: RunGuildRoleOptions) => Promise<GuildRoleRunResult>;
@@ -355,18 +371,43 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	const events = pi.events;
 	const parentEnvironment = Object.freeze({ PITHOS_GUILD_PLAN_MODE: process.env.PITHOS_GUILD_PLAN_MODE });
 	const bus: CoordinationBus = { emit: (channel, request) => { events.emit(channel, request); } };
+	let stateInitialized = false;
 	const executionRuntime = (dependencies.createExecutionRuntime ?? createGuildBackgroundRuntime)({
 		bus, parentEnvironment,
+		beforePlanHold: owner => {
+			// The coordinator is acquiring: discovery here would reenter its transaction.
+			if (!stateInitialized) return false;
+			if (state.kind === "active") return state.scope.owner === owner && state.scope.beforePlanHold();
+			return state.kind === "retired" && !cleanupFault;
+		},
+		onRunStart: metadata => { if (stateInitialized && state.kind === "active" && state.scope.owner === metadata.owner) return state.scope.onBackgroundStart(metadata); },
+		onEvent: (metadata, event) => { if (stateInitialized && state.kind === "active" && state.scope.owner === metadata.owner) state.scope.onBackgroundEvent(metadata, event); },
+		onUpdate: (metadata, summary) => { if (stateInitialized && state.kind === "active" && state.scope.owner === metadata.owner) state.scope.onBackgroundUpdate(metadata, summary); },
+		onChange: change => {
+			if (!stateInitialized) return;
+			if (state.kind === "active" && state.scope.owner === change.owner) state.scope.onBackgroundChange(change);
+			else if (change.kind === "terminal" && terminalScope?.owner === change.owner) terminalScope.onBackgroundChange(change);
+		},
 	});
 	const blockingAdmission = createBlockingAdmission(executionRuntime, bus);
 	type Scope = ReturnType<typeof createScope>;
+	// Only one owner can drain at a time. Local terminal observation outlives UI
+	// authority, including shutdown; the drain joins deferred terminal callbacks.
+	let terminalScope: Scope | undefined;
 	type State = {kind: "active"; scope: Scope} | {kind: "retiring"; scope: Scope; join: Promise<{cancel: true} | undefined>}
 		| {kind: "retired"; epoch: object} | {kind: "failed"} | {kind: "closed"};
 	let state: State;
 	// Retain ownership failure after the settled execution tail leaves its scope.
 	let cleanupFault: Error | undefined;
+	let semanticFault = false;
+	let backgroundFault = false;
+	let observationSession: ReturnType<typeof createBackgroundObservationSession> | undefined;
 	let shutdownJoin: Promise<void> | undefined;
 	const isClosed = () => state.kind === "closed";
+	const continuationText = (): string => {
+		const status = state.kind === "active" ? state.scope.deliveryStatus() : "unavailable";
+		return `Automatic parent continuation ${status}; use /guild status or submit fresh input. Delivery is not evidence of model reading or usage collection.`;
+	};
 	const staleResult = (runId: string, prepared: PreparedHandover): HandoverExecutionResult => ({
 		content: [{type: "text", text: "Guild handover cancelled: Guild owner has shut down."}],
 		details: {...baseDetails(prepared, "cancelled", "queued", "default model", "off", Date.now()), runId, error: "Guild owner has shut down."},
@@ -375,12 +416,182 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	// Every callback below closes over one immutable owner and its own UI/tail state.
 	function createScope(executionOwner: GuildOwner) {
 		const activeRuns = new GuildRunTracker();
+		const notifications = createBackgroundNotifications(executionOwner);
+		let notificationFlushPending = false;
 		let ticker: NodeJS.Timeout | undefined;
 		let activeUiContext: ExtensionContext | undefined;
 		const ownsScope = (): boolean => state.kind === "active" && state.scope.owner === executionOwner && executionRuntime.isCurrent(executionOwner);
 		const current = (): boolean => !cleanupFault && ownsScope();
 		const executionTails = new Set<Promise<unknown>>();
+		const bindingCleanup = new Set<Promise<void>>();
+		let binding: SemanticInterruptBinding | undefined;
+		let bindingAttempted = false;
+		let registrar: ReturnType<typeof createBackgroundToolRegistration> | undefined;
+		const backgroundCurrent = () => !backgroundFault && current() && binding?.isActive() === true
+			&& observationSession?.isWritable() === true;
+		const backgroundContext = (ctx: ExtensionContext) => {
+			const session = observationSession;
+			if (!session || !backgroundCurrent()) throw new Error("Background unavailable");
+			const epoch = session.getEpoch();
+			const cwd = ctx.cwd;
+			const projectTrusted = ctx.isProjectTrusted();
+			const model = modelName(ctx);
+			const thinkingLevel = pi.getThinkingLevel();
+			const local = () => backgroundCurrent() && observationSession === session && session.getEpoch() === epoch;
+			// Only trusted SDK read-only identity/trust getters belong in this fence.
+			const isContextCurrent = () => {
+				try { return local() && session.isCurrent(ctx) && ctx.cwd === cwd
+					&& ctx.isProjectTrusted() === projectTrusted && local(); }
+				catch { return false; }
+			};
+			const getBranch = () => ctx.sessionManager.getBranch();
+			const validateCurrent = () => {
+				try { return isContextCurrent() && readPersistedPlanState({getBranch}) === "inactive" && isContextCurrent(); }
+				catch { return false; }
+			};
+			if (!validateCurrent()) throw new Error("Background unavailable");
+			return {cwd, projectTrusted, model, thinkingLevel, getBranch, validateCurrent, isContextCurrent};
+		};
+		let delivery: ReturnType<typeof createBackgroundContinuation> | undefined;
+		let deliveryIdentity: object | undefined;
+		// Registry snapshots omit task metadata. Pair their live run IDs with the
+		// immutable task identity supplied by that same runtime's lifecycle events.
+		const notificationTasks = new Map<string, string>();
+		let deliveryOpening = false;
+		let deliveryPaused = false;
+		const deliveryStatus = (): string => deliveryPaused ? "paused" : delivery?.status === "closed" ? "paused" : delivery?.status ?? "unavailable";
+		const beforePlanHold = () => {
+			if (deliveryOpening || !current()) return false;
+			const adapter = delivery;
+			if (!adapter) return true;
+			if (adapter.hasInFlight) return false;
+			deliveryIdentity = undefined;
+			const closed = adapter.closeForPlan();
+			if (!current() || delivery !== adapter) return false;
+			deliveryPaused = closed;
+			return closed;
+		};
+		const deliveryCleanup = new Set<Promise<void>>();
+		const closeDelivery = () => {
+			deliveryIdentity = undefined;
+			if (delivery) return delivery.close();
+			return Promise.resolve();
+		};
+		const openDelivery = (ctx: ExtensionContext) => {
+			if (!backgroundCurrent() || registrar?.isActive() !== true || deliveryOpening) return;
+			if (delivery && (!deliveryPaused || deliveryCleanup.size)) return;
+			if (delivery) {
+				// Reopening after Plan requires real registry quiescence, including blocking work.
+				const hold = executionRuntime.planParticipant.tryAcquire({});
+				if (hold.kind !== "held") return;
+				hold.lease.release();
+				if (!current()) return;
+			}
+			deliveryOpening = true;
+			// A capability getter/open may synchronously retire us before returning its lease.
+			// Publish the cleanup slot before that callout so the outer lifecycle owns it.
+			let settle!: (join?: Promise<void>) => void;
+			const pending = new Promise<void>(resolve => { settle = join => resolve(join); });
+			deliveryCleanup.add(pending);
+			void pending.then(() => deliveryCleanup.delete(pending), () => {});
+			try {
+				const captured = backgroundContext(ctx);
+				const validate = () => {
+					if (!captured.validateCurrent()) return false;
+					const mode = parentEnvironment.PITHOS_GUILD_PLAN_MODE ?? "required";
+					if (mode !== "required" && mode !== "standalone") return false;
+					const readiness = discoverPlan(bus, planBoundaryFor(mode, readPersistedPlanState(captured)), executionRuntime.planParticipant);
+					return readiness.kind === "ready" && captured.isContextCurrent() && revalidatePlan(readiness)
+						&& captured.validateCurrent() && current();
+				};
+				if (!validate()) return;
+				const capability = (ctx as ExtensionContext & {parentContinuation?: {protocol?: unknown; open?: unknown}}).parentContinuation;
+				if (!capability || capability.protocol !== "pi-parent-continuation-v1" || typeof capability.open !== "function" || !validate()) return;
+				const identity = deliveryIdentity = {};
+				const adapter = createBackgroundContinuation({epoch: executionOwner, context: {parentContinuation: capability},
+					isCurrent: () => current() && deliveryIdentity === identity,
+					validateContextAndPlan: validate, canDeliver: batch => {
+						const stale = batch.items.filter(item => {
+							try {
+								const snapshot = executionRuntime.status(executionOwner, item.runId);
+								return notificationTasks.get(item.runId) !== item.taskId || (item.kind === "question"
+									? snapshot.question?.id !== item.questionId
+									: snapshot.status !== item.status || !["completed", "failed", "cancelled"].includes(snapshot.status));
+							} catch { return true; }
+						});
+						if (!current() || deliveryIdentity !== identity) return false;
+						return stale.length ? {stale} : true;
+					}});
+				delivery = adapter;
+				deliveryPaused = false;
+				settle(adapter.closed);
+				if (!current() || deliveryIdentity !== identity) void adapter.close();
+			} catch { /* Optional capability failure does not disable background controls. */ }
+			finally { deliveryOpening = false; settle(); }
+		};
+		const canActivateBackground = (ctx: ExtensionContext) => {
+			try { return backgroundContext(ctx).validateCurrent(); } catch { return false; }
+		};
+		const showBackground = (ctx: ExtensionContext) => {
+			if (!canActivateBackground(ctx)) registrar?.hide();
+			else registrar?.show(ctx);
+		};
+		let backgroundUiContext: ExtensionContext | undefined;
+		let backgroundIdentity: {manager: ExtensionContext["sessionManager"]; sessionId: string; cwd: string; trusted: boolean} | undefined;
+		const disposeBackground = () => { backgroundUiContext = undefined; notifications.reset(executionOwner); registrar?.dispose(); };
+		const bind = (ctx: ExtensionContext) => {
+			if (bindingAttempted || !current()) return;
+			bindingAttempted = true;
+			let resolve!: (tail: Promise<void>) => void;
+			const placeholder = new Promise<void>(yes => { resolve = yes; });
+			// Registration may synchronously retire this owner before returning its cleanup.
+			bindingCleanup.add(placeholder);
+			void placeholder.then(() => bindingCleanup.delete(placeholder));
+			const result = createSemanticInterruptBinding(ctx, {
+				onInterrupt: () => { retireScope(scope, ctx); },
+				onRetire: () => { retireScope(scope, ctx, true); },
+				onError: reason => { semanticFault = true; cleanupFault ??= new Error(`Guild semantic interrupt ${reason}`); },
+			});
+			resolve(result.cleanup);
+			if (result.kind === "bound") {
+				binding = result.binding;
+				if (!current()) binding.dispose();
+				if (!current() || !binding.isActive() || backgroundFault) return;
+				try {
+					observationSession ??= createBackgroundObservationSession({pi, context: ctx, runtime: executionRuntime,
+						onFault: reason => {
+							backgroundFault = true;
+							cleanupFault ??= new Error(reason);
+							if (state.kind === "active") void retireScope(state.scope, ctx);
+						}});
+				} catch { backgroundFault = true; return; }
+				if (!backgroundCurrent() || !observationSession.isCurrent(ctx)) return;
+				registrar = createBackgroundToolRegistration(pi, {
+					controls: observationSession.service.bind(executionOwner), context: backgroundContext,
+					isCurrent: backgroundCurrent, canActivate: canActivateBackground,
+					onRetire: () => { void retireScope(scope, ctx, true); },
+					onFault: () => {
+						backgroundFault = true;
+						cleanupFault ??= new Error("Guild atomic owned tools unavailable: cleanup or registration failed");
+						void retireScope(scope, ctx);
+					},
+				});
+				try {
+					const captured = fence(ctx);
+					const manager = captured.sessionManager;
+					const sessionId = fence(manager).getSessionId();
+					const cwd = captured.cwd;
+					const trusted = captured.isProjectTrusted();
+					guard();
+					backgroundIdentity = {manager, sessionId, cwd, trusted};
+					backgroundUiContext = ctx;
+				} catch { return; }
+				showBackground(ctx);
+			}
+		};
+		const disposeBinding = () => binding?.dispose();
 		const dashboardRunIds = new Set<string>();
+		const backgroundRunIds = new Set<string>();
 		let panel: InlineGuildPanel | undefined;
 		let panelMounted = false;
 		let panelGeneration = 0;
@@ -388,6 +599,8 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let panelIds: string[] = [];
 		const directProgress = new Set<GuildHandoverProgress>();
 		const closeDirectDialogs = new Set<() => void>();
+		const revokeDirectDialogs = new Set<() => void>();
+		let localRevocation = false;
 
 		const clearVisibility = (ctx: ExtensionContext) => {
 			panelGeneration++;
@@ -400,6 +613,13 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		};
 
 		const refreshVisibility = (ctx: ExtensionContext) => {
+			if (backgroundRunIds.size && !backgroundUi()) {
+				// Plan hides the panel without releasing occupied slots. Identity loss
+				// grants no native UI cleanup authority; retirement handles local disposal.
+				const owned = backgroundUi(true);
+				if (owned) clearVisibility(fence(owned, true));
+				return;
+			}
 			ctx = fence(ctx, true);
 			if (!current() || !ctx.hasUI) return;
 			if (activeRuns.size === 0) {
@@ -407,6 +627,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				return;
 			}
 			panelLines = activeRuns.formatLines();
+			if (backgroundRunIds.size) panelLines[0] += ` · Automatic parent continuation ${deliveryStatus()}`;
 			panelIds = [...dashboardRunIds];
 			if (ctx.mode === "tui") {
 				if (!panelMounted) {
@@ -418,7 +639,11 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 							if (generation !== panelGeneration) return empty;
 							panel?.dispose();
 							const created = createInlineGuildPanel(transcriptStore, tui, theme,
-								handler => ctx.ui.onTerminalInput(data => visibilityCallback(() => handler(data), undefined)),
+								handler => {
+									const unsubscribe = ctx.ui.onTerminalInput(data => visibilityCallback(() => handler(data), undefined));
+									// Host retirement owns native listener disposal; only revoke local access.
+									return () => { if (!localRevocation) unsubscribe(); };
+								},
 								() => visibilityCallback(() => refreshVisibility(ctx), undefined),
 								() => visibilityCallback(() => ctx.ui.getEditorText(), ""),
 								() => visibilityCallback(() => directProgress.size === 0 && ctx.mode === "tui" && ctx.hasUI && guildEditorOwnsInput(tui), false));
@@ -448,17 +673,18 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			ticker.unref?.();
 		};
 
-		const finishVisibleRun = (runId: string, ctx: ExtensionContext) => {
+		const finishVisibleRun = (runId: string, ctx?: ExtensionContext) => {
 			activeRuns.finish(runId);
 			dashboardRunIds.delete(runId);
 			if (activeRuns.size === 0 && ticker) {
 				clearInterval(ticker);
 				ticker = undefined;
 			}
-			refreshVisibility(ctx);
+			if (ctx) refreshVisibility(ctx);
 		};
 
-		const disposeVisibility = (ctx: ExtensionContext, cleanup: (action: () => void) => void) => {
+		const disposeVisibility = (ctx: ExtensionContext, cleanup: (action: () => void) => void, localOnly = false) => {
+			localRevocation = localOnly;
 			if (ticker) clearInterval(ticker);
 			ticker = undefined;
 			const previousUiContext = activeUiContext;
@@ -466,13 +692,14 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			const oldPanel = panel;
 			panel = undefined; panelMounted = false; panelGeneration++;
 			panelLines = []; panelIds = [];
-			// Close while native done callbacks still own their dialogs; panel/listener
-			// disposal may synchronously reset native UI and revoke those callbacks.
-			for (const close of closeDirectDialogs) cleanup(close);
+			// Manual cancellation closes still-owned dialogs before listener cleanup.
+			// Host retirement instead revokes locally: native done and UI are already stale.
+			for (const close of localOnly ? revokeDirectDialogs : closeDirectDialogs) cleanup(close);
 			cleanup(() => oldPanel?.dispose());
 			for (const progress of directProgress) cleanup(() => progress.dispose());
 			directProgress.clear();
 			activeRuns.clear(); dashboardRunIds.clear();
+			if (localOnly) return;
 			for (const uiContext of new Set([previousUiContext, ctx])) {
 				if (!uiContext) continue;
 				cleanup(() => { if (uiContext.hasUI) uiContext.ui.setWidget("guild-dashboard", undefined); });
@@ -513,6 +740,143 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			catch (error) { if (error instanceof StaleHostAccess) return fallback; throw error; }
 		};
 
+
+
+		const backgroundUi = (allowPlan = false) => {
+			const raw = backgroundUiContext;
+			const identity = backgroundIdentity;
+			if (!raw || !identity || !backgroundCurrent()) return;
+			try {
+				// Preserve native manager identity while fencing each subsequent read/call.
+				const ctx = fence(raw);
+				if (ctx.sessionManager !== identity.manager) return;
+				const manager = fence(identity.manager);
+				if (manager.getSessionId() !== identity.sessionId) return;
+				if (ctx.cwd !== identity.cwd || ctx.isProjectTrusted() !== identity.trusted) return;
+				const getBranch = manager.getBranch;
+				if (!allowPlan && readPersistedPlanState({getBranch: () => Reflect.apply(getBranch, manager, [])}) !== "inactive") return;
+				if (backgroundCurrent()) return raw;
+			} catch { /* Unsafe host reads revoke this callback's UI access. */ }
+		};
+		const startBackground = (metadata: Pick<BackgroundRunMetadata, "runId" | "role" | "profile" | "taskPreview">, phase: GuildRunPhase) => {
+			if (backgroundRunIds.has(metadata.runId)) return;
+			backgroundRunIds.add(metadata.runId);
+			const run = {id: metadata.runId, role: metadata.role, profile: metadata.profile,
+				task: metadata.taskPreview, phase, startedAt: Date.now()};
+			dashboardRunIds.add(run.id);
+			activeRuns.start(run);
+			observeTranscript(() => transcriptStore.start(run));
+		};
+		const onBackgroundStart = (metadata: BackgroundRunMetadata) => {
+			const ctx = backgroundUi();
+			if (!ctx) return;
+			startBackground(metadata, "running");
+			const recorder = traceRecorder;
+			if (!recorder) return;
+			try {
+				const binding = traceBinding(fence(ctx, true), metadata.model, metadata.thinkingLevel ?? "off");
+				if (binding && current()) {
+					const unbind = recorder.bind(metadata.runId, binding);
+					return () => {
+						try { unbind(); }
+						catch (error) {
+							// Runtime observers are non-owning; retain trace cleanup faults
+							// here so the extension lifecycle join still reports them.
+							cleanupFault = error instanceof Error ? error : new Error("Guild trace cleanup failed.", {cause: error});
+							throw cleanupFault;
+						}
+					};
+				}
+			} catch { /* Trace observation cannot fail child execution. */ }
+		};
+		const onBackgroundEvent = (metadata: BackgroundRunMetadata, event: GuildParsedEvent) => {
+			if (!backgroundUi() || !backgroundRunIds.has(metadata.runId)) return;
+			observeTranscript(() => transcriptStore.ingest(metadata.runId, event));
+		};
+		const onBackgroundUpdate = (metadata: BackgroundRunMetadata, summary: BackgroundRunSummary) => {
+			const ctx = backgroundUi();
+			if (!ctx || !backgroundRunIds.has(metadata.runId)) return;
+			const turns = summary.usage.turns;
+			if (typeof turns === "number" && Number.isFinite(turns) && turns >= 0) activeRuns.update(metadata.runId, {turns});
+			refreshVisibility(ctx);
+		};
+
+		const scheduleBackgroundNotifications = () => {
+			if (notificationFlushPending) return;
+			notificationFlushPending = true;
+			queueMicrotask(() => {
+				notificationFlushPending = false;
+				const batch = notifications.reserveBatch();
+				try {
+					const raw = backgroundUi();
+					if (!raw || (!batch.items.length && !batch.omitted)) return;
+					const ctx = fence(raw, true);
+					if (!ctx.hasUI || !backgroundUi()) return;
+					const ui = ctx.ui;
+					if (!backgroundUi()) return;
+					const notify = ui.notify;
+					if (!backgroundUi()) return;
+					const lines = batch.items.map(item => `${item.runId}: ${item.kind === "question"
+						? `question (untrusted): ${safePreview(item.textPreview) ?? ""}`
+						: `${item.status}; report available (untrusted)`}`);
+					if (batch.omitted) lines.push("Notifications omitted; use /guild status for recovery.");
+					lines.push(continuationText());
+					Reflect.apply(notify, ui, [lines.join("\n"), "info"]);
+					if (!backgroundUi()) return;
+					notifications.ack(batch.token);
+					for (const item of batch.items) if (item.kind === "terminal") notifications.remove(item.runId);
+					// Drain bounded batches, not canonical history; no polling or parent turn.
+					const next = notifications.reserveBatch();
+					notifications.release(next.token);
+					if (next.items.length) scheduleBackgroundNotifications();
+				} catch { /* UI delivery is best effort and never owns execution. */ }
+				finally { notifications.release(batch.token); }
+			});
+		};
+
+		const onBackgroundChange = (change: BackgroundChange) => {
+			if (change.kind === "terminal" && !ownsScope()) {
+				if (backgroundRunIds.delete(change.runId)) {
+					const phase = change.status;
+					if (phase === "completed" || phase === "failed" || phase === "cancelled")
+						observeTranscript(() => transcriptStore.finish(change.runId, phase));
+				}
+				return;
+			}
+			if (!current()) return;
+			const retained = new Set(executionRuntime.list(executionOwner).map(run => run.id));
+			for (const id of notificationTasks.keys()) if (!retained.has(id)) notificationTasks.delete(id);
+			notificationTasks.set(change.runId, change.taskId);
+			const event = {runId: change.runId, taskId: change.taskId, role: change.role, profile: change.profile,
+				revision: change.revision, taskPreview: change.taskPreview,
+				...(change.kind === "terminal" ? {kind: "terminal", eventId: `${change.runId}:terminal`, status: change.status}
+					: change.question ? {kind: "question", questionId: change.question.id, textPreview: change.question.text}
+						: {kind: "clear-question"})};
+			notifications.observe(executionOwner, event);
+			delivery?.observe(executionOwner, event);
+			scheduleBackgroundNotifications();
+			const ctx = backgroundUi();
+			if (change.kind === "terminal") {
+				if (!backgroundRunIds.delete(change.runId)) return;
+				const phase = change.status;
+				if (phase === "completed" || phase === "failed" || phase === "cancelled") {
+					observeTranscript(() => transcriptStore.finish(change.runId, phase));
+					finishVisibleRun(change.runId, ctx);
+					if (!ctx) {
+						const owned = backgroundUi(true);
+						if (owned) clearVisibility(fence(owned, true));
+					}
+				}
+			} else {
+				if (!ctx) return;
+				const phase = change.status;
+				if (phase !== "queued" && phase !== "running" && phase !== "waiting" && phase !== "stopping") return;
+				startBackground(change, phase);
+				activeRuns.update(change.runId, {phase});
+				observeTranscript(() => transcriptStore.updatePhase(change.runId, phase));
+				ensureTicker(ctx);
+			}
+		};
 
 		const executeHandover = (options: ExecuteHandoverOptions): Promise<HandoverExecutionResult> => {
 			if (!current()) return Promise.resolve(staleResult(options.runId, options.prepared));
@@ -888,6 +1252,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 					if (handle.state === "open") { handle.state = "revoked"; settle(undefined); }
 					done = undefined;
 					closeDirectDialogs.delete(close);
+					revokeDirectDialogs.delete(revoke);
 					dispose();
 				};
 				const finish = (value: LoaderResult, shutdown = false) => {
@@ -895,6 +1260,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 					handle.state = "completed";
 					const complete = done; done = undefined;
 					closeDirectDialogs.delete(close);
+					revokeDirectDialogs.delete(revoke);
 					try { complete?.(value); }
 					finally { try { dispose(); } finally { settle(value); } }
 				};
@@ -910,6 +1276,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				void cleanupTail.then(() => executionTails.delete(cleanupTail), () => executionTails.delete(cleanupTail));
 				// Own cancellation before entering host code: custom/factory creation may reenter shutdown.
 				closeDirectDialogs.add(close);
+				revokeDirectDialogs.add(revoke);
 				try {
 					const native = ctx.ui.custom<LoaderResult>((tui, theme, keybindings, complete) => {
 						if (handle.state !== "open" || !current()) return {render: () => [], invalidate() {}, dispose() {}};
@@ -1027,12 +1394,14 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				if (current()) throw error;
 			}
 		};
-		const scope = Object.freeze({owner: executionOwner, executeTool, direct, disposeVisibility, executionTails});
+		const scope = Object.freeze({owner: executionOwner, onBackgroundChange, onBackgroundStart, onBackgroundEvent, onBackgroundUpdate, executeTool, direct, disposeVisibility, executionTails, bindingCleanup, deliveryCleanup, closeDelivery, openDelivery, beforePlanHold, deliveryStatus, bind, disposeBinding, showBackground, disposeBackground, backgroundAvailable: () => registrar?.isActive() === true});
 		return scope;
 	}
 	state = {kind: "active", scope: createScope(executionRuntime.activate())};
+	stateInitialized = true;
 
-	pi.on("session_start", () => {
+	pi.on("session_start", (_event, ctx) => {
+		if (state.kind === "active") state.scope.bind(ctx);
 		if (state.kind !== "closed" && state.kind !== "failed") traceRecorder ??= createTraceRecorder();
 	});
 
@@ -1063,6 +1432,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		};
 		try {
 			if (!idle() || !inactive() || !idle() || !inactive()) return;
+			if (observationSession && (!observationSession.resume(ctx) || !unchanged())) return;
 			let resolve!: (value: {cancel: true} | undefined) => void;
 			const join = new Promise<{cancel: true} | undefined>(yes => { resolve = yes; });
 			activationCleanup = {join, resolve};
@@ -1086,7 +1456,8 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			}
 			state = {kind: "active", scope};
 			resolve(undefined);
-			return scope;
+			scope.bind(ctx);
+			return state.kind === "active" && state.scope === scope && !cleanupFault ? scope : undefined;
 		} catch {
 			if (activationCleanup) {
 				if (!isClosed()) state = {kind: "failed"};
@@ -1097,37 +1468,79 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	};
 
 	pi.on("input", (event, ctx) => {
-		if (event.source === "interactive" || event.source === "rpc") rearm(ctx);
+		if (event.source === "interactive" || event.source === "rpc") {
+			rearm(ctx);
+			if (state.kind === "active") {
+				const scope = state.scope;
+				scope.bind(ctx);
+				scope.showBackground(ctx);
+				scope.openDelivery(ctx);
+			}
+		}
 		return {action: "continue"};
 	});
 
-	pi.on("session_before_tree", (_event, ctx) => {
-		if (state.kind === "retiring") return state.join;
-		if (state.kind === "failed" || state.kind === "closed") return {cancel: true};
-		if (state.kind === "retired") {
-			state = {kind: "retired", epoch: {}};
-			return activationCleanup?.join;
-		}
-		const scope = state.scope;
+	const retireScope = (scope: Scope, ctx: ExtensionContext, localOnly = false, explicitVeto = false) => {
+		if (state.kind === "retiring" && state.scope === scope) return state.join;
+		if (state.kind !== "active" || state.scope !== scope) return;
 		let resolve!: (result: {cancel: true} | undefined) => void;
 		const join = new Promise<{cancel: true} | undefined>(yes => { resolve = yes; });
 		const retiring: State = {kind: "retiring", scope, join};
 		state = retiring;
+		terminalScope = scope;
 		const failures: unknown[] = cleanupFault ? [cleanupFault] : [];
 		const cleanup = (action: () => void) => { try { action(); } catch (error) { failures.push(error); } };
 		let drain: Promise<void>;
+		cleanup(() => { void scope.closeDelivery(); });
+		cleanup(scope.disposeBackground);
 		try { drain = executionRuntime.retire(scope.owner); } catch (error) { drain = Promise.reject(error); }
-		scope.disposeVisibility(ctx, cleanup);
-		void Promise.allSettled([drain, ...scope.executionTails]).then(results => {
+		cleanup(scope.disposeBinding);
+		scope.disposeVisibility(ctx, cleanup, localOnly);
+		void Promise.allSettled([drain, ...scope.executionTails, ...scope.bindingCleanup, ...scope.deliveryCleanup]).then(results => {
+			// BackgroundRuns queues terminal observation before settling each done
+			// promise, so all callbacks have run before this all-settled continuation.
+			if (terminalScope === scope) terminalScope = undefined;
 			for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+			if (cleanupFault) failures.push(cleanupFault);
+			// Semantic retirement has no host veto consumer; retain its bounded fault
+			// for shutdown, including when shutdown took ownership during this drain.
+			if (failures.length && (!explicitVeto || state !== retiring)) {
+				semanticFault = true;
+				cleanupFault ??= new Error("Guild owner retirement cleanup failed");
+			}
 			if (state !== retiring) { resolve({cancel: true}); return; }
 			state = failures.length ? {kind: "failed"} : {kind: "retired", epoch: {}};
 			// Trace cleanup has been joined and reported by this explicit veto. The
 			// failed state keeps admission closed without reporting it again at shutdown.
-			if (cleanupFault && !(cleanupFault instanceof GuildCleanupError)) cleanupFault = undefined;
+			if (cleanupFault && !semanticFault && !(cleanupFault instanceof GuildCleanupError)) cleanupFault = undefined;
 			resolve(failures.length ? {cancel: true} : undefined);
 		});
 		return join;
+	};
+
+	const navigationJoins = new WeakMap<Promise<{cancel: true} | undefined>, Promise<{cancel: true} | undefined>>();
+	pi.on("session_before_tree", (_event, ctx) => {
+		let join: Promise<{cancel: true} | undefined> | undefined;
+		if (state.kind === "retiring") join = state.join;
+		else if (state.kind === "failed" || state.kind === "closed") return {cancel: true};
+		else if (state.kind === "retired") {
+			state = {kind: "retired", epoch: {}};
+			join = activationCleanup?.join;
+		} else join = retireScope(state.scope, ctx, false, true);
+		const finish = (result?: {cancel: true}): {cancel: true} | undefined => {
+			if (result?.cancel || cleanupFault || state.kind !== "retired") return {cancel: true};
+			// Terminal observers retain the original writable epoch until the full drain.
+			observationSession?.pause();
+			return undefined;
+		};
+		if (!join) return finish();
+		let navigation = navigationJoins.get(join);
+		if (!navigation) { navigation = join.then(finish); navigationJoins.set(join, navigation); }
+		return navigation;
+	});
+
+	pi.on("session_tree", (_event, ctx) => {
+		if (state.kind === "retired" && !cleanupFault) observationSession?.resume(ctx);
 	});
 
 	pi.on("session_shutdown", (_event, ctx) => {
@@ -1135,19 +1548,32 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		let resolve!: () => void;
 		let reject!: (error: unknown) => void;
 		shutdownJoin = new Promise<void>((yes, no) => { resolve = yes; reject = no; });
+		const recorder = traceRecorder; traceRecorder = undefined;
 		const previous = state;
+		if (previous.kind === "active" || previous.kind === "retiring") terminalScope = previous.scope;
 		state = {kind: "closed"};
 		const failures: unknown[] = cleanupFault ? [cleanupFault] : [];
 		const cleanup = (action: () => void) => { try { action(); } catch (error) { failures.push(error); } };
 		let drain: Promise<void>;
+		if (previous.kind === "active" || previous.kind === "retiring") {
+			cleanup(() => { void previous.scope.closeDelivery(); });
+			cleanup(previous.scope.disposeBackground);
+		}
 		try { drain = executionRuntime.shutdown(); } catch (error) { drain = Promise.reject(error); }
-		if (previous.kind === "active") previous.scope.disposeVisibility(ctx, cleanup);
+		if (previous.kind === "active") {
+			cleanup(previous.scope.disposeBinding);
+			previous.scope.disposeVisibility(ctx, cleanup);
+		}
 		observeTranscript(() => transcriptStore.dispose());
-		const recorder = traceRecorder; traceRecorder = undefined;
-		cleanup(() => recorder?.dispose());
-		const tails = previous.kind === "active" || previous.kind === "retiring" ? [...previous.scope.executionTails] : [];
+		const tails = previous.kind === "active" || previous.kind === "retiring" ? [...previous.scope.executionTails, ...previous.scope.bindingCleanup, ...previous.scope.deliveryCleanup, ...(previous.kind === "retiring" ? [previous.join] : [])] : [];
 		void Promise.allSettled([drain, ...tails]).then(results => {
+			terminalScope = undefined;
 			for (const result of results) if (result.status === "rejected") failures.push(result.reason);
+			if (cleanupFault) failures.push(cleanupFault);
+			// Child cleanup and run unbinding must finish before the recorder closes
+			// its subscriptions/files. Reentrant shutdown already owns this join.
+			try { cleanup(() => recorder?.dispose()); }
+			finally { cleanup(() => observationSession?.close()); }
 			if (failures.length) reject(new AggregateError(failures, "Guild shutdown cleanup failed"));
 			else resolve();
 		});
@@ -1236,9 +1662,97 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 	});
 
 	pi.registerCommand("guild", {
-		description: "List canonical Guild roles, profiles, permissions, and aliases",
+		description: "List Guild roster; inspect status and cancel background runs",
 		handler: async (args, ctx) => {
-			if (isHelpRequest(args)) return emitCommandText(ctx, GUILD_HELP);
+			const command = args.trim().split(/\s+/, 1)[0];
+			const session = observationSession;
+			const entry = state;
+			const epoch = session?.getEpoch();
+			// Only local reads after the last SDK getter: isCurrent itself can reenter.
+			const local = () => state === entry && observationSession === session && session?.getEpoch() === epoch;
+			const current = () => local() && (!session || session.isCurrent(ctx)) && local();
+			const output = (text: string) => {
+				if (!current()) return;
+				const hasUI = ctx.hasUI;
+				if (!current()) return;
+				const plain = stripTerminalSequences(text);
+				const safe = Buffer.byteLength(plain, "utf8") <= 8192 ? plain : truncateUtf8(plain, 8192 - 80);
+				if (hasUI) {
+					const ui = ctx.ui;
+					if (!current()) return;
+					const notify = ui.notify;
+					if (!current() || !local()) return;
+					Reflect.apply(notify, ui, [safe, "info"]);
+				} else {
+					const log = console.log;
+					if (current() && local()) Reflect.apply(log, console, [safe]);
+				}
+			};
+			if (command === "cancel-all") {
+				if (!session || !current()) return;
+				if (args.trim() !== "cancel-all") { output("Use /guild cancel-all without arguments."); return; }
+				try {
+					output(entry.kind === "active" ? "Cancellation requested; joining cleanup."
+						: entry.kind === "retiring" ? "Already draining; joining cleanup." : "No active owner.");
+					// Notification is a host callout: never acquire a replacement owner afterward.
+					if (!current()) return;
+					// Retirement closes admission atomically; individual cancels could launch queued siblings.
+					if (entry.kind === "active") await retireScope(entry.scope, ctx);
+					else if (entry.kind === "retiring") await entry.join;
+				} catch {
+					if (current()) output("Cancellation unavailable for this session branch.");
+				}
+				// No delayed UI write: navigation may have replaced this command's output authority.
+				return;
+			}
+			if (command === "status" || command === "cancel") {
+				const parts = args.trim().split(/\s+/);
+				const id = parts[1];
+				if (args.length > 512 || parts.length > 2 || command === "cancel" && !id || id !== undefined && !/^[A-Za-z0-9_.:|\-]{1,256}$/.test(id)) {
+					output("Invalid run ID. Use /guild status [runId] or /guild cancel <runId>."); return;
+				}
+				try {
+					if (!current()) return;
+					const observations = session?.service.list() ?? [];
+					const selected = id ? observations.filter(item => item.identity.runId === id) : observations;
+					if (id && !selected.length) {
+						const historical = session?.service.inspect(id);
+						if (historical?.report) {
+							const report = historical.report;
+							output(command === "cancel" ? `${id} · ${report.status} (already terminal)`
+								: `${id} · ${report.role}/${report.profile} · ${report.status}\n${continuationText()}`);
+						} else output("Unknown run ID in this session branch.");
+						return;
+					}
+					const live = entry.kind === "active" ? executionRuntime.list(entry.scope.owner) : [];
+					if (command === "cancel") {
+						if (!current()) return;
+						const snapshot = live.find(run => run.id === id);
+						if (snapshot && ["queued", "running", "waiting", "stopping"].includes(snapshot.status) && entry.kind === "active" && executionRuntime.isCurrent(entry.scope.owner)) {
+							if (!current()) return;
+							await executionRuntime.cancel(entry.scope.owner, id!);
+							if (!current()) return;
+							const final = executionRuntime.status(entry.scope.owner, id!);
+							output(`${id} · ${final.status}`);
+						} else if (selected[0]?.report) output(`${id} · ${selected[0].report.status} (already terminal)`);
+						else output("Run is not cancellable by the current owner.");
+						return;
+					}
+					const lines = selected.slice(0, 16).map(item => {
+						const snapshot = live.find(run => run.id === item.identity.runId);
+						const question = snapshot?.question;
+						const preview = question ? truncateUtf8(stripTerminalSequences(question.text).replace(/[\r\n\t]/g, " "), 512 - 80).replace(/\n/g, " ") : "";
+						return `${item.identity.runId} · ${item.identity.role}/${item.identity.profile} · ${snapshot?.status ?? item.report?.status ?? (entry.kind === "retiring" ? "stopping" : "interrupted")}`
+							+ (question ? `\nQuestion ${question.id} · untrusted preview: ${preview}\nExact question text: guild_wait (qualified hosts only).` : "");
+					});
+					const unavailable = state.kind !== "active" || !state.scope.backgroundAvailable();
+					const qualification = unavailable ? "\nBackground tools unavailable: require live semanticInterrupt-v1 and atomic-owned-tools-v1 bindings and inactive Plan."
+						+ (backgroundFault ? " Registration/withdrawal fault; admission closed." : "") : "";
+					output(`${lines.join("\n") || "No background runs."}${qualification}${selected.length > 16 ? "\n[Additional runs omitted; use /guild status <runId>.]" : ""}\n${continuationText()}`);
+				} catch { output("Background status unavailable for this session branch."); }
+				return;
+			}
+			if (isHelpRequest(args)) return emitCommandText(ctx, GUILD_HELP.replace("Automatic parent continuation unavailable; use /guild status or submit fresh input.", continuationText()));
 			emitCommandText(ctx, formatRoster());
 		},
 	});

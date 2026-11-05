@@ -448,3 +448,31 @@ test("list fences scope transitions and caught reentry without dropping retained
   assert.deepEqual(ledger.list()[0].report, terminal());
  }
 });
+
+test("observation failures do not poison subsequent validated writes", () => {
+ for (const read of ["list", "inspect"] as const) for (const failure of ["throw", "transition", "malformed"] as const) {
+  const {journal, ledger} = setup();
+  ledger.observeTerminal(ledger.reserve(identity()), terminal());
+  const original = journal.current;
+  const history = structuredClone(journal.history);
+  let calls = 0;
+  if (failure === "malformed") journal.history[0].data.version = 99;
+  else journal.hook = event => {
+   if (event !== "scope") return;
+   if (failure === "throw") throw new Error("transient SDK read");
+   if (++calls === 2) journal.current = {...journal.current, epoch: {}};
+  };
+  // list is a bounded memory observation and need not scan malformed history.
+  if (failure !== "malformed" || read === "inspect") assert.throws(() => read === "list" ? ledger.list() : ledger.inspect(failure === "malformed" ? "missing" : "r"));
+  journal.hook = undefined; journal.current = original;
+  if (failure === "malformed") {
+   assert.throws(() => ledger.reserve(identity("unsafe")));
+   journal.history = history;
+   assert.throws(() => ledger.reserve(identity("still-faulted")), /fault/i);
+   assert.equal(ledger.inspect("r")?.report?.status, "failed");
+  } else {
+   ledger.observeTerminal(ledger.reserve(identity("fresh")), terminal("fresh"));
+   assert.equal(ledger.inspect("fresh")?.report?.status, "failed");
+  }
+ }
+});

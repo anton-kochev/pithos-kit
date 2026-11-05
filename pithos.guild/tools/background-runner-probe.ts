@@ -44,11 +44,14 @@ const wait = async (predicate: () => boolean) => {
   controller.signal.throwIfAborted();
 };
 try {
+  const sharedCwd = join(root, "shared-cwd");
+  await mkdir(sharedCwd, { mode: 0o700 });
+  const cwd = await realpath(sharedCwd);
+  assert.deepEqual(await readdir(cwd), []);
   for (const [index, role] of (["coder", "reviewer", "coder"] as const).entries()) {
     const key = `task-${index}`;
-    const home = join(root, key), config = join(home, "config"), cwd = join(home, "cwd");
+    const home = join(root, key), config = join(home, "config");
     await mkdir(config, { recursive: true, mode: 0o700 });
-    await mkdir(cwd, { mode: 0o700 });
     await writeFile(join(config, "settings.json"), JSON.stringify({ compaction: { enabled: false }, retry: { enabled: false } }), { mode: 0o600 });
     const state: State = { key, home, closed: false, events: [], wire: "", stderr: "" };
     states.push(state);
@@ -86,11 +89,17 @@ try {
   }
   await wait(() => states.every(s => s.reply));
   assert.equal(new Set(states.map(s => s.child?.pid)).size, 3);
+  const measured = states.map(s => JSON.parse(s.question!));
+  const cwdCount = new Set(measured.map(q => q.cwd)).size;
+  console.log(JSON.stringify({ phase: "measured-questions", cwdCount, children: measured }));
+  assert.equal(cwdCount, 1, "All three actual children must share one cwd");
   for (const s of states) {
     assert.ok(s.child?.pid);
     assert.equal(s.closed, false);
     process.kill(s.child.pid, 0);
-    assert.deepEqual(JSON.parse(s.question!), { key: s.key, pid: s.child.pid, runId: s.task!.runId, taskId: s.task!.taskId });
+    const ask = s.events.find(e => e.type === "tool_execution_start" && e.toolName === ASK_TOOL);
+    assert.ok(ask?.toolCallId);
+    assert.deepEqual(JSON.parse(s.question!), { cwd, toolCallId: ask.toolCallId, key: s.key, pid: s.child.pid, runId: s.task!.runId, taskId: s.task!.taskId });
     assert.ok(!s.result);
   }
   console.log(JSON.stringify({ phase: "three-alive-waiting", version: manifest.version,
@@ -109,10 +118,11 @@ try {
     assert.equal(result.taskId, s.task!.taskId);
     assert.equal(result.report?.taskOutcome, "succeeded");
     assert.deepEqual(JSON.parse(result.report!.summary), { key: s.key, pid: s.child!.pid,
+      cwd, toolCallId: JSON.parse(s.question!).toolCallId,
       runId: s.task!.runId, taskId: s.task!.taskId, requests: 2, answer: `answer-for-${s.key}` });
     assert.deepEqual(s.events.filter(e => e.type === "tool_execution_start").map(e => e.toolName), [ASK_TOOL, SUBMIT_TOOL]);
     assert.equal(result.usage.turns, 2);
-    console.log(JSON.stringify({ phase: "original-child-completed", key: s.key, pid: s.child!.pid, taskId: result.taskId, exitCode: result.exitCode }));
+    console.log(JSON.stringify({ phase: "original-child-completed", ...JSON.parse(result.report!.summary), exitCode: result.exitCode }));
   }
 } catch (error) {
   console.error(String(controller.signal.reason ?? error));

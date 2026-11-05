@@ -4,6 +4,14 @@ import { ConcurrentRunQueue, type ConcurrentRunQueueOptions } from "./concurrent
 import { validateInput, type GuildInput } from "./protocol.ts";
 
 export type BackgroundStatus = "queued" | "running" | "waiting" | "stopping" | "completed" | "failed" | "cancelled";
+export interface BackgroundLifecycleChange {
+  readonly id: string;
+  readonly revision: number;
+  readonly kind: "admission" | "state" | "question" | "terminal";
+  readonly status: BackgroundStatus;
+  readonly question?: Readonly<{ id: string; text: string }>;
+  readonly error?: string;
+}
 export interface BackgroundSnapshot {
   readonly id: string;
   readonly status: BackgroundStatus;
@@ -29,12 +37,15 @@ export interface BackgroundRequest<C = undefined> {
  */
 export type BackgroundOperation<C = undefined> = (request: BackgroundRequest<C>) => unknown | PromiseLike<unknown>;
 export interface BackgroundLifecycle<C> {
+  /** Deferred, non-owning observation. Intermediate state coalesces; admission and terminal survive. */
+  onChange?(change: BackgroundLifecycleChange, context: C): void;
   /** Synchronous durable reservation; throwing prevents scheduling. */
   beforeSchedule?(request: Readonly<{ id: string; input: GuildInput; context: C }>): void;
   /** Observation only. Never await this registry's cancel/shutdown from this callback. */
   onTerminal?(snapshot: BackgroundSnapshot, context: C): void | PromiseLike<void>;
 }
 interface RecordState {
+  change?: (kind: BackgroundLifecycleChange["kind"]) => void;
   id: string;
   status: BackgroundStatus;
   controller: AbortController;
@@ -138,6 +149,30 @@ export class BackgroundRunRegistry<C = undefined> {
       if (this.reservationReentered) throw new Error("Reentrant background reservation.");
     } catch (error) { this.records.delete(id); throw error; }
     finally { this.reserving = false; }
+    const onChange = this.lifecycle.onChange;
+    if (onChange) {
+      let revision = 0, scheduled = false;
+      const pending = new Map<string, BackgroundLifecycleChange>();
+      record.change = kind => {
+        const snapshot: BackgroundLifecycleChange = Object.freeze({ id, revision: ++revision, kind, status: record.status,
+          ...(record.pending ? { question: Object.freeze({ id: record.pending.id, text: record.pending.text }) } : {}),
+          ...(record.error ? { error: record.error } : {}) });
+        // Three slots per run, not a history: preserve admission and terminal while
+        // replacing intermediate state with the latest (including its current question).
+        pending.set(kind === "admission" || kind === "terminal" ? kind : "current", snapshot);
+        if (scheduled) return;
+        scheduled = true;
+        queueMicrotask(() => {
+          const batch = [...pending.values()].sort((a, b) => a.revision - b.revision);
+          pending.clear(); scheduled = false;
+          for (const change of batch) {
+            try { void Promise.resolve(onChange(change, context)).catch(() => {}); }
+            catch { /* Observation never owns execution or publication. */ }
+          }
+        });
+      };
+      record.change("admission");
+    }
     record.lifetime = setTimeout(() => this.fail(record, "Run lifetime timeout."), this.limits.lifetimeMs);
     let finalization: Promise<void> | undefined;
     let terminalStatus: BackgroundStatus = "failed";
@@ -185,9 +220,10 @@ export class BackgroundRunRegistry<C = undefined> {
     }, {
       signal: record.controller.signal,
       onPendingCancel: error => finalize(undefined, error),
-      onPhase: phase => { record.status = phase; },
+      onPhase: phase => { record.status = phase; record.change?.("state"); },
     }).then(() => undefined, error => finalize(undefined, error)).finally(() => {
       record.status = terminalStatus;
+      record.change?.("terminal");
       this.notify();
     });
     // Observation failures remain on done for cancel/shutdown, but are always owned.
@@ -223,6 +259,7 @@ export class BackgroundRunRegistry<C = undefined> {
           questionSignal?.removeEventListener("abort", expire);
           record.pending = undefined;
           record.status = record.controller.signal.aborted ? "stopping" : "running";
+          record.change?.("question");
           this.notify();
         };
         const abort = () => { clear(); reject(new Error("Question aborted.")); };
@@ -235,6 +272,7 @@ export class BackgroundRunRegistry<C = undefined> {
         record.status = "waiting";
         questionSignal?.addEventListener("abort", expire, { once: true });
         if (questionSignal?.aborted) expire();
+        record.change?.("question");
         this.notify();
       });
     } catch (error) {
@@ -300,6 +338,7 @@ export class BackgroundRunRegistry<C = undefined> {
     record.failure = message;
     record.status = "stopping";
     record.controller.abort(new Error(message));
+    record.change?.("state");
     this.notify();
   }
 
@@ -310,6 +349,7 @@ export class BackgroundRunRegistry<C = undefined> {
     if (!record.frozen && !isTerminal(record.status)) {
       record.status = "stopping";
       record.controller.abort(new Error("Run cancelled."));
+      record.change?.("state");
       this.notify();
     }
     // Defer the lookup for cancellation reentered synchronously during start's enqueue.

@@ -1,13 +1,65 @@
 import type { ConcurrentRunQueueOptions } from "./concurrent-run-queue.ts";
 import { randomUUID } from "node:crypto";
 import { createGuildBackgroundAdmission, readPersistedPlanState, type BackgroundAdmissionContext } from "./background-admission.ts";
-import { BackgroundRunRegistry, copyResult, type BackgroundSnapshot, type BackgroundLimits } from "./background-runs.ts";
+import { BackgroundRunRegistry, copyResult, type BackgroundSnapshot, type BackgroundLifecycleChange, type BackgroundLimits } from "./background-runs.ts";
 import { GuildExecutionAuthority, type GuildOwner } from "./execution-authority.ts";
 import { runBackgroundGuildRole, type RunBackgroundGuildRoleOptions, type BackgroundControl } from "./background-runner.ts";
 import { projectBackgroundResult, type BackgroundTerminalResult } from "./background-result.ts";
 import { buildTask, type GuildInput } from "./protocol.ts";
 import { discoverPlan, revalidatePlan, type CoordinationBus, type PlanReadiness } from "./plan-coordination.ts";
 import { planBoundaryFor } from "./safety.ts";
+import type { GuildParsedEvent, RunUsage } from "./runner.ts";
+
+export interface BackgroundRunMetadata {
+ readonly owner: GuildOwner;
+ readonly runId: string;
+ readonly taskId: string;
+ readonly role: GuildInput["role"];
+ readonly profile: GuildInput["profile"];
+ /** At most 160 UTF-8 bytes, without splitting a Unicode code point. */
+ readonly taskPreview: string;
+ readonly cwd: string;
+ readonly model?: string;
+ readonly thinkingLevel?: string;
+ readonly projectTrusted: boolean;
+}
+export interface BackgroundRunSummary {
+ readonly usage: Readonly<Partial<RunUsage>>;
+ readonly activity?: string;
+ readonly activityTool?: string;
+ readonly status?: string;
+}
+function preview(text: string): string {
+ let result = "";
+ for (const character of text) {
+  if (Buffer.byteLength(result + character, "utf8") > 160) break;
+  result += character;
+ }
+ return result;
+}
+function summarize(update: Parameters<NonNullable<RunBackgroundGuildRoleOptions["onUpdate"]>>[0]): BackgroundRunSummary {
+ const usage: Partial<RunUsage> = {};
+ for (const key of ["input", "output", "cacheRead", "cacheWrite", "cost", "contextTokens", "turns"] as const) {
+  const value = update.usage?.[key];
+  if (typeof value === "number" && Number.isFinite(value) && value >= 0) usage[key] = value;
+ }
+ const strings: { activity?: string; activityTool?: string; status?: string } = {};
+ for (const key of ["activity", "activityTool", "status"] as const) {
+  if (typeof update[key] === "string") strings[key] = preview(update[key]);
+ }
+ return Object.freeze({ ...strings, usage: Object.freeze(usage) });
+}
+
+/** Non-owning UI state; intermediate changes may coalesce, never a transcript or report. */
+export interface BackgroundChange extends Omit<BackgroundLifecycleChange, "id"> {
+ readonly owner: GuildOwner;
+ readonly runId: string;
+ readonly taskId: string;
+ readonly role: GuildInput["role"];
+ readonly profile: GuildInput["profile"];
+ /** At most 160 UTF-8 bytes, without splitting a Unicode code point. */
+ readonly taskPreview: string;
+}
 
 export interface BackgroundAdmissionObservation {
  readonly id: string;
@@ -50,18 +102,29 @@ export interface GuildBackgroundContext extends BackgroundAdmissionContext {
 }
 type Binding = Readonly<Omit<GuildBackgroundContext, "getBranch" | "observation"> & {
  owner: GuildOwner; taskId: string;
+ readonly metadata: BackgroundRunMetadata;
  check(): void;
  checkCurrent(): void;
  beforeSchedule(id: string, input: GuildInput): void;
+ onChange(change: BackgroundLifecycleChange): void;
  onTerminal(snapshot: BackgroundSnapshot): void | PromiseLike<void>;
 }>;
 
 /** Explicitly activated composition shared by blocking registration and internal background admission. */
-export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = runBackgroundGuildRole, limits }: {
+export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = runBackgroundGuildRole, limits, onChange, onEvent, onUpdate, onRunStart, beforePlanHold }: {
  bus: CoordinationBus;
+ beforePlanHold?: (owner: GuildOwner | undefined) => boolean;
  parentEnvironment?: { readonly PITHOS_GUILD_PLAN_MODE?: unknown };
  runner?: typeof runBackgroundGuildRole;
  limits?: BackgroundLimits;
+ /** Deferred observer; throws and accidental promise rejections never own run lifetime. */
+ onChange?: (change: BackgroundChange) => void;
+ /** Trusted functions called without a host receiver; accidental promises never own execution. */
+ onEvent?: (metadata: BackgroundRunMetadata, event: GuildParsedEvent) => void;
+ onUpdate?: (metadata: BackgroundRunMetadata, summary: BackgroundRunSummary) => void;
+ /** Synchronous trace binding. Its disposer runs after runner cleanup, including after retirement.
+  * Async returns are unsupported and drained, never awaited or granted cleanup authority. */
+ onRunStart?: (metadata: BackgroundRunMetadata) => void | (() => void);
 }) {
  const capturedLimits = { ...limits };
  const bindings = new Map<string, Binding>();
@@ -81,12 +144,29 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
   const current = () => live && authority.isCurrent(binding.owner);
   const observe = (callback: (() => unknown)) => {
    if (!current()) return;
-   try { void Promise.resolve(callback()).catch(() => {}); } catch { /* Observers do not own transport. */ }
+   try {
+    // Each delivery rechecks the pure context predicate: a prior observer can stale it without retiring the owner.
+    binding.checkCurrent();
+    if (!current()) return;
+    void Promise.resolve(callback()).catch(() => {});
+   } catch { /* Guards and observers do not own transport. */ }
   };
+  let dispose: (() => void) | undefined;
   const task = buildTask({ ...request.input, runId: request.id, taskId: binding.taskId });
   try {
    binding.check();
    request.signal.throwIfAborted();
+   if (onRunStart) {
+    observe(() => {
+     const cleanup = onRunStart(binding.metadata);
+     if (typeof cleanup === "function") dispose = cleanup;
+     else return cleanup;
+    });
+    // Binding is an effectful callout: retirement or Plan activation must veto launch.
+    binding.check();
+    request.signal.throwIfAborted();
+    if (!current()) throw new Error("Invalid or stale Guild owner.");
+   }
    const result = await runner({
     ...request.input, runId: request.id, taskId: binding.taskId,
     cwd: binding.cwd, model: binding.model, thinkingLevel: binding.thinkingLevel, projectTrusted: binding.projectTrusted,
@@ -111,16 +191,27 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
      if (!current()) return Promise.reject(new Error("Stale Guild question."));
      return request.ask(text, questionSignal);
     },
-    onEvent: event => observe(() => binding.onEvent?.(event)),
-    onUpdate: update => observe(() => binding.onUpdate?.(update)),
+    onEvent: event => {
+     observe(() => onEvent?.(binding.metadata, copyResult(event, 64 * 1024) as GuildParsedEvent));
+     observe(() => binding.onEvent?.(event));
+    },
+    onUpdate: update => {
+     observe(() => onUpdate?.(binding.metadata, summarize(update)));
+     observe(() => binding.onUpdate?.(update));
+    },
    });
    live = false;
    return projectBackgroundResult(result, task);
-  } finally { live = false; discard(request.id); }
+  } finally {
+   live = false; discard(request.id);
+   // Cleanup belongs to the accepted binding, not to the current UI owner.
+   try { void Promise.resolve(dispose?.()).catch(() => {}); } catch { /* Non-owning cleanup. */ }
+  }
  }, capturedLimits, {
   beforeSchedule: request => request.context.beforeSchedule(request.id, request.input),
   onTerminal: (snapshot, binding) => binding.onTerminal(snapshot),
- }));
+  onChange: (change, binding) => binding.onChange(change),
+ }), { beforePlanHold });
  let starting = false;
  const captureGuard = { reentered: false };
  async function dispatchUpdate(id: string, state: Updates, update: { updateId: string; text: string }) {
@@ -187,9 +278,11 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
     };
     const taskId = randomUUID();
     let admitted: BackgroundAdmissionObservation, token: unknown;
+    let metadata: BackgroundRunMetadata;
     let admittedPlan: PlanReadiness | undefined;
     const binding: Binding = Object.freeze({ owner, taskId, cwd: context.cwd, model: context.model,
      thinkingLevel: context.thinkingLevel, projectTrusted: context.projectTrusted, onEvent: context.onEvent, onUpdate: context.onUpdate,
+     get metadata() { return metadata; },
      checkCurrent: assertFinalCurrent,
      check() {
       if (checking) { captureGuard.reentered = true; throw new Error("Reentrant background control."); }
@@ -224,8 +317,21 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
       assertFinalCurrent();
       if (captureGuard.reentered) throw new Error("Reentrant background reservation.");
       if (!authority.isCurrent(owner)) throw new Error("Invalid or stale Guild owner.");
+      metadata = Object.freeze({ owner, runId: id, taskId, role: input.role, profile: input.profile,
+       taskPreview: preview(input.task), cwd: binding.cwd, model: binding.model,
+       thinkingLevel: binding.thinkingLevel, projectTrusted: binding.projectTrusted });
       reservedId = id; bindings.set(id, binding);
       updates.set(id, { owner, count: 0, inFlight: 0, pending: [] });
+     },
+     onChange(change: BackgroundLifecycleChange) {
+      const { id, ...state } = change;
+      let taskPreview = "";
+      for (const character of admitted.input.task) {
+       if (Buffer.byteLength(taskPreview + character, "utf8") > 160) break;
+       taskPreview += character;
+      }
+      return onChange?.(Object.freeze({ ...state, owner, runId: id, taskId,
+       role: admitted.input.role, profile: admitted.input.profile, taskPreview }));
      },
      onTerminal(snapshot: BackgroundSnapshot) {
       bindings.delete(snapshot.id); discard(snapshot.id);

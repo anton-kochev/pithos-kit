@@ -218,3 +218,18 @@ it("normalizes every internal submission representation without retaining its en
     assert.doesNotMatch(JSON.stringify(isolated.get("r")!.entries), /SECRET|protocol|payload/);
   }
 });
+
+it("waiting and stopping transcripts remain active until cleanup completes", () => {
+  const store = new LiveTranscriptStore({maxRecentRuns: 0});
+  store.start(run("waiting"));
+  store.start(run("stopping"));
+  store.updatePhase("waiting", "waiting");
+  store.updatePhase("stopping", "stopping");
+  assert.deepEqual(store.list().active.map(run => run.id), ["waiting", "stopping"]);
+  for (const id of ["waiting", "stopping"]) {
+    store.ingest(id, {type: "message_update", assistantMessageEvent: {type: "text_delta", delta: "cleanup output"}});
+    assert.equal(store.get(id)?.entries[0].content, "cleanup output");
+    store.finish(id, "cancelled");
+    assert.equal(store.get(id), undefined);
+  }
+});

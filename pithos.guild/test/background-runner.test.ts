@@ -1,4 +1,5 @@
 import { spawn } from "node:child_process";
+import { channel } from "node:diagnostics_channel";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
@@ -191,4 +192,39 @@ test('synchronous rejected update write releases its pending request and timer',
  }) as typeof spawn});
  await updates;
  assert.equal(result.status, 'completed', result.errorMessage);
+});
+
+test('background trace ends after real child close and cleanup, including cancellation and startup failure', {timeout: 8000}, async () => {
+ const telemetry = channel('pithos.guild.child');
+ const events: any[] = [];
+ let taskFile = '', closed = false;
+ const listener = (message: unknown) => {
+  const event = message as any;
+  if (event.runId !== 'trace-lifecycle') return;
+  events.push({event, closed, exists: taskFile ? existsSync(taskFile) : false, frozen: Object.isFrozen(event)});
+ };
+ telemetry.subscribe(listener);
+ try {
+  const controller = new AbortController();
+  const result = await runBackgroundGuildRoleForTest({...options, runId: 'trace-lifecycle', task: 'question-hold', signal: controller.signal,
+   onEvent(event) {if (event.type === 'fixture') taskFile = event.taskFile as string;},
+   onQuestion() {controller.abort(); return new Promise(() => {});},
+  }, {...seam, limits: {...seam.limits, term: 1000}, spawn: ((...args: Parameters<typeof spawn>) => {
+   const child = spawn(...args); child.on('close', () => {closed = true;}); return child;
+  }) as typeof spawn});
+  assert.equal(result.status, 'cancelled');
+  assert.equal(events.filter(({event}) => event.type === 'start').length, 1);
+  const ends = events.filter(({event}) => event.type === 'end');
+  assert.equal(ends.length, 1); assert.equal(ends[0].closed, true); assert.equal(ends[0].exists, false);
+  assert.equal(ends[0].event.aborted, true);
+  assert.ok(events.every(item => item.frozen));
+  assert.ok(Object.isFrozen(ends[0].event.selectedSkills[0]));
+  events.length = 0;
+  await runBackgroundGuildRoleForTest({...options, runId: 'trace-lifecycle', signal: AbortSignal.abort()}, seam);
+  assert.equal(events.length, 0, 'never-launched cancellation has no transport');
+  const failed = await runBackgroundGuildRoleForTest({...options, runId: 'trace-lifecycle'}, {...seam, invocation: () => {throw new Error('startup failure');}});
+  assert.equal(failed.status, 'failed');
+  assert.deepEqual(events.map(({event}) => event.type), ['start', 'end']);
+  assert.equal(events[1].event.exitCode, null, 'startup failure has no child exit evidence');
+ } finally {telemetry.unsubscribe(listener);}
 });

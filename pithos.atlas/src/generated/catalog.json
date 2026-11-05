@@ -249,8 +249,8 @@
         "commands": [
           {
             "name": "guild",
-            "summary": "List the active Guild roster.",
-            "usage": "/guild [--help]"
+            "summary": "List the Guild roster, inspect background status, or request cancellation and join cleanup.",
+            "usage": "/guild [--help | status [runId] | cancel <runId> | cancel-all]"
           },
           {
             "name": "guild-handover",
@@ -307,6 +307,26 @@
             "name": "create_commit",
             "summary": "Controlled git commit creator with mandatory interactive confirmation.",
             "internal": true
+          },
+          {
+            "name": "guild_start",
+            "summary": "Start bounded background work (qualified hosts only)."
+          },
+          {
+            "name": "guild_status",
+            "summary": "Inspect background runs (qualified hosts only)."
+          },
+          {
+            "name": "guild_wait",
+            "summary": "Wait for a result or exact pending question text (qualified hosts only)."
+          },
+          {
+            "name": "guild_send",
+            "summary": "Reply to a pending question or send an update (qualified hosts only)."
+          },
+          {
+            "name": "guild_cancel",
+            "summary": "Request cancellation and join cleanup (qualified hosts only)."
           }
         ],
         "prompts": [],

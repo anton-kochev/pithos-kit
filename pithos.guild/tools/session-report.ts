@@ -1,3 +1,4 @@
+import { BackgroundLedger } from "../src/background-ledger.ts";
 import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -12,6 +13,8 @@ const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
 export interface HandoverTrace {
 	file: string;
+	startedAt?: number;
+	endedAt?: number;
 	rejectedSubmissions: number;
 	exitCode?: number | null;
 	truncated: boolean;
@@ -23,7 +26,11 @@ export interface HandoverRecord {
 	sessionId: string;
 	file: string;
 	startedAt: string;
-	entry: "tool" | "direct";
+	entry: "tool" | "direct" | "background";
+	originEntryId?: string;
+	taskId?: string;
+	admissionToTerminalMs?: number;
+	informationalChildCost?: number;
 	runId?: string;
 	target: string;
 	status: string;
@@ -39,6 +46,7 @@ export interface HandoverRecord {
 }
 
 export interface ReportSummary {
+	backgroundExecution?: { measured: number; unknown: number; sumMs?: number; unionMs?: number; overlapMs?: number };
 	sessions: number;
 	sessionsWithHandovers: number;
 	handovers: number;
@@ -56,6 +64,7 @@ export interface ReportSummary {
 
 export interface SessionReport {
 	handovers: HandoverRecord[];
+	diagnostics?: string[];
 	summary: ReportSummary;
 }
 
@@ -95,14 +104,18 @@ export function analyzeSessions(files: string[], options: AnalyzeOptions = {}): 
 	let includedSessions = 0;
 	let excludedSessions = 0;
 
+	const diagnostics: string[] = [];
+	const seenSessions = new Set<string>();
 	for (const file of files) {
 		const entries = readJsonl(file);
 		const header = entries[0];
 		if (header?.type !== "session" || typeof header.id !== "string") continue;
 		const startedAt = typeof header.timestamp === "string" ? header.timestamp : "";
 		if (options.since && startedAt < options.since) continue;
+		if (seenSessions.has(header.id)) continue;
+		seenSessions.add(header.id);
 		sessions++;
-		const session = analyzeSession(file, header, entries);
+		const session = analyzeSession(file, header, entries, diagnostics);
 		if (!session.handovers.length) continue;
 		sessionsWithHandovers++;
 		handovers.push(...session.handovers);
@@ -122,7 +135,9 @@ export function analyzeSessions(files: string[], options: AnalyzeOptions = {}): 
 	const known = includedSessions > 0;
 	return {
 		handovers,
+		...(diagnostics.length ? { diagnostics } : {}),
 		summary: {
+			...backgroundExecution(handovers),
 			sessions,
 			sessionsWithHandovers,
 			handovers: handovers.length,
@@ -148,7 +163,7 @@ export function analyzeSessions(files: string[], options: AnalyzeOptions = {}): 
 	};
 }
 
-function analyzeSession(file: string, header: Json, entries: Json[]) {
+function analyzeSession(file: string, header: Json, entries: Json[], diagnostics: string[]) {
 	const cwd = typeof header.cwd === "string" ? header.cwd : path.dirname(file);
 	const traces = readTraces(path.join(path.dirname(file), "guild", header.id));
 	const callArguments = new Map<string, Json>();
@@ -197,6 +212,7 @@ function analyzeSession(file: string, header: Json, entries: Json[]) {
 			}));
 		}
 	});
+	handovers.push(...backgroundRecords(file, header, entries, traces, diagnostics));
 	return { handovers, parentCost };
 }
 
@@ -275,6 +291,9 @@ function readTraces(directory: string): Map<string, HandoverTrace> {
 		const repoState = isRecord(records[0].repoState) ? records[0].repoState : undefined;
 		traces.set(runId, {
 			file,
+			...(records[0].version === 1 && isCount(records[0].startedAt) && isCount(end?.endedAt) && end.endedAt >= records[0].startedAt
+				&& (records[0].parentSessionId === undefined || records[0].parentSessionId === path.basename(directory))
+				? { startedAt: records[0].startedAt, endedAt: end.endedAt } : {}),
 			rejectedSubmissions: records.filter(item => item.kind === "event" && item.event?.type === "tool_execution_end"
 				&& item.event.toolName === "guild_submit_result" && item.event.isError === true).length,
 			...(end ? { exitCode: end.exitCode ?? null } : {}),
@@ -283,6 +302,106 @@ function readTraces(directory: string): Map<string, HandoverTrace> {
 		});
 	}
 	return traces;
+}
+
+function backgroundRecords(file: string, header: Json, entries: Json[], traces: Map<string, HandoverTrace>, diagnostics: string[]): HandoverRecord[] {
+	const histories = new Map<string, Json[]>();
+	const parents = new Map(entries.filter(entry => typeof entry.id === "string").map(entry => [entry.id, entry.parentId]));
+	const descendsFrom = (entry: Json, origin: string) => {
+		const seen = new Set<string>();
+		let parent = entry.parentId;
+		while (typeof parent === "string" && !seen.has(parent)) {
+			if (parent === origin) return true;
+			seen.add(parent);
+			parent = parents.get(parent);
+		}
+		return false;
+	};
+	for (const entry of entries) {
+		if (entry.type !== "custom" || typeof entry.customType !== "string" || !entry.customType.startsWith("pithos.guild.background.")) continue;
+		const data = entry.data;
+		const prior = histories.get(data?.runId) ?? [];
+		try {
+			if (data?.sessionId !== header.id) throw new Error("Session identity mismatch");
+			if (data.kind !== "admitted" && !descendsFrom(entry, data.originEntryId)) throw new Error("Origin is not an ancestor");
+			const candidate = [...prior, entry];
+			// Reuse canonical bounded DTO/history validation. This adapter cannot write or launch.
+			const ledger = new BackgroundLedger({scope: () => ({sessionId: header.id, branchEntryIds: candidate.map(item => item.id), writable: false, epoch: header}), entries: () => candidate, append: () => { throw new Error("Read-only report"); }});
+			ledger.restore();
+			histories.set(data.runId, candidate);
+		} catch (error) {
+			diagnostics.push(`${file}: background entry ${String(entry.id)} skipped: ${error instanceof Error ? error.message : "invalid record"}`);
+		}
+	}
+	// Per-run restore avoids applying the execution cache's capacity to offline history.
+	// Correlation ownership is nevertheless session-wide; suppress every claimant,
+	// not just the later one. Only canonically accepted records enter this index.
+	const conflicts = new Set<string>();
+	const owners = new Map<string, string>();
+	const claim = (field: string, value: string, runId: string) => {
+		const key = JSON.stringify([field, value]);
+		const prior = owners.get(key);
+		if (prior !== undefined && prior !== runId) {
+			conflicts.add(prior);
+			conflicts.add(runId);
+			diagnostics.push(`${file}: background conflict ${field} ${JSON.stringify(value)} between runs ${prior} and ${runId}; native credit withheld`);
+		} else owners.set(key, runId);
+	};
+	for (const [runId, history] of histories) {
+		for (const entry of history) {
+			claim("entryId", entry.id, runId);
+			if (entry.data.kind === "collected") {
+				claim("collectionId", entry.data.collectionId, runId);
+				claim("toolCallId", entry.data.toolCallId, runId);
+			}
+		}
+	}
+	return [...histories.values()].map(history => {
+		const admission = history[0];
+		const terminal = history.find(entry => entry.data.kind === "terminal");
+		const receipt = history.find(entry => entry.data.kind === "collected")?.data;
+		const identity = admission.data;
+		const details = terminal?.data.report ?? {};
+		const trace = traces.get(identity.runId);
+		const start = Date.parse(admission.timestamp);
+		const end = Date.parse(terminal?.timestamp);
+		const native = receipt?.native === "claimed" && !conflicts.has(identity.runId) ? entries.find(entry => {
+			const message = entry.message;
+			const correlation = message?.details?.guildBackground;
+			return entry.type === "message" && message.role === "toolResult" && message.toolName === "guild_wait"
+				&& message.toolCallId === receipt.toolCallId && correlation?.version === 1 && correlation.sessionId === header.id
+				&& correlation.runId === identity.runId && correlation.taskId === identity.taskId && correlation.collectionId === receipt.collectionId;
+		})?.message.usage?.cost?.total : undefined;
+		return omitUndefined({sessionId: header.id, file, startedAt: admission.timestamp ?? header.timestamp,
+			entry: "background" as const, runId: identity.runId, taskId: identity.taskId, originEntryId: admission.id,
+			target: `${identity.role}/${identity.profile}`, status: details.status ?? "unknown",
+			taskOutcome: details.report?.taskOutcome,
+			tdd: details.report?.compliance?.find((item: Json) => item.id === "tdd")?.status,
+			admissionToTerminalMs: Number.isFinite(start) && Number.isFinite(end) && end >= start ? end - start : undefined,
+			durationMs: trace?.startedAt !== undefined && trace.endedAt !== undefined ? trace.endedAt - trace.startedAt : undefined,
+			childCost: isCount(native) ? native : undefined,
+			informationalChildCost: isCount(native) ? undefined : detailsCost(details), trace});
+	});
+}
+
+function backgroundExecution(handovers: HandoverRecord[]): Pick<ReportSummary, "backgroundExecution"> {
+	const runs = handovers.filter(item => item.entry === "background");
+	if (!runs.length) return {};
+	const measured = runs.filter(item => item.durationMs !== undefined);
+	let unionMs = 0, overlapMs = 0;
+	// Sweep each session independently: unrelated session clocks do not prove concurrency.
+	for (const sessionId of new Set(measured.map(item => item.sessionId))) {
+		const events = measured.filter(item => item.sessionId === sessionId).flatMap(item => [[item.trace!.startedAt!, 1], [item.trace!.endedAt!, -1]]).sort((a, b) => a[0] - b[0]);
+		let active = 0, previous = events[0]?.[0] ?? 0;
+		for (const [time, delta] of events) {
+			if (active > 0) unionMs += time - previous;
+			if (active > 1) overlapMs += time - previous;
+			active += delta;
+			previous = time;
+		}
+	}
+	return {backgroundExecution: {measured: measured.length, unknown: runs.length - measured.length,
+		...(measured.length ? {sumMs: measured.reduce((sum, item) => sum + item.durationMs!, 0), unionMs, overlapMs} : {})}};
 }
 
 export function formatReport(report: SessionReport): string {
@@ -307,6 +426,17 @@ export function formatReport(report: SessionReport): string {
 	lines.push("", "Duration");
 	row("Measured", summary.durationMs.count);
 	if (summary.durationMs.median !== undefined) row("Median / p90", `${seconds(summary.durationMs.median)} / ${seconds(summary.durationMs.p90!)}`);
+	if (summary.backgroundExecution) {
+		const timing = summary.backgroundExecution;
+		lines.push("", "Background execution (observed trace intervals; no speedup claim)");
+		row("Measured", timing.measured);
+		row("Unknown", timing.unknown);
+		if (timing.sumMs !== undefined) {
+			row("Sum child execution", seconds(timing.sumMs));
+			row("Any child executing", seconds(timing.unionMs!));
+			row("At least two executing", seconds(timing.overlapMs!));
+		}
+	}
 	lines.push("", "Cost (sessions with all costs known)");
 	row("Included / excluded", `${summary.cost.includedSessions} / ${summary.cost.excludedSessions}`);
 	if (summary.cost.parent !== undefined) row("Parent", money(summary.cost.parent));

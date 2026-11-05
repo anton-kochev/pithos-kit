@@ -1,7 +1,7 @@
 import { stripTerminalSequences, truncateToWidth } from "@earendil-works/pi-tui";
 import type { GuildProfile, GuildRole } from "./agents";
 
-export type GuildRunPhase = "queued" | "running";
+export type GuildRunPhase = "queued" | "running" | "waiting" | "stopping";
 
 interface ActiveGuildRunState {
 	id: string;
@@ -94,10 +94,13 @@ export class GuildRunTracker {
 
 	formatLines(now = Date.now()): string[] {
 		if (this.runs.size === 0) return [];
-		const lines = [`Guild · ${this.runs.size} active`];
+		const runs = [...this.runs.values()];
+		const count = (phase: GuildRunPhase) => runs.filter(run => run.phase === phase).length;
+		const queued = count("queued");
+		const lines = [`Guild · ${runs.length - queued} occupied · ${queued} queued · ${count("waiting")} waiting · ${count("stopping")} stopping`];
 		for (const run of this.runs.values()) {
 			const turns = run.turns ? ` · ${run.turns} turn${run.turns === 1 ? "" : "s"}` : "";
-			lines.push(`⏳ ${run.identity} · ${run.phase} · ${elapsedTime(run.startedAt, now)}${turns}${run.preview ? ` · ${run.preview}` : ""}`);
+			lines.push(`⏳ ${run.identity} · ${taskPreview(run.id) ?? "run"} · ${run.phase} · ${elapsedTime(run.startedAt, now)}${turns}${run.preview ? ` · ${run.preview}` : ""}`);
 		}
 		return lines;
 	}

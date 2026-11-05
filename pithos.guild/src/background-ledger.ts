@@ -55,13 +55,16 @@ export class BackgroundLedger {
  private scopeSnapshot?: LedgerScope;
  private sessionId?: string;
 
- private operation<T>(body: () => T): T {
+ private operation<T>(body: () => T, latchFault = true): T {
   if (this.busy) { this.reentered = true; throw new Error("Reentrant ledger operation"); }
   this.busy = true; this.reentered = false;
   try { return body(); }
-  catch (error) { if (!(error instanceof AdmissionRejection)) this.fault = true; throw error; }
+  catch (error) { if (latchFault && !(error instanceof AdmissionRejection)) this.fault = true; throw error; }
   finally { this.busy = false; this.scopeSnapshot = undefined; }
  }
+ // Observation failures may be transient SDK navigation. Share the reentry guard
+ // so an observation attempted inside a write still vetoes and faults that write.
+ private observation<T>(body: () => T): T { return this.operation(body, false); }
  private scope(): LedgerScope {
   const current = this.journal.scope();
   if (this.reentered) throw new Error("Reentrant journal callback");
@@ -159,7 +162,7 @@ export class BackgroundLedger {
   * Reads remain available after a fault so retained terminal memory is recoverable.
   */
  inspect(runId: string): {report?: BackgroundTerminalResult; interrupted: boolean} | undefined {
-  return this.operation(() => {
+  return this.observation(() => {
    this.check();
    const observed = this.cache.get(runId) ?? this.lookup(this.entries(), runId);
    this.check();
@@ -173,7 +176,7 @@ export class BackgroundLedger {
   * Invisible branches still occupy cache capacity but never expose their reports.
   */
  list(): LedgerObservation[] {
-  return this.operation(() => {
+  return this.observation(() => {
    this.check();
    const scope = this.scopeSnapshot!;
    const result: LedgerObservation[] = [];

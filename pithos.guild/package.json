@@ -60,8 +60,8 @@
     "commands": [
       {
         "name": "guild",
-        "usage": "/guild [--help]",
-        "summary": "List the active Guild roster."
+        "usage": "/guild [--help | status [runId] | cancel <runId> | cancel-all]",
+        "summary": "List the Guild roster, inspect background status, or request cancellation and join cleanup."
       },
       {
         "name": "guild-handover",
@@ -118,6 +118,26 @@
         "name": "create_commit",
         "summary": "Controlled git commit creator with mandatory interactive confirmation.",
         "internal": true
+      },
+      {
+        "name": "guild_start",
+        "summary": "Start bounded background work (qualified hosts only)."
+      },
+      {
+        "name": "guild_status",
+        "summary": "Inspect background runs (qualified hosts only)."
+      },
+      {
+        "name": "guild_wait",
+        "summary": "Wait for a result or exact pending question text (qualified hosts only)."
+      },
+      {
+        "name": "guild_send",
+        "summary": "Reply to a pending question or send an update (qualified hosts only)."
+      },
+      {
+        "name": "guild_cancel",
+        "summary": "Request cancellation and join cleanup (qualified hosts only)."
       }
     ],
     "prompts": [],
@@ -200,7 +220,10 @@
     "test:plan-runtime": "node --import tsx tools/plan-runtime-probe.ts",
     "test:shutdown-runtime": "node --import tsx tools/shutdown-runtime-probe.ts",
     "test:navigation-runtime": "node --import tsx tools/navigation-runtime-probe.ts",
+    "test:semantic-runtime": "node --import tsx tools/semantic-runtime-probe.ts",
+    "test:continuation-runtime": "node --import tsx tools/continuation-runtime-probe.ts",
     "test:background-runtime": "node --import tsx tools/background-runner-probe.ts",
+    "test:accounting-runtime": "node --import tsx tools/accounting-runtime-probe.ts",
     "report": "node --import tsx tools/session-report.ts",
     "eval": "node --import tsx evaluation/src/cli.ts",
     "eval:test": "node --import tsx --test evaluation/test/*.test.ts",

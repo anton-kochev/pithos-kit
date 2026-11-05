@@ -1,7 +1,7 @@
 /**
  * Opt-in, provider-free Pi 1.4.0 shutdown probe with terminal-I/O UI smoke.
  * npm run test:shutdown-runtime -- /path/to/pi/dist/cli.js (or PI_SHUTDOWN_PROBE_CLI).
- * Four core pins and one actual InteractiveMode smoke must pass.
+ * Four core pins and four actual InteractiveMode cases must pass.
  */
 import assert from "node:assert/strict";
 import { spawn, type ChildProcess } from "node:child_process";
@@ -93,10 +93,11 @@ async function main() {
     assert.equal(records[0].aiVersion, "1.4.0");
     const cases = records.filter(record => record.phase === "case");
     assert.deepEqual(cases.map(record => record.case), ["before-switch-veto", "replacement-drain",
-      "cleanup-fault-continuation", "terminal-drain", "interactive-smoke"]);
+      "cleanup-fault-continuation", "terminal-drain", "interactive-smoke", "reset-before-shutdown",
+      "reset-before-shutdown-late-rejection", "reset-before-shutdown-cleanup-fault"]);
     for (const core of cases) assert.equal(core.status, "passed", JSON.stringify(core));
     assert.equal(records.at(-1)?.phase, "summary");
-    assert.equal(records.at(-1)?.passed, 5);
+    assert.equal(records.at(-1)?.passed, 8);
     assert.equal(records.at(-1)?.coreComplete, true);
     assert.equal(records.at(-1)?.skipped, 0);
     assert.equal(records.at(-1)?.complete, true);

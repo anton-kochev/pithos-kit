@@ -1,7 +1,8 @@
-export type LivePhase = "queued" | "running" | "completed" | "failed" | "cancelled";
+export type LiveActivePhase = "queued" | "running" | "waiting" | "stopping";
+export type LivePhase = LiveActivePhase | "completed" | "failed" | "cancelled";
 export type LiveRunStart = Readonly<{
   id: string; role: string; profile: string; task: string;
-  phase: "queued" | "running"; startedAt: number;
+  phase: LiveActivePhase; startedAt: number;
 }>;
 export type LiveEntry = Readonly<{
   id: string; kind: "text" | "tool"; content: string;
@@ -62,7 +63,7 @@ export class LiveTranscriptStore {
     this.retain(input.id, snapshot);
     this.changed();
   }
-  updatePhase(id: string, phase: "queued" | "running"): void {
+  updatePhase(id: string, phase: LiveActivePhase): void {
     const run = this.runs.get(id);
     if (run && active(run)) this.update(id, { phase });
   }
@@ -149,8 +150,8 @@ export class LiveTranscriptStore {
     const runs = [...this.runs.values()];
     return Object.freeze({ version: this.version, omittedRuns: this.omittedRuns,
       retainedBytes: runs.reduce((sum, run) => sum + run.retainedBytes, 0),
-      active: Object.freeze(runs.filter(run => run.phase === "queued" || run.phase === "running")),
-      recent: Object.freeze(runs.filter(run => run.phase !== "queued" && run.phase !== "running")),
+      active: Object.freeze(runs.filter(active)),
+      recent: Object.freeze(runs.filter(run => !active(run))),
     });
   }
   /** Synchronous change notification; observer exceptions cannot escape. Returns unsubscribe. */
@@ -347,7 +348,7 @@ function clip(value: string, limit: number): string {
 }
 
 function active(run: LiveRunSnapshot): boolean {
-  return run.phase === "queued" || run.phase === "running";
+  return run.phase === "queued" || run.phase === "running" || run.phase === "waiting" || run.phase === "stopping";
 }
 
 function sameEntries(left: readonly LiveEntry[], right: readonly LiveEntry[]): boolean {

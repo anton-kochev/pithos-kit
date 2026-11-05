@@ -773,3 +773,116 @@ it("queued cancellation retains pending capacity until publication finishes", as
     assert.equal(observations, 19);
   } finally { cleanup.resolve(); publication.resolve(); await registry.shutdown(); }
 });
+
+it("change observation is committed, question-aware, and terminal only after publication", async () => {
+  const publication = deferred();
+  const changes: any[] = [];
+  let returned = false;
+  const registry = new BackgroundRunRegistry(async request => {
+    await request.ask("Which option?");
+    return { secret: "not observable" };
+  }, {}, {
+    onTerminal: () => publication.promise,
+    onChange(change) {
+      assert.equal(returned, true);
+      assert.ok(Object.isFrozen(change));
+      changes.push(change);
+      if (change.kind === "terminal") assert.equal(registry.collect(change.id).claimed, true);
+    },
+  });
+  const run = registry.start(input);
+  returned = true;
+  await tick();
+  assert.equal(changes[0]?.kind, "admission");
+  assert.equal(changes.at(-1).question.id, registry.status(run.id).question!.id);
+  assert.ok(Object.isFrozen(changes.at(-1).question));
+  registry.reply(run.id, registry.status(run.id).question!.id, "A");
+  await tick();
+  assert.equal(changes.at(-1).question, undefined);
+  assert.equal(changes.some(change => change.kind === "terminal"), false);
+  publication.resolve();
+  await tick();
+  assert.equal(changes.at(-1).kind, "terminal");
+  assert.equal(changes.at(-1).status, "completed");
+  assert.equal(registry.status(run.id).consumed, true);
+  assert.ok(changes.every((change, index) => change.revision > (changes[index - 1]?.revision ?? 0) && !("result" in change)));
+  await registry.shutdown();
+});
+
+it("change observation rejects reservations silently and contains reentrant throwing observers", async () => {
+  const rejected: unknown[] = [];
+  const refusal = new BackgroundRunRegistry(async () => {}, {}, {
+    beforeSchedule() { throw Error("reservation refused"); }, onChange: change => { rejected.push(change); },
+  });
+  assert.throws(() => refusal.start(input), /reservation refused/);
+  await tick();
+  assert.deepEqual(rejected, []);
+  await refusal.shutdown();
+
+  const changes: any[] = [], launched: string[] = [];
+  let publications = 0, reentered = false;
+  const registry = new BackgroundRunRegistry(async request => {
+    launched.push(request.id);
+    await new Promise<void>(resolve => request.signal.addEventListener("abort", () => resolve(), { once: true }));
+  }, {}, {
+    onTerminal() { publications++; },
+    onChange(change) {
+      changes.push(change);
+      if (!reentered) {
+        reentered = true;
+        for (let index = 0; index < 20; index++) { try { registry.start(input); } catch {} }
+        void registry.cancel(change.id);
+        void registry.shutdown();
+      }
+      throw Error("observer throw");
+    },
+  });
+  registry.start(input);
+  await tick();
+  await registry.shutdown();
+  await tick();
+  assert.equal(launched.length, 3);
+  assert.equal(publications, 11);
+  assert.equal(changes.filter(change => change.kind === "terminal").length, 11);
+  for (const run of registry.list()) {
+    const runChanges = changes.filter(change => change.id === run.id);
+    assert.equal(runChanges[0].kind, "admission");
+    if (!launched.includes(run.id)) assert.equal(runChanges.some(change => change.status === "running"), false);
+  }
+});
+
+for (const cause of ["timeout", "cancel", "reply"] as const) it(`change observation clears ${cause} questions without disturbing siblings`, async () => {
+  const changes: any[] = [];
+  const registry = new BackgroundRunRegistry(async request => {
+    await request.ask("Question");
+  }, { questionTimeoutMs: cause === "timeout" ? 20 : 10000 }, { onChange: change => { changes.push(change); } });
+  const runs = Array.from({ length: 3 }, () => registry.start(input));
+  await tick();
+  for (const run of runs) assert.equal([...changes].reverse().find(change => change.id === run.id).question.id, registry.status(run.id).question!.id);
+  if (cause === "cancel") await registry.cancel(runs[0].id);
+  if (cause === "reply") registry.reply(runs[0].id, registry.status(runs[0].id).question!.id, "Answer");
+  if (cause === "timeout") await new Promise(resolve => setTimeout(resolve, 40));
+  await tick();
+  assert.equal([...changes].reverse().find(change => change.id === runs[0].id).question, undefined);
+  if (cause !== "timeout") {
+    assert.equal(registry.status(runs[1].id).status, "waiting");
+    assert.equal(registry.status(runs[2].id).status, "waiting");
+  }
+  await registry.shutdown();
+});
+
+it("change observation reports persistence failure without making it collectable", async () => {
+  const changes: any[] = [];
+  const registry = new BackgroundRunRegistry(async () => ({ report: "private" }), {}, {
+    onTerminal() { throw Error("disk unavailable"); },
+    onChange: change => { changes.push(change); },
+  });
+  const run = registry.start(input);
+  await tick();
+  assert.equal(changes.at(-1)?.kind, "terminal");
+  assert.equal(changes.at(-1).status, "failed");
+  assert.match(changes.at(-1).error, /Terminal persistence fault/);
+  assert.equal("result" in changes.at(-1), false);
+  assert.throws(() => registry.collect(run.id), /persistence fault/);
+  await assert.rejects(registry.shutdown(), /publication failed/);
+});

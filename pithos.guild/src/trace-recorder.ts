@@ -1,5 +1,6 @@
 import { channel } from "node:diagnostics_channel";
 import * as fs from "node:fs";
+import { StringDecoder } from "node:string_decoder";
 import * as path from "node:path";
 import { errorMetadata } from "./logging.ts";
 import type { RepoStateSummary } from "./repo-state.ts";
@@ -38,6 +39,7 @@ interface ChildTrace {
 	truncated: boolean;
 	failed: boolean;
 	pending: Buffer;
+	stderr: StringDecoder;
 }
 
 export function createGuildTraceRecorder(options: GuildTraceRecorderOptions = {}): GuildTraceRecorder | undefined {
@@ -52,7 +54,7 @@ export function createGuildTraceRecorder(options: GuildTraceRecorderOptions = {}
 		if (trace.failed) return;
 		trace.failed = true;
 		close(trace);
-		options.log?.warn("trace.error", { childId, error: errorMetadata(error) });
+		try { void Promise.resolve(options.log?.warn("trace.error", { childId, error: errorMetadata(error) })).catch(() => {}); } catch { /* Neither sync throws nor async rejections from our logger may escape. */ }
 	};
 
 	const write = (trace: ChildTrace, childId: string, record: Record<string, unknown>, force = false) => {
@@ -95,7 +97,7 @@ export function createGuildTraceRecorder(options: GuildTraceRecorderOptions = {}
 		if (observation.type === "start") {
 			const binding = bindings.get(runId);
 			if (!binding || traces.has(childId)) return;
-			const trace: ChildTrace = { bytes: 0, truncated: false, failed: false, pending: Buffer.alloc(0) };
+			const trace: ChildTrace = { bytes: 0, truncated: false, failed: false, pending: Buffer.alloc(0), stderr: new StringDecoder("utf8") };
 			traces.set(childId, trace);
 			try {
 				const directory = path.join(binding.sessionDir, "guild", binding.sessionId);
@@ -126,8 +128,10 @@ export function createGuildTraceRecorder(options: GuildTraceRecorderOptions = {}
 			}
 			trace.pending = pending.length > maxBytes ? Buffer.alloc(0) : pending;
 		} else if (observation.type === "stderr" && typeof observation.base64 === "string") {
-			write(trace, childId, { kind: "stderr", text: Buffer.from(observation.base64, "base64").toString("utf8") });
+			write(trace, childId, { kind: "stderr", text: trace.stderr.write(Buffer.from(observation.base64, "base64")) });
 		} else if (observation.type === "end") {
+			const stderr = trace.stderr.end();
+			if (stderr) write(trace, childId, { kind: "stderr", text: stderr });
 			if (trace.pending.length) writeStdoutLine(trace, childId, trace.pending);
 			write(trace, childId, {
 				kind: "end", exitCode: observation.exitCode ?? null, aborted: observation.aborted === true,

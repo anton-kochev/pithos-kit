@@ -11,8 +11,9 @@ export default function (pi: ExtensionAPI) {
   assert.match(key ?? "", /^task-[012]$/);
   assert.equal(process.env.PI_OFFLINE, "1");
   const pid = process.pid;
-  const callId = "original-question";
-  const question = JSON.stringify({ key, pid, runId: task.runId, taskId: task.taskId });
+  // Native ASK identity, not a Guild registry questionId.
+  const toolCallId = "original-question";
+  const question = JSON.stringify({ key, pid, cwd: process.cwd(), toolCallId, runId: task.runId, taskId: task.taskId });
   let requests = 0;
   pi.registerProvider("background-runtime-probe", {
     api: "background-runtime-probe", baseUrl: "https://background-runtime-probe.invalid",
@@ -39,18 +40,18 @@ export default function (pi: ExtensionAPI) {
           args = { question };
         } else {
           assert.equal(results.length, 1);
-          assert.equal(results[0].toolCallId, callId);
+          assert.equal(results[0].toolCallId, toolCallId);
           assert.equal(results[0].toolName, ASK_TOOL);
           assert.equal(results[0].isError, false);
           assert.deepEqual(results[0].content, [{ type: "text", text: JSON.stringify({ outcome: "answered", answer: `answer-for-${key}` }) }]);
           const { protocol, version, runId, taskId, role, profile } = task;
           args = { protocol, version, runId, taskId, role, profile, taskOutcome: "succeeded", compliance: [],
-            summary: JSON.stringify({ key, pid, runId, taskId, requests, answer: `answer-for-${key}` }),
+            summary: JSON.stringify({ key, pid, cwd: process.cwd(), toolCallId: results[0].toolCallId, runId, taskId, requests, answer: `answer-for-${key}` }),
             blockers: [], limitations: ["Exploratory Pi 1.4 only; no live inference or Plan integration."],
             payload: role === "coder" ? { changes: [], verification: [] } : { scope: ["Runtime probe only"], findings: [], verdict: "Approve" } };
           validateResult(args, task);
         }
-        const toolCall = { type: "toolCall" as const, id: requests === 1 ? callId : "original-submit",
+        const toolCall = { type: "toolCall" as const, id: requests === 1 ? toolCallId : "original-submit",
           name: requests === 1 ? ASK_TOOL : SUBMIT_TOOL, arguments: args };
         stream.push({ type: "start", partial: message });
         message.content.push(toolCall);

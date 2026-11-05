@@ -18,7 +18,7 @@ Or ask the main agent, “Use explorer/typescript to find the validation path an
 
 ## Install
 
-Requires Pi **1.0.0 or newer**. The provider-free development test harness remains pinned to 0.99.0; passing that harness does not certify Pi 1.x or real-provider behavior.
+The blocking path requires Pi **1.0.0 or newer**, unchanged. Background tools are conditional: stock installed Pi **1.4.0** exposes none of the five tools. They require live-qualified `semanticInterrupt` (`pi-semantic-interrupt-v1`) and `atomicOwnedTools` (`pi-atomic-owned-tools-v1`), plus safe Plan policy and owner. Optional qualified `parentContinuation` (`pi-parent-continuation-v1`) additionally enables automatic idle-parent delivery. Package tool metadata describes conditional inventory, not availability on every supported version. Qualification requires the exact protocol, lifetime capability and successful live binding—not semver, function presence or an environment override. The provider-free development harness remains pinned to 0.99.0; it does not certify Pi 1.x or real-provider behavior.
 
 Install the current release:
 
@@ -49,7 +49,7 @@ pi:
 
 ## Roles and profiles
 
-Roles own responsibility and the repository tool ceiling. Every child additionally receives only `guild_submit_result`, a child-only reporting tool with no repository or delegation capability:
+Roles own responsibility and the repository tool ceiling. Every child additionally receives `guild_submit_result`, a child-only reporting tool with no repository or delegation capability. Background coder/reviewer children also receive `guild_ask_parent` for correlated clarification; it does not expand repository permissions or enable delegation:
 
 | Role | Responsibility | Tools |
 |---|---|---|
@@ -242,9 +242,44 @@ List the fixed package roles, profiles, permissions, and aliases without launchi
 
 Both commands also accept `-h`; help returns before idle waits, UI prompts, admission checks, or child execution. Task input remains free-form. New child completions must use the exact result protocol below; prose alone is never a successful completion.
 
+### Background tools and manual controls
+
+On a qualified interactive host, coder/reviewer tasks can run concurrently; other roles remain blocking-only.
+
+| Tool | Purpose |
+|---|---|
+| `guild_start` | Admit a task with canonical role, profile, task and optional coder practices; returns IDs, not proof of launch |
+| `guild_status` | Inspect runs and current untrusted questions without collecting usage |
+| `guild_send` | Send an update, or reply with the exact pending `questionId`; acceptance is not delivery or scope acknowledgment |
+| `guild_wait` | Observe a run and explicitly collect its terminal report; default 30 seconds, maximum 60 |
+| `guild_cancel` | Cancel one run and join cleanup |
+
+```text
+guild_start({role: "coder", profile: "typescript", task: "...scope and acceptance criteria..."})
+guild_status({runId: "<returned runId>"})
+guild_send({runId: "<runId>", questionId: "<pending questionId>", message: "...answer..."})
+guild_wait({runId: "<runId>", timeoutMs: 60000})
+```
+
+Limits are **3 occupied slots, 8 pending starts and 16 unconsumed records**. Queued admission is not child launch; waiting and stopping retain capacity through cleanup and terminal publication. Each run permits eight questions, 8 KiB question/message text, two pending/in-flight updates and 32 lifetime updates. There are at most 32 concurrent waiters. Terminal report DTOs and whole public tool results have 64 KiB budgets; oversized reports are rejected, not silently truncated into success. Wait timeout is observational, not cancellation.
+
+`PITHOS_GUILD_PLAN_MODE` is captured once: unset or exact `required` needs a compatible inactive Plan handshake. Exact `standalone` is a trusted parent assertion of absence and rejects any provider reply. Invalid values block background admission only. Safe persisted inactivity and strict Plan protection through cleanup remain required. Shared cwd and task scopes are **not file locks**: coordinate overlapping edits yourself. Guild does not roll back, stash, merge or delete child edits on cancellation.
+
+```text
+/guild status [runId]
+/guild cancel <runId>
+/guild cancel-all
+```
+
+These manual controls inspect or cancel without a model turn, usage claim or automatic rearm. No-argument `/guild` and help retain the roster/help behavior. Status shows question IDs and sanitized untrusted previews; qualified tool status/wait recover canonical questions and results.
+
+A semantic application interrupt, including Escape dispatched to the native interrupt action, cancels **all active, waiting and queued work**. Escape consumed by a modal or panel is not a semantic interrupt. Completion never restarts an interrupted or retired parent; a healthy qualified parent may receive automatic notices. Only fresh eligible idle intent after drain and safe Plan checks can reactivate the owner. Navigation drains before epoch change; session replacement fences old callbacks. Persisted observations are visible according to their origin session/branch and restore observations, **never children**.
+
+**Automatic idle-parent continuation is conditional on live-qualified `parentContinuation`.** Fair bounded batches coalesce canonical questions and terminal notices; terminal delivery follows publication and cleanup. Notices acknowledge historical commit, not model reading, and neither notices nor status collect child usage. Actual parent inference has its normal usage. Without this optional capability, otherwise qualified background tools and UI/status remain available, but notices add no context messages or model turns. There is no fallback `sendMessage` queue. The [host proposal](../proposals/pi-interrupt-hook/README.md) remains uninstalled.
+
 ## Live transparency
 
-Accepted handovers are serialized, across all roles and both entry paths, as blocking exclusive operations through one shared process-local scheduler. Their FIFO waiting backlog remains unbounded, preserving existing blocking admission rather than imposing a new overflow limit. The compact dashboard distinguishes queued and running work with an automatic task preview after the existing metrics. Previews are sanitized single lines capped at 80 terminal columns (including the ellipsis), then clipped to available panel width. Model settings and tools remain hidden; the original delegated task is unchanged:
+On the blocking path, accepted handovers are serialized, across all roles and both blocking entry paths, as exclusive operations through one shared process-local scheduler. Their FIFO waiting backlog remains unbounded, preserving existing blocking admission rather than imposing a new overflow limit. The compact dashboard distinguishes queued and running work with an automatic task preview after the existing metrics. Previews are sanitized single lines capped at 80 terminal columns (including the ellipsis), then clipped to available panel width. Model settings and tools remain hidden; the original delegated task is unchanged:
 
 ```text
 Guild · 2 active · ↑ select · → expand
@@ -258,7 +293,7 @@ With the dashboard visible and the editor **exactly empty**, plain **↑** selec
 
 In expanded view, **↑/↓**, **Page Up/Page Down**, and **Home** scroll manually; **End** resumes live following. Paused scrolling stays anchored to content across updates and resizing; an evicted anchor is labelled explicitly. Fullscreen mode also supports clicking a dashboard row to select and expand that exact run inline. Regular terminal mode uses keyboard navigation, not mouse clicks.
 
-The dashboard has no inspector modal or global F6 binding. Its component and selection survive ticker and queue updates. Expansion uses the same opaque, padded Guild detail styling across the full available terminal width; the entire panel is capped at half the terminal height (at most 24 rows), leaving space for the editor. Short screens show fewer roster rows around the selection. A blank opaque row separates the compact selected agent from a themed **✦ Session** delimiter, without repeating its role/status. Two-column detail padding, a muted bounded task preview, a **Transcript** divider and footer breathing room separate content and controls; these rows count against the height budget. Tiny screens prioritize the visible **← collapse** control over roster chrome. Assistant entries and ordinary tool input/output are labelled. Internal report submissions show only a bounded human summary and submission status, never their protocol envelope; submission is not host-validated completion. It does not send instructions to children or expose thinking/reasoning blocks, signatures, provider metadata, or binary images. Unsupported images and omitted content are labelled. Collapse/navigation never cancel a handover. Only queued/running agents appear in the roster. When a selected agent completes, fails, or is cancelled (including while queued), its detail subscription is immediately disposed and its row removed. Selection moves to the adjacent active row when available, but never automatically expands another agent. An omitted/evicted transcript for a still-active ID remains labelled unavailable.
+The dashboard has no inspector modal or global F6 binding. Its component and selection survive ticker and queue updates. Expansion uses the same opaque, padded Guild detail styling across the full available terminal width; the entire panel is capped at half the terminal height (at most 24 rows), leaving space for the editor. Short screens show fewer roster rows around the selection. A blank opaque row separates the compact selected agent from a themed **✦ Session** delimiter, without repeating its role/status. Two-column detail padding, a muted bounded task preview, a **Transcript** divider and footer breathing room separate content and controls; these rows count against the height budget. Tiny screens prioritize the visible **← collapse** control over roster chrome. Assistant entries and ordinary tool input/output are labelled. Internal report submissions show only a bounded human summary and submission status, never their protocol envelope; submission is not host-validated completion. It does not send instructions to children or expose thinking/reasoning blocks, signatures, provider metadata, or binary images. Unsupported images and omitted content are labelled. Collapse/navigation never cancel a handover. Background rows also retain waiting/stopping states through cleanup; the dashboard shows up to three occupied and eight queued background slots. When a selected agent completes, fails, or is cancelled (including while queued), its detail subscription is immediately disposed and its row removed. Selection moves to the adjacent active row when available, but never automatically expands another agent. An omitted/evicted transcript for a still-active ID remains labelled unavailable.
 
 Compatibility: inspected installed Pi 1.0.4's public `ctx.ui.setWidget` component factory, `ctx.ui.onTerminalInput` unsubscribe/`{consume: true}` contract, component-local mouse coordinates and `matchesKey`/keybindings APIs. One lightweight observer exists while the widget is mounted, including when panel navigation is inactive; activation/return and ticker updates do not re-register it. Rebuilds dispose the old observer; widget cleanup/shutdown dispose it and detail subscriptions. Stale listeners and cleared widget factories are inert.
 
@@ -270,19 +305,23 @@ Agent-invoked handovers use that aggregate dashboard. A direct `/guild-handover`
 
 While its registration and dialog remain current, each direct handover records one hidden user-initiated `started` event and exactly one correlated `completed`, `failed`, or `cancelled` event with `triggerTurn: false`. A blocked task remains `completed` with explicit `taskOutcome: blocked`. Reports and diagnostics are delimited as task data rather than instructions. Picker/editor cancellation creates no lifecycle event. When the final run stops, the entire dashboard automatically disappears: widget, footer status, ticker, controller and input observer clear immediately, even with selected/expanded detail, a nonempty draft or changed focus ownership. No Esc is needed; stale callbacks cannot consume subsequent editor input. Terminal shutdown fences handover callbacks and publication before aborting execution, then independently cleans up UI and joins owned execution cleanup.
 
-For handovers, `session_shutdown` permanently closes that registration: saved entry points cannot restart work, and shutdown joins accepted execution tails, not arbitrary command promises. Native idle waits, pickers and editors are fenced on resumption, not cancelled or drained. A direct custom dialog closes once during owned shutdown cleanup only if it has not already been host-disposed; host disposal revokes its saved `done` callback and settles Guild’s local wait without waiting for the native custom promise. Late completion cannot use that callback to restore an old draft. A started command may therefore have no terminal lifecycle message after shutdown or host disposal. Native same-session tree retirement and fresh-intent rearm are connected as described below. These guarantees do not prevent the host itself from mounting an arbitrarily delayed custom factory, cover native Escape integration, or extend to `create_commit`; deterministic doubles and Pi 1.4.0 source inspection are not full Pi-runtime certification.
+For handovers, `session_shutdown` permanently closes that registration: saved entry points cannot restart work, and shutdown joins accepted execution tails, not arbitrary command promises. Native idle waits, pickers and editors are fenced on resumption, not cancelled or drained. A direct custom dialog closes once during owned shutdown cleanup only if it has not already been host-disposed; host disposal revokes its saved `done` callback and settles Guild’s local wait without waiting for the native custom promise. Late completion cannot use that callback to restore an old draft. A started command may therefore have no terminal lifecycle message after shutdown or host disposal. Native same-session tree retirement and fresh-intent rearm are connected as described below. These guarantees do not prevent the host itself from mounting an arbitrarily delayed custom factory or extend to `create_commit`; semantic interrupt support is conditional as described above, and deterministic doubles and Pi 1.4.0 source inspection are not full Pi-runtime certification.
 
 Serialization covers all blocking Guild handovers within one extension runtime. Cancellation of queued work never launches a child; cancellation of active work holds the scheduler until the child process terminates and cleanup finishes. Children share the parent's working directory; Guild creates no worktrees. Separate Pi processes and external tools remain outside this guarantee. Guild remains independent of Pi's native specialist facility and does not observe its lifecycle or messages.
 
+Background UI delivery uses fair batches of at most eight items/8 KiB, with overflow recovery via status/wait. Previews are untrusted data, not instructions. The same single-focused-transcript controls and private bounded store apply; viewing never collects usage.
+
 ### Child usage and traces
 
-Agent-invoked handovers return the child's token usage and cost to Pi, so they count in the footer, `/session`, and session totals. Usage is omitted when any child turn lacks a complete breakdown. Direct `/guild-handover` runs keep usage in their lifecycle details only, because Pi does not let extensions add usage to custom messages.
+Only the first top-level `guild_wait` collection can return known native child usage, with a persisted correlated receipt. Repeats are informational without attribution; nested waits are blocked before claiming. Unknown usage is not measured zero. Durable claims are at-most-once, **not crash-atomic exactly-once credit**: a lost tool return may never be credited. An interrupted restored observation explicitly collected by wait is cancelled with unknown usage.
 
-Children run without their own session files. Set `PITHOS_GUILD_TRACE=1` to record each child transcript locally as `<session dir>/guild/<session id>/<child id>.jsonl`: a header with run, role/profile and parent-session correlation, finalized child events (streaming `message_update` events are dropped), stderr, and an end record. Files are private (`0600`, directories `0700`) and capped at 16 MiB each; overflow writes a `truncated` marker and keeps the end record. Traces contain raw repository content and tool output. Recording failures are logged and never affect the handover.
+Agent-invoked blocking handovers return the child's token usage and cost to Pi, so they count in the footer, `/session`, and session totals. Usage is omitted when any child turn lacks a complete breakdown. Direct `/guild-handover` runs keep usage in their lifecycle details only, because Pi does not let extensions add usage to custom messages.
 
-Traced runs also snapshot the repository state they start from, after queueing, into `<run id>.state/` beside the trace: `state.json` (root, `HEAD`, branch, captured files, anything skipped), `tracked.patch` (`git diff --binary HEAD`, staged and unstaged), and copies of untracked, non-ignored files under `untracked/`. The trace header's `repoState` names the snapshot and whether it is complete. Capture is read-only for the repository: no index, ref, or stash changes. Ignored files are not captured, and each part is capped at 32 MiB. To restore: clone the repository, check out `head`, run `git apply --binary tracked.patch`, and copy `untracked/` over the checkout. Snapshots can contain uncommitted secrets that are not gitignored, so keep them private.
+Children run without their own session files. Set `PITHOS_GUILD_TRACE=1` to record each child transcript locally as `<session dir>/guild/<session id>/<child id>.jsonl`: a header with run, role/profile and parent-session correlation, finalized child events (streaming `message_update` events are dropped), stderr, and an end record. Only the exact environment value `1` enables recording. Files are private (`0600`, directories `0700`), with a 16 MiB content budget plus truncation/end-record metadata overhead; overflow writes a `truncated` marker and keeps the end record. Traces contain raw repository content and tool output. Recording failures are logged and never affect the handover.
 
-From a source checkout, `npm run report -- [session files or directories] [--since YYYY-MM-DD] [--json]` summarizes real sessions (default `~/.pi/agent/sessions`, or `$PI_CODING_AGENT_DIR/sessions`). It counts handovers by target, entry path, status, task outcome and child-reported TDD compliance; reports duration and the child share of cost over sessions whose costs are all known; flags possible rework when the parent edits a path a coder reported changing before the next user message; and joins traces for rejected result submissions. Older Guild session formats are read as well. The report is observational: it does not show whether main-only work would have done better. The tool is repository-only and not part of the published package.
+Traced blocking handovers also snapshot the repository state they start from, after queueing, into `<run id>.state/` beside the trace: `state.json` (root, `HEAD`, branch, captured files, anything skipped), `tracked.patch` (`git diff --binary HEAD`, staged and unstaged), and copies of untracked, non-ignored files under `untracked/`. The trace header's `repoState` names the snapshot and whether it is complete. Capture is read-only for the repository: no index, ref, or stash changes. Ignored files are not captured, and each part is capped at 32 MiB. To restore: clone the repository, check out `head`, run `git apply --binary tracked.patch`, and copy `untracked/` over the checkout. Snapshots can contain uncommitted secrets that are not gitignored, so keep them private.
+
+From a source checkout, `npm run report -- [session files or directories] [--since YYYY-MM-DD] [--json]` summarizes real sessions (default `~/.pi/agent/sessions`, or `$PI_CODING_AGENT_DIR/sessions`). It counts handovers by target, entry path, status, task outcome and child-reported TDD compliance; reports duration and the child share of cost over sessions whose costs are all known; flags possible rework when the parent edits a path a coder reported changing before the next user message; and joins traces for rejected result submissions. Older Guild session formats are read as well. For background runs it separates admission-to-terminal latency from actual trace execution intervals: sum, union (any child executing), and overlap (at least two executing, not pairwise multiplicity), aggregated per session. Missing endpoints remain unknown. These are not workflow wall time or speedup. Known uncollected child cost is informational, not native totals; native credit requires a matching collection receipt/tool result. The report is observational: it does not show whether main-only work would have done better. The tool is repository-only and not part of the published package.
 
 ## Package aliases and configuration migration
 
@@ -311,19 +350,19 @@ Each Guild target runs with:
 - an isolated context window and no saved child session;
 - the parent's current provider/model, thinking level, working directory, and trust decision;
 - an explicit package-controlled base system prompt plus exactly one role prompt and one profile prompt, with selected fixed package skill cores embedded after role/profile guidance;
-- the exact role-owned repository tool allowlist plus `guild_submit_result`;
-- `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, with one explicit absolute local `--extension` pointing to package-owned `src/child-protocol.ts`;
+- the exact role-owned repository tool allowlist plus `guild_submit_result`, with `guild_ask_parent` additionally available to background coder/reviewer children;
+- `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, with one explicit absolute local `--extension`: package-owned `src/child-protocol.ts` for blocking print/JSON children, or `src/background-child-protocol.ts` for retained background RPC children;
 - no recursive Guild delegation and no user/project member, system-prompt, append-prompt, skill, extension, template, or context-file discovery.
 
 The tool and direct command both fail closed while Plan mode is active or indeterminate. The inherited trust decision controls `--approve` versus `--no-approve`; it does not expand role tools. Only coder has shell access, so this remains guardrail-oriented delegation rather than a filesystem sandbox. Task input stays free-form; completion is structured.
 
-Guild does not support parent–child clarification exchanges during a handover. Children run in print/JSON mode with stdin ignored: the parent cannot send follow-up instructions to the running child, and the child has no ask-parent/reply operation. Live transcripts are observational, not a messaging channel. Supply essential context before delegation; if missing information blocks the task, the child reports blockers and the parent can supply that information in a new handover, not resume the same child. The same-child corrective opportunity described below repairs result submission only, not missing task context.
+Blocking Guild handovers do not support parent–child clarification exchanges. Blocking children run in print/JSON mode with stdin ignored: the parent cannot send follow-up instructions to the running child, and the child has no ask-parent/reply operation. Live transcripts are observational, not a messaging channel. Supply essential context before delegation; if missing information blocks the task, the child reports blockers and the parent can supply that information in a new handover, not resume the same child. The same-child corrective opportunity described below repairs result submission only, not missing task context.
 
 Cancellation terminates the child process and waits for shutdown and owned cleanup before releasing the serialized queue. Rendering retains up to 50 KiB of UTF-8 report text plus a truncation notice; accepted structured reports remain in tool-result or lifecycle-message details. Transport and diagnostics are separately bounded, not retained without limit.
 
 ## Exact completion protocol
 
-One host builder binds `guild/2` version 2 to a run ID, unique task ID, canonical role/profile, and original task text. It does not infer scope, acceptance criteria, or write leases from prose. The same runner and host-owned `completed`, `failed`, or `cancelled` outcome serve agent tools, direct commands, and editor input. Legacy persisted prose reports remain displayable, but cannot complete a new handover.
+One host builder binds `guild/2` version 2 to a run ID, unique task ID, canonical role/profile, and original task text. It does not infer scope, acceptance criteria, or write leases from prose. Blocking agent tools, direct commands, and editor input share the blocking runner; background tools use the retained RPC runner. Both paths use host-owned `completed`, `failed`, or `cancelled` outcomes. Legacy persisted prose reports remain displayable, but cannot complete a new handover.
 
 Children must submit `guild_submit_result` **alone in its tool batch**, once. Common exact fields are `protocol`, `version`, `runId`, `taskId`, `role`, `profile`, `taskOutcome`, `compliance`, `summary`, `blockers`, `limitations`, and `payload`. `taskOutcome` is `succeeded` only with no blockers and all requested compliance satisfied; `blocked` requires a nonblank blocker. `compliance` is empty unless coder required TDD was selected. Required TDD needs one exact record with status `satisfied` (at least one same-command red nonzero/green zero claimed cycle) or `blocked` (nonblank reason, blocked task outcome). Missing execution or meaningful preimplementation red is blocked, not waived. Up to eight completed cycles are reportable; diagnostics and 1–4 evidence references per red/green observation remain child claims. Role payloads are:
 
@@ -360,31 +399,45 @@ npm run test:rpc-compat -- /path/to/pi/dist/cli.js
 
 Alternatively, set `PI_RPC_PROBE_CLI` to that CLI path. There is no default runtime, and the probe rejects other versions. This is not a production RPC transport or certification of Pi >=1.0 compatibility, live-provider behavior, the Guild protocol, or Plan-mode quiescence; local 0.99 test doubles are not evidence for this probe.
 
-### Shared scheduling milestone
+### Background qualification and shared scheduling
+
+The current exact-source [uninstalled proposal](../proposals/pi-interrupt-hook/README.md) has distinct proof sets: **8 masked legacy cases** qualify atomic fallback, **16 unmasked connected cases** qualify bounded automatic continuation, and **42 portable tests** cover host contracts. The connected run uses actual Pi 1.4.0 SDK/Runtime/InteractiveMode and packaged Plan, both registration orders and SDK/public-editor Enter routes, terminal I/O doubled, local zero-usage transport and in-process children. It checks held receipt phases, 3 occupied + 8 queued slots and twelfth refusal, coalescing, cleanup, commit boundaries, interrupt/fresh intent, native input priority, tree/reload vetoes and accepted transitions, shutdown and nonjoining closure. Known 80-token/$0.8 child usage is collected once; nested waits claim none. Fixture zero usage does not predict real-provider usage.
+
+From `pithos.guild`, select explicit inputs (overlay launchers have no defaults):
+
+```bash
+npm run test:semantic-runtime -- /path/to/patched-source /path/to/installed-package "$PWD/node_modules/typescript/lib/typescript.js"
+npm run test:continuation-runtime -- /path/to/patched-source /path/to/installed-package "$PWD/node_modules/typescript/lib/typescript.js"
+npm run test:background-runtime -- /path/to/pi/dist/cli.js
+```
+
+The continuation default requires all 16 cases; focused `--case` runs remain `qualified: false`. Separately, the actual RPC probe used stock CLI 1.4.0 and a local scripted provider: three distinct PIDs alive together in one empty shared cwd with separate HOME/config, retaining PID/run/task/native ASK toolCallId through answer/report, two requests each, completion order 2,0,1, real close and temporary cleanup, no persisted child sessions. Native toolCallId is not the registry question token. This is transport evidence, not shared-writing collision safety or proposal CLI/background-host qualification.
+
+Parent logs `/tmp/guild-completion-parent-{native16,shared-rpc,tests,typecheck,pack}.log` record 16/16, actual RPC, Guild **919**, typecheck and a **70-file** package dry-run. Selected provider-source checks record **543 passed/36 configured skips** (43 passed/4 skipped files), plus root TypeScript checking in `/tmp/guild-command-parent-provider543{,-tsc}.log`, not the full upstream suite/build. The final parent sweep also passed Plan **391**, Atlas **127** plus typecheck/23-file dry-run, root **3**, stock shutdown/navigation/Plan probes **8/9/10**, the three-worker accounting probe and RPC compatibility probe (`/tmp/guild-completion-parent-*.log`). These are local evidence, not published attestations; no physical TTY, live-provider or broad-version certification is claimed.
 
 One factory-created `GuildExecutionRuntime` per `registerGuild` now owns blocking tool/direct scheduling and shutdown drain through the same private execution authority and registry. Its internal scheduler defaults to three active coder/reviewer background operations and eight pending background operations, independently of the unbounded blocking backlog. A single FIFO and exclusive barriers prevent background work from overtaking already admitted blocking work. Any nonterminal background record (queued, running, waiting, or stopping) refuses new blocking admission; retained terminal records alone do not.
 
-The default runtime composes the real background runner lazily, but no public background route or tool is exposed. Blocking reports still use their existing result path rather than background records. Blocking lifecycle and live Plan admission are connected as described below; host-interrupt integration remains future work. Ordinary Plan-free blocking remains available, without treating silence as proof of Plan absence. Tests using injected runners and stable participant leases verify these scheduling contracts, not actual-runtime, provider, or completed cross-package integration.
+The default runtime composes the real background runner lazily; qualified hosts expose the five background tools described above. Blocking reports still use their existing result path rather than background records. Blocking lifecycle and live Plan admission are connected as described below; semantic interrupt integration requires a qualified host. Ordinary Plan-free blocking remains available, without treating silence as proof of Plan absence. Tests using injected runners and stable participant leases verify these scheduling contracts, not actual-runtime, provider, or completed cross-package integration.
 
-### Internal execution authority milestone
+### Execution authority
 
 `GuildExecutionAuthority` owns explicitly activated registry generations behind opaque, frozen, identity-only owner tokens. Retirement invalidates facade access synchronously, closes admission, and joins the old registry's actual cleanup before another activation is allowed; it never activates a replacement automatically. Shutdown is terminal and joins in-flight activation or retirement. Failed activation or unprovable cleanup fails closed. Factories transfer fresh, unused synchronous registries exclusively; already-claimed registries cannot be transferred to another authority. A factory remains responsible for resources it throws without returning. Operations must not await a retirement/shutdown join that owns their own cleanup.
 
 The frozen Plan participant and its independent owner leases survive registry replacement, bridging held protection into each new registry before publication. Observational waits detach caller/scope abort listeners and reject stale delivery after invalidation; caller cancellation does not cancel the run. Previously accepted exclusive results and cancellation joins can settle after retirement, but remain bound to the old registry.
 
-Live registration initially activates one owner for both existing blocking entry paths and joins terminal shutdown on `session_shutdown`. Its factory must transfer a fresh, inactive synchronous runtime; rejected reuse does not shut down the original owner. Native tree retirement now invalidates that scope and fences its UI, trace and result callbacks; only fresh eligible intent can activate a replacement scope on the same runtime. There is **no** `session_start` rotation or new background tool. Background policy is defined by the internal admission facade below; the Pi interrupt hook is not installed, and this milestone neither infers Plan absence nor certifies Pi >=1.0 compatibility.
+Live registration initially activates one owner for both existing blocking entry paths and joins terminal shutdown on `session_shutdown`. Its factory must transfer a fresh, inactive synchronous runtime; rejected reuse does not shut down the original owner. Native tree retirement now invalidates that scope and fences its UI, trace and result callbacks; only fresh eligible intent can activate a replacement scope on the same runtime. Background policy is enforced by the admission facade below. Stock Pi has no installed interrupt capability; conditional tool exposure neither infers Plan absence nor certifies Pi >=1.0 compatibility.
 
 ### Internal background admission policy
 
-`createGuildBackgroundAdmission` in `src/background-admission.ts` is an executable **internal** synchronous admission facade over an injected authority and trusted coordination bus, not a production tool. It captures `PITHOS_GUILD_PLAN_MODE` from the parent process environment once at factory construction (tests may inject a parent environment). An unset value defaults to `required`; only exact `required` and `standalone` values are accepted. Empty, whitespace, case variants, nonstrings, and configuration read failures permanently block that facade's background admission without throwing during construction. Later environment changes do not change the captured policy. Mode is never a start/tool-input or child argument.
+`createGuildBackgroundAdmission` in `src/background-admission.ts` is the synchronous admission facade over the execution authority and trusted coordination bus; public background tools use it through the runtime. It captures `PITHOS_GUILD_PLAN_MODE` from the parent process environment once at factory construction (tests may inject a parent environment). An unset value defaults to `required`; only exact `required` and `standalone` values are accepted. Empty, whitespace, case variants, nonstrings, and configuration read failures permanently block that facade's background admission without throwing during construction. Later environment changes do not change the captured policy. Mode is never a start/tool-input or child argument.
 
 Required mode needs exactly one synchronous compatible inactive Plan provider. Missing, active, uncertain, incompatible, duplicate, or unstable providers block admission. Explicit parent `PITHOS_GUILD_PLAN_MODE=standalone` permits zero synchronous replies only; any on-stack reply conflicts with that assertion. Silence is never evidence of Plan absence. As with discovery, late replies are inert: a required handshake cannot be established by a late reply, and standalone relies on the parent's explicit assertion, not asynchronous inventory detection.
 
 Both modes require safely captured inactive persisted branch state. The facade copies only scanner-relevant own data, rejects unsafe relevant persistence shapes, validates and privately copies canonical coder/reviewer input before discovery, attaches the authority's stable participant, then rechecks persistence, provider identity/generation/phase, reentry, and the exact current owner immediately before reservation. Nested admission attempts veto the outer attempt even if caught. Failed admission never detaches coordinator protection or releases independent holds. Existing blocking `guild_handover` and `/guild-handover` retain their ordinary Plan-free behavior under every background setting; their final admission uses the safe persistence reader and live Plan coordination on the shared exclusive scheduler.
 
-Tests exercise this facade with real registries, authorities and Plan coordinators and injected operations. Registration now supplies the bus and captured parent policy to the composed runtime; no public background caller or host context adapter, interrupt, notification, or background accounting route is installed. Native tree integration applies to the existing exclusive handover paths, not background exposure. Background tools remain hidden pending the remaining runtime gates, the advertised Pi minimum remains >=1.0, and these tests are not runtime certification. This is trusted-extension cooperation, not a malicious-extension sandbox; a bus swallowing a handler throw after a valid reply remains undetectable.
+Tests exercise this facade with real registries, authorities and Plan coordinators and injected operations. Registration supplies the bus and captured parent policy to the composed runtime, with conditional public adapters, notifications and explicit collection accounting. These tests are not runtime certification; the blocking Pi minimum remains >=1.0. This is trusted-extension cooperation, not a malicious-extension sandbox; a bus swallowing a handler throw after a valid reply remains undetectable.
 
-### Internal background runtime composition milestone
+### Background runtime composition
 
 `createGuildBackgroundRuntime` in `src/background-runtime.ts` composes a private admission facade and execution authority with the real `runBackgroundGuildRole` executor. Explicit activation creates fresh registries; its frozen facade exposes only owner-scoped operations, retirement/shutdown joins, and the stable Plan participant. Host-allocated run/task identities bind independent host envelopes to validated terminal projections. No raw registry, runner control, or ungated start is exposed.
 
@@ -394,7 +447,7 @@ Offline vertical tests enter this facade and launch actual scripted subprocesses
 
 Live registration now uses this composition under one authority: both blocking entry paths delegate through its generic exclusive facade without background projection. Registration captures the Pi events object and a frozen one-field parent `PITHOS_GUILD_PLAN_MODE` snapshot, not a session, branch, model, trust decision, UI, or working directory. The narrow synchronous emit adapter preserves the events receiver. Construction, activation, and shutdown do not discover Plan, attach participants, subscribe to the bus, or launch a background child. Blocking admission now performs Plan discovery with the stable runtime participant, rechecks inactive persisted state, provider readiness, reentry, and owner identity, then reserves synchronously. See the combined installed Guild–Plan probe below for the connected behavior and remaining limitations.
 
-Background routes remain absent and the existing tool/command inventory is unchanged. No live background invocation, notification, background parent UI, session replacement, Escape hook, background accounting, installed runtime modification, or live-provider check is introduced. Same-session native tree retirement/rearm is connected for exclusive handovers below. The interrupt hook remains uninstalled. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Independent review and the remaining host/runtime gates are still required before exposure.
+The current registration adds conditional background tools, manual controls, dashboard observation and collection accounting. Same-session native tree retirement/rearm is connected below. The interrupt proposal remains uninstalled; stock Pi still cannot expose background tools. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Qualification remains capability-specific; automatic continuation additionally requires the optional live-qualified context capability.
 
 ### Connected native tree retirement and fresh-intent rearm
 
@@ -404,9 +457,9 @@ After successful drain, only fresh `interactive` or `rpc` input, or an explicit 
 
 Rearm is **activation, not work admission**. An empty branch is persisted inactivity, not evidence that no Plan provider exists. Rearm reuses the background facade's policy-neutral safe persistence reader, without background discovery or configuration gating. Ordinary Plan-free blocking handovers therefore retain their existing behavior with unset, required, standalone or invalid background configuration. Background starts still use their originally captured strict policy and discovery. Independent Plan holds and attached coordinator protection, including disposal-held leases, survive activation; activation under a hold is allowed but execution is not. Rearm itself does not discover Plan; the subsequent blocking admission transaction performs that discovery before reserving work.
 
-Transcript history remains session-owned and bounded across tree changes. Retired executions finish internally as cancelled without publishing old results onto the new branch, and old trace bindings unbind after execution cleanup. The recorder and whole transcript store are disposed only at terminal `session_shutdown`, which always shuts down the runtime even if no active scope remains. Native preparation/editor promises are not joined, and neither the before-tree hook nor input handler waits for host idle.
+Transcript history remains session-owned and bounded across tree changes. Retired executions finish internally as cancelled without publishing old results onto the new branch, and old trace bindings unbind after execution cleanup. The recorder and whole transcript store are disposed only at terminal `session_shutdown`, which always shuts down the runtime even if no active scope remains. Unrelated native idle waits, pickers and editors are not joined; owned continuation preparation/run/publication/settlement callbacks are joined. Neither the before-tree hook nor input handler waits for host idle.
 
-The installed Pi **1.4.0** source has been inspected: no-op navigation and earlier vetoes may skip Guild's hook; navigation is already busy when before-tree hooks run, and idle is restored in navigation's `finally`, not by `session_tree`. Unit tests invoke registered handlers with deterministic host doubles; they do **not** establish actual native event ordering. The opt-in installed-runtime probe now loads real `registerGuild` through Pi's public extension loader and exercises the connected paths described below, including the injected cleanup-failure veto. Native app-interrupt integration remains uninstalled, and no runtime patch is authorized here. Hidden background public-result retention remains unresolved; this stage exposes no background route. Parent and independent review, followed by the remaining runtime gates, are required before public exposure.
+The installed Pi **1.4.0** source has been inspected: no-op navigation and earlier vetoes may skip Guild's hook; navigation is already busy when before-tree hooks run, and idle is restored in navigation's `finally`, not by `session_tree`. Unit tests invoke registered handlers with deterministic host doubles; they do **not** establish actual native event ordering. The opt-in installed-runtime probe now loads real `registerGuild` through Pi's public extension loader and exercises the connected paths described below, including the injected cleanup-failure veto. Stock Pi still lacks semantic app-interrupt support, and no installed runtime patch is authorized here. Background results now have session-owned observation and explicit collection; exposure remains conditional on host qualification.
 
 ### Installed native-navigation probe (Pi 1.4.0)
 
@@ -416,7 +469,7 @@ From `pithos.guild`, run:
 npm run test:navigation-runtime -- /opt/pi-npm/lib/node_modules/@earendil-works/pi-coding-agent/dist/cli.js
 ```
 
-The observed Pi **1.4.0** run reports **9 passed, 0 failed**, and exits zero. This completes the scoped navigation probe, not the remaining public-exposure gates. The worker uses the selected installation's public `discoverAndLoadExtensions` with exactly one explicit fixture and empty isolated cwd/agent directory. That fixture imports actual `src/guild.ts`; no Guild lifecycle handler or scheduler is copied. SDK and AI versions/paths are printed, and imported SDK/AI function identities verify the loader aliases to the selected installed graph rather than checkout 0.99 dependencies. Real registered tools remain exactly `create_commit` and `guild_handover`; no app-interrupt hook is installed.
+The observed Pi **1.4.0** run reports **9 passed, 0 failed**, and exits zero. This completes the scoped navigation probe, not background host qualification. The worker uses the selected installation's public `discoverAndLoadExtensions` with exactly one explicit fixture and empty isolated cwd/agent directory. That fixture imports actual `src/guild.ts`; no Guild lifecycle handler or scheduler is copied. SDK and AI versions/paths are printed, and imported SDK/AI function identities verify the loader aliases to the selected installed graph rather than checkout 0.99 dependencies. On that stock host the registered tools remain exactly `create_commit` and `guild_handover`; no app-interrupt hook is installed.
 
 Passing checks retain the original seven native `navigateTree` cases and add a swallowed foreign before-hook error: no-op and earlier veto do not retire Guild; held runner cleanup prevents target mutation and queued launch; success, later veto and genuine native summary rejection/abort leave Guild retired until fresh idle interactive/RPC input. Busy and extension input do not rearm, and a retired runner update cannot publish through the tool callback. Input goes through actual `session.prompt` with a later **handled-input sink** to prevent provider startup; this differs from normal continued prompting. Independent promise gates emulate runner cleanup, **not OS child processes**. Summary failures use only a local scripted transport.
 
@@ -432,9 +485,10 @@ npm run test:shutdown-runtime -- /opt/pi-npm/lib/node_modules/@earendil-works/pi
 
 The observed Pi **1.4.0** worker reports **four core cases passed**:
 `before-switch-veto`, `replacement-drain`, `cleanup-fault-continuation`, and
-`terminal-drain`, plus **one public `InteractiveMode` smoke with terminal I/O doubled**.
-The launcher reports **5 passed, 0 skipped**, `complete: true`, and exits zero. The UI
-case uses the selected installation's actual regular-mode TUI, not a physical terminal.
+`terminal-drain`, plus **four public `InteractiveMode` cases with terminal I/O doubled**:
+`interactive-smoke`, `reset-before-shutdown`, `reset-before-shutdown-late-rejection`,
+and `reset-before-shutdown-cleanup-fault`. The launcher reports **8 passed, 0 skipped**,
+`complete: true`, and exits zero. Each UI case uses the selected installation's actual regular-mode TUI, not a physical terminal.
 
 The public `AgentSessionRuntime` factory loads a fresh real Guild registration through
 `discoverAndLoadExtensions` for every replacement, using the selected installed SDK/AI
@@ -481,12 +535,30 @@ session JSONL and persistent auth/settings/model files and removing the director
 AI and TUI identities resolve to the selected installed **1.4.0** graph. The four core
 cases retain their observer seams; the UI case does not replace mode lifecycle callbacks.
 
-This covers normal shutdown closing Guild's dialog **before** host reset, not the reverse
-native-reset-before-shutdown race. No physical terminal, raw-key/Escape behavior or hook,
+The three reset-first cases invoke a registered public command's bound `ctx.reload()`
+while native progress is focused and the host is neither streaming nor compacting.
+A public widget disposal observer writes `reset-draft` after native dialog reset, before
+`session_shutdown`; native custom/done and mode lifecycle methods are not replaced.
+Guild's locally owned command settles while runner cleanup is still held, without
+restoring the old draft or publishing a terminal lifecycle message. Reload waits for
+release, retains the same AgentSession, and uses a mutable public ResourceLoader to
+rediscover a fresh registration and ExtensionRunner. Saved stale callbacks remain inert.
+The late runner rejection is sanitized under the retired scope with no public extension
+error. The trace-unbind fault throws `scripted-trace-cleanup-failure` after release;
+exactly one old-runner public `session_shutdown` error (`Guild shutdown cleanup failed`)
+is observed, and reload still succeeds rather than treating the error as a veto.
+Fresh registered-tool execution and final disposal succeed in all three cases; error
+observers stay attached through final disposal and mode stop. Isolated-copy mutations
+restoring stale dialog completion or disabling the trace fault are rejected by these
+pins. These are integration pins, not new production behavior.
+
+This covers shutdown-before-reset and these normal/failure reset-before-shutdown reload
+paths, not all lifecycle races. No physical terminal, semantic Escape/raw-key behavior or hook,
 provider request, Plan integration, OS-child cleanup, performance, or Pi >=1.0 certification
 is established. Local evidence is in `/tmp/shutdown-core-evidence.md` and
-`/tmp/shutdown-ui-evidence.md`; temporary artifacts are not published proof. Parent and
-independent review remain required before broader acceptance or public exposure.
+`/tmp/shutdown-ui-evidence.md` and `/tmp/guild-reset-first-final-evidence.md`; temporary
+artifacts are not published proof. These historical shutdown checks do not qualify
+background exposure; that requires the capability gate described above.
 
 ### Combined installed Guild–Plan probe — admission, native tree and interactive exit
 
@@ -602,14 +674,14 @@ Parent verification confirmed all 582 recorded outside-scope files unchanged.
 Final suite evidence is in `/tmp/plan-tui-verified-parent-{guild,plan,root}.log`;
 follow-up polling evidence is in `/tmp/plan-tui-notice-deadline-{negative,green}.log`.
 Preservation is recorded in `/tmp/plan-tui-verified-parent-preservation.json`.
-No full Plan publication or
+That historical probe claims no full Plan publication or
 restoration-failure coverage, native Escape behavior, provider,
-physical-terminal or broader Pi compatibility certification is claimed; no runtime,
-dependency, public background tool or Plan production change is introduced.
+physical-terminal or broader Pi compatibility certification; it introduced no runtime,
+dependency, public background tool or Plan production change.
 
 ### Background registry adapter contract
 
-`src/background-result.ts` provides the internal `projectBackgroundResult` adapter, not runtime wiring. It checks runner identity against the host task and validates any report before returning an independent JSON copy. `completed` requires a report and zero exit code; it denotes transport completion, so a blocked report can still be completed. Failed or cancelled results retain their non-success status even when they contain a report. The projection omits task text and raw/rendered output, bounds diagnostics to 2048 UTF-8 bytes, and rejects a serialized DTO larger than 64 KiB rather than truncating its report. Projection errors must reject the operation, never become fulfilled success-shaped fallbacks; settlement must follow owned cleanup.
+`src/background-result.ts` provides the `projectBackgroundResult` adapter used by the background runtime. It checks runner identity against the host task and validates any report before returning an independent JSON copy. `completed` requires a report and zero exit code; it denotes transport completion, so a blocked report can still be completed. Failed or cancelled results retain their non-success status even when they contain a report. The projection omits task text and raw/rendered output, bounds diagnostics to 2048 UTF-8 bytes, and rejects a serialized DTO larger than 64 KiB rather than truncating its report. Projection errors must reject the operation, never become fulfilled success-shaped fallbacks; settlement must follow owned cleanup.
 
 `src/background-runs.ts` defines a registry-level contract, not a guarantee of end-to-end Pi integration. An operation must settle only after its owned cleanup finishes. Fulfilled JSON means transport completion, not a validated Guild report; the adapter remains responsible for report validation and process-kill deadlines.
 

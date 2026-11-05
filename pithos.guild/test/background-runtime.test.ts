@@ -935,3 +935,214 @@ for (const accept of [false, true]) test(`readiness waits for queued acceptance 
   }
  } finally { response.resolve("handled"); done.resolve(); await runtime.shutdown(); }
 });
+
+test("runtime changes capture bounded metadata and survive observer faults and retirement", async () => {
+ const changes: any[] = [];
+ const options = { bus: silent, parentEnvironment: standalone,
+  runner: async () => { throw new Error("test child failure"); },
+  onChange(change: any) { changes.push(change); return Promise.reject(new Error("observer failure")); },
+ };
+ const runtime = createGuildBackgroundRuntime(options);
+ options.onChange = () => assert.fail("callback must be captured");
+ const owner = runtime.activate();
+ const run = runtime.start(owner, { ...input, task: "😀".repeat(100) }, context());
+ await runtime.shutdown();
+ await new Promise(resolve => setImmediate(resolve));
+ assert.equal(changes[0]?.kind, "admission");
+ assert.equal(changes.at(-1).kind, "terminal");
+ for (const change of changes) {
+  assert.equal(change.owner, owner);
+  assert.equal(change.runId, run.id);
+  assert.equal(change.role, input.role);
+  assert.equal(change.profile, input.profile);
+  assert.ok(change.taskId);
+  assert.equal(change.taskPreview, "😀".repeat(40));
+  assert.ok(Object.isFrozen(change));
+  for (const key of ["result", "input", "context", "report", "nativeUsage"]) assert.equal(key in change, false);
+ }
+});
+
+test("global observers correlate owned bounded snapshots across same-role runs and owners", async () => {
+ const seen: any[] = [], summaries: any[] = [], starts: RunBackgroundGuildRoleOptions[] = [];
+ const finish = deferred();
+ const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone,
+  onEvent(metadata, event) { seen.push({ metadata, event }); },
+  onUpdate(metadata, summary) { summaries.push({ metadata, summary }); },
+  runner: async options => { starts.push(options); if (starts.length === 4) options.onEvent!({ type: "new-owner" }); await finish.promise; throw Error("done"); },
+ });
+ let owner = runtime.activate();
+ try {
+  const runs = [0, 1, 2].map(() => runtime.start(owner, { ...input, task: "😀".repeat(100) }, context()));
+  await new Promise(resolve => setImmediate(resolve));
+  assert.equal(starts.length, 3);
+  for (const [i, options] of starts.entries()) {
+   const event = { type: "text", nested: { text: String(i) } };
+   options.onEvent!(event); event.nested.text = "mutated";
+   options.onEvent!({ type: "text", text: "x".repeat(65536) });
+   options.onUpdate!({ activity: "x".repeat(500), usage: { input: 2, output: Infinity, cost: NaN },
+    get output() { return assert.fail("raw output read"); }, get stderr() { return assert.fail("stderr read"); },
+    nativeUsage: { input: 100 }, providerUsage: { input: 100 } } as any);
+  }
+  assert.equal(seen.length, 3);
+  assert.equal(summaries.length, 3);
+  seen.forEach(({ metadata, event }, i) => {
+   assert.equal(metadata.owner, owner); assert.equal(metadata.runId, runs[i].id);
+   assert.equal(metadata.taskId, starts[i].taskId); assert.equal(metadata.role, input.role);
+   assert.equal(metadata.profile, input.profile); assert.equal(metadata.cwd, process.cwd());
+   assert.equal(metadata.projectTrusted, false); assert.equal(Buffer.byteLength(metadata.taskPreview), 160);
+   assert.equal("task" in metadata, false); assert.ok(Object.isFrozen(metadata));
+   assert.equal(event.nested.text, String(i)); assert.ok(Object.isFrozen(event.nested));
+   assert.equal(summaries[i].metadata, metadata);
+   const summary = summaries[i].summary;
+   assert.ok(Buffer.byteLength(summary.activity) <= 160); assert.equal(summary.usage.input, 2);
+   assert.equal(summary.usage.output, undefined); assert.equal(summary.usage.cost, undefined);
+   for (const key of ["output", "stderr", "nativeUsage", "providerUsage", "task"]) assert.equal(key in summary, false);
+   assert.ok(Object.isFrozen(summary.usage));
+  });
+  const retired = runtime.retire(owner); starts[0].onEvent!({ type: "late" });
+  assert.equal(seen.length, 3); finish.resolve(); await retired;
+  owner = runtime.activate();
+  const next = runtime.start(owner, input, context());
+  await new Promise(resolve => setImmediate(resolve));
+  // Completed runners cannot publish late events either.
+  starts[3].onEvent!({ type: "late" }); assert.equal(seen.length, 4);
+  assert.equal(seen[3].metadata.owner, owner); assert.equal(seen[3].metadata.runId, next.id);
+  assert.notEqual(seen[3].metadata.taskId, seen[0].metadata.taskId);
+  assert.notEqual(next.id, runs[0].id);
+ } finally { finish.resolve(); await runtime.shutdown(); }
+});
+
+test("run-start observers bind before launch and dispose once after cleanup even on retirement", async () => {
+ for (const retireAtStart of [true, false]) {
+  const finish = deferred(); let launches = 0, disposed = 0, bound = 0, contextEvents = 0;
+  let options: RunBackgroundGuildRoleOptions | undefined;
+  let retirement: Promise<unknown> | undefined;
+  const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone,
+   onRunStart(metadata) {
+    bound++; assert.equal(metadata.owner, owner); assert.ok(Object.isFrozen(metadata));
+    if (retireAtStart) retirement = runtime.retire(owner);
+    return () => { disposed++; return Promise.reject(Error("non-owning disposal")); };
+   },
+   onEvent() { retirement = runtime.retire(owner); return Promise.reject(Error("non-owning event")); },
+   runner: async value => { launches++; options = value; assert.equal(bound, 1); await finish.promise; throw Error("done"); },
+  });
+  const owner = runtime.activate();
+  try {
+   const run = runtime.start(owner, input, { ...context(), onEvent() { contextEvents++; } });
+   await new Promise(resolve => setImmediate(resolve));
+   assert.equal(bound, 1);
+   if (retireAtStart) { assert.equal(launches, 0); assert.equal(disposed, 1); }
+   else {
+    assert.equal(launches, 1); assert.equal(disposed, 0);
+    options!.onEvent!({ type: "retire" });
+    assert.equal(contextEvents, 0, "global callback retirement fences the context callback");
+    options!.onEvent!({ type: "late" }); assert.equal(disposed, 0);
+   }
+   finish.resolve(); await retirement;
+   assert.equal(disposed, 1);
+   assert.ok(run.id);
+  } finally { finish.resolve(); await runtime.shutdown(); }
+ }
+});
+
+test("global observer throws and accidental promises never own execution", async () => {
+ for (const failure of ["throw", "reject", "hang"] as const) {
+  let events = 0, updates = 0, launches = 0;
+  function observer(this: unknown): any {
+   assert.equal(this, undefined, "constructor observers have no host receiver");
+   if (failure === "throw") throw Error("observer");
+   return failure === "reject" ? Promise.reject(Error("observer")) : new Promise(() => {});
+  }
+  const callbacks = { onRunStart: observer, onEvent: observer, onUpdate: observer };
+  const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone, ...callbacks,
+   runner: async options => {
+    launches++; options.onEvent!({ type: "text" });
+    options.onUpdate!({ activity: "working", usage: {} } as any); throw Error("child finished");
+   },
+  });
+  const owner = runtime.activate();
+  try {
+   const run = runtime.start(owner, input, { ...context(), onEvent() { events++; }, onUpdate() { updates++; } });
+   assert.equal((await runtime.wait(owner, run.id, 1000)).reason, "terminal");
+   assert.equal(launches, 1); assert.equal(events, 1); assert.equal(updates, 1);
+  } finally { await runtime.shutdown(); }
+ }
+});
+
+test("run-start Plan activation vetoes launch and still disposes binding", async () => {
+ let active = false, launches = 0, disposed = 0;
+ const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone,
+  onRunStart() { active = true; return () => { disposed++; throw Error("cleanup observer"); }; },
+  runner: async () => { launches++; throw Error("unexpected launch"); },
+ });
+ const owner = runtime.activate();
+ try {
+  const run = runtime.start(owner, input, { ...context(), getBranch: () => active
+   ? [{ type: "custom", customType: "plan-theme-state", data: { active: true } }] : [] });
+  assert.equal((await runtime.wait(owner, run.id, 1000)).reason, "terminal");
+  assert.equal(launches, 0); assert.equal(disposed, 1);
+ } finally { await runtime.shutdown(); }
+});
+
+for (const kind of ["event", "update"] as const) {
+ for (const invalidate of ["global", "context", "before", "throw"] as const) {
+  test(`observer delivery guard fences ${kind} after ${invalidate} invalidation without owning child`, async () => {
+   const finish = deferred(); let retained!: RunBackgroundGuildRoleOptions;
+   let safe = true, throws = false, globalCalls = 0, contextCalls = 0, disposed = 0, cleaned = false;
+   let effectfulReads = 0;
+   const globalObserver = () => { globalCalls++; if (invalidate === "global") safe = false; };
+   const contextObserver = () => { contextCalls++; if (invalidate === "context") safe = false; };
+   const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone,
+    onEvent: globalObserver, onUpdate: globalObserver,
+    onRunStart: () => () => { assert.equal(cleaned, true); disposed++; },
+    runner: async options => {
+     retained = options; await finish.promise; cleaned = true;
+     return { ...options, status: "completed", exitCode: 0, output: "", stderr: "", activity: "done",
+      usage: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0, cost: 0, contextTokens: 1, turns: 1 },
+      report: { protocol: "guild/2", version: 2, runId: options.runId!, taskId: options.taskId!, role: "coder", profile: "typescript",
+       taskOutcome: "succeeded", compliance: [], summary: "Child claim", blockers: [], limitations: [], payload: { changes: [], verification: [] } } };
+    },
+   });
+   const owner = runtime.activate();
+   try {
+    const run = runtime.start(owner, { ...input, practices: [] }, { ...context(),
+     validateCurrent: () => { effectfulReads++; return true; },
+     getBranch: () => { effectfulReads++; return []; },
+     isContextCurrent: () => { if (throws) throw Error("guard fault"); return safe; },
+     onEvent: contextObserver, onUpdate: contextObserver,
+    });
+    await new Promise(resolve => setImmediate(resolve));
+    assert.ok(retained);
+    const readsAtLaunch = effectfulReads;
+    if (invalidate === "before") safe = false;
+    if (invalidate === "throw") throws = true;
+    const deliver = () => kind === "event" ? retained.onEvent!({ type: "text" })
+     : retained.onUpdate!({ activity: "working", usage: {} } as any);
+    deliver(); deliver();
+    assert.equal(runtime.isCurrent(owner), true);
+    assert.equal(contextCalls, invalidate === "context" ? 1 : 0);
+    assert.equal(globalCalls, invalidate === "global" || invalidate === "context" ? 1 : 0);
+    assert.equal(effectfulReads, readsAtLaunch, "delivery must not revalidate Plan or invoke effectful guards");
+    finish.resolve();
+    assert.equal((await runtime.wait(owner, run.id, 1000)).reason, "terminal");
+    assert.equal(runtime.status(owner, run.id).status, "completed");
+    assert.equal(disposed, 1, "stale context must not fence cleanup");
+   } finally { finish.resolve(); await runtime.shutdown(); }
+  });
+ }
+}
+
+test("runtime forwards the stable Plan prehold callback without retiring its execution owner", async () => {
+ let calls = 0;
+ let expected: unknown;
+ const runtime = createGuildBackgroundRuntime({ bus: silent, beforePlanHold(owner) {
+  assert.equal(owner, expected); calls++; return false;
+ } });
+ expected = runtime.activate();
+ const participant = runtime.planParticipant;
+ assert.equal(participant.tryAcquire({}).kind, "unavailable");
+ assert.equal(calls, 1);
+ assert.equal(runtime.planParticipant, participant);
+ assert.equal(await runtime.runExclusive(expected as never, () => 17), 17);
+ await runtime.shutdown();
+});

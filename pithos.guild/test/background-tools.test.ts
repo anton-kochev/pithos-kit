@@ -9,7 +9,34 @@ function fixture(overrides: Partial<Parameters<typeof createBackgroundToolRegist
  const hooks = new Set<(event: any) => unknown>();
  let active = ["read"], current = true, eligible = true;
  let onRegister = () => {}, onGet = () => {};
+ const batches: any[][] = [];
+ let claim: {live: boolean; retire(): void} | undefined;
+ const atomicOwnedTools = {protocol: "pi-atomic-owned-tools-v1", bind(names: string[], retire: () => void) {
+  const old = claim;
+  const owned = {live: true, retire}; claim = owned;
+  if (old) { old.live = false; old.retire(); }
+  const update = (batch: any[]) => {
+   if (!owned.live) return {status: "aborted", reason: "stale"};
+   assert.deepEqual(batch.map(item => item.definition.name), names);
+   batches.push(batch); onRegister(); onGet();
+   if (!owned.live) return {status: "aborted", reason: "stale"};
+   for (const {definition, activation} of batch) {
+    definitions.set(definition.name, definition);
+    active = active.filter(name => name !== definition.name);
+    if (activation === "activate" && definition.exposure !== "hidden") active.push(definition.name);
+   }
+   return {status: "committed"};
+  };
+  return {protocol: "pi-atomic-owned-tools-v1", isActive: () => owned.live, update,
+   dispose() {
+    if (!owned.live) return {status: "aborted", reason: "stale"};
+    const result = update(names.map(name => ({definition: {...definitions.get(name), name, exposure: "hidden"}, activation: "deactivate"})));
+    if (result.status === "committed") owned.live = false;
+    return result;
+   }};
+ }};
  const pi = {
+  atomicOwnedTools,
   registerTool(tool: ToolDefinition) { definitions.set(tool.name, tool); onRegister(); },
   getActiveTools() { onGet(); return [...active]; },
   setActiveTools(names: string[]) { active = names; },
@@ -18,10 +45,31 @@ function fixture(overrides: Partial<Parameters<typeof createBackgroundToolRegist
  const options = {controls: {} as Parameters<typeof createBackgroundToolRegistration>[1]["controls"],
   context: () => { throw new Error("context not configured"); }, isCurrent: () => current, canActivate: () => eligible, ...overrides};
  const registration = createBackgroundToolRegistration(pi, options);
- return {pi, options, registration, definitions, hooks, ctx: {} as ExtensionContext,
+ return {pi, options, registration, definitions, hooks, batches, ctx: {} as ExtensionContext,
+  retire: () => { if (claim?.live) { claim.live = false; claim.retire(); } },
   active: () => active, current: (v: boolean) => {current = v;}, eligible: (v: boolean) => {eligible = v;},
   onRegister: (fn: () => void) => {onRegister = fn;}, onGet: (fn: () => void) => {onGet = fn;}};
 }
+test("missing atomic ownership capability never publishes background definitions", () => {
+ const f = fixture();
+ delete (f.pi as any).atomicOwnedTools;
+ f.registration.show(f.ctx);
+ assert.equal(f.definitions.size, 0);
+ assert.deepEqual(f.active(), ["read"]);
+});
+test("show and hide each publish one complete atomic batch without legacy loadout calls", () => {
+ const f = fixture();
+ f.pi.registerTool = () => { throw new Error("legacy registration"); };
+ f.pi.getActiveTools = () => { throw new Error("legacy read"); };
+ f.pi.setActiveTools = () => { throw new Error("legacy write"); };
+ f.registration.show(f.ctx);
+ assert.equal(f.batches.length, 1);
+ assert.equal(f.definitions.size, 5);
+ f.registration.hide();
+ assert.equal(f.batches.length, 2);
+ assert.deepEqual(f.active(), ["read"]);
+ assert.ok(f.batches[1].every(item => item.activation === "deactivate" && item.definition.exposure === "hidden"));
+});
 test("registration is lazy, qualified, direct and never adds tools while Plan denies activation", () => {
  const f = fixture();
  assert.equal(f.definitions.size, 0);
@@ -220,14 +268,10 @@ for (const boundary of ["unsubscribe", "hidden-register"] as const) {
   f.registration.show(f.ctx);
   const originals = [...f.definitions.values()], hook = [...f.hooks][0];
   const attempted: string[] = [];
-  const register = f.pi.registerTool.bind(f.pi);
-  f.pi.registerTool = tool => {
-   if (tool.exposure === "hidden") {
-    attempted.push(tool.name);
-    if (boundary === "hidden-register" && attempted.length === 1) throw new Error("host withdrawal failed");
-   }
-   register(tool);
-  };
+  f.onRegister(() => {
+   attempted.push(...originals.map(tool => tool.name));
+   if (boundary === "hidden-register") throw new Error("host withdrawal failed");
+  });
   assert.doesNotThrow(() => f.registration.hide());
   assert.deepEqual(attempted, originals.map(tool => tool.name));
   for (const tool of originals)
@@ -255,3 +299,320 @@ test("send retains bounded stable update IDs without inventing IDs for replies",
  const reply = await execute(f, "guild_send", {runId: "run", message: "reply", questionId: "q"});
  assert.equal(Object.hasOwn(reply.details as object, "updateId"), false);
 });
+
+test("hide during nested-wait subscription cannot acquire a live claim or publish", () => {
+ const f = fixture(); let binds = 0;
+ const capability = (f.pi as any).atomicOwnedTools;
+ const bind = capability.bind;
+ capability.bind = (...args: any[]) => { binds++; return bind(...args); };
+ const on = f.pi.on.bind(f.pi);
+ f.pi.on = ((name: any, callback: any) => {
+  const off = on(name, callback); f.registration.hide(); return off;
+ }) as typeof f.pi.on;
+ f.registration.show(f.ctx);
+ assert.equal(binds, 0);
+ assert.equal(f.definitions.size, 0);
+ assert.equal(f.hooks.size, 0);
+});
+
+test("dispose during bind releases the returned live claim without publishing", () => {
+ const f = fixture(); let released = 0;
+ (f.pi as any).atomicOwnedTools.bind = () => {
+  f.registration.dispose();
+  return {protocol: "pi-atomic-owned-tools-v1", isActive: () => true,
+   update: () => assert.fail("disposed intent cannot publish"),
+   dispose: () => { released++; return {status: "committed"}; }};
+ };
+ f.registration.show(f.ctx);
+ assert.equal(released, 1);
+ assert.equal(f.hooks.size, 0);
+});
+
+test("provider retirement revokes owner controls before calling host unsubscribe", () => {
+ let ownerClosed = false, observed = false;
+ const f = fixture({onRetire: () => { ownerClosed = true; }});
+ let retire!: () => void;
+ const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+ capability.bind = (names: string[], callback: () => void) => {
+  retire = callback; return bind(names, callback);
+ };
+ const on = f.pi.on.bind(f.pi);
+ f.pi.on = ((name: any, callback: any) => {
+  const off = on(name, callback);
+  return () => { observed = ownerClosed; off(); };
+ }) as typeof f.pi.on;
+ f.registration.show(f.ctx); retire();
+ assert.equal(observed, true);
+});
+
+for (const variant of ["missing", "wrong", "no-bind", "throws", "stale", "malformed", "wrong-handle", "retire-bind"] as const) {
+ test(`atomic qualification fails closed for ${variant}`, () => {
+  const f = fixture(); let updates = 0;
+  const valid = {protocol: "pi-atomic-owned-tools-v1", isActive: () => true,
+   update: () => { updates++; return {status: "committed"}; }, dispose: () => ({status: "committed"})};
+  const capability = {protocol: "pi-atomic-owned-tools-v1", bind: (_names: string[], retire: () => void): unknown => {
+   if (variant === "throws") throw new Error("core not bound");
+   if (variant === "stale") return {...valid, isActive: () => false};
+   if (variant === "malformed") return {...valid, dispose: undefined};
+   if (variant === "wrong-handle") return {...valid, protocol: "future"};
+   if (variant === "retire-bind") { retire(); return {...valid, isActive: () => assert.fail("retired handle called")}; }
+   return valid;
+  }};
+  (f.pi as any).atomicOwnedTools = variant === "missing" ? undefined : variant === "wrong" ? {...capability, protocol: "future"}
+   : variant === "no-bind" ? {...capability, bind: true} : capability;
+  f.pi.registerTool = () => assert.fail("legacy fallback");
+  f.registration.show(f.ctx);
+  assert.equal(updates, 0); assert.equal(f.definitions.size, 0);
+  assert.equal(f.hooks.size, 0);
+  assert.equal(f.registration.isActive(), false);
+ });
+}
+
+test("retirement during atomic update never publishes or calls the old handle again", async () => {
+ let faults = 0;
+ const f = fixture({onFault: () => { faults++; }}); f.onRegister(f.retire);
+ f.registration.show(f.ctx);
+ assert.equal(f.registration.isActive(), false);
+ assert.equal(f.hooks.size, 0);
+ assert.equal(f.definitions.size, 0);
+ assert.deepEqual(f.active(), ["read"]);
+ f.registration.hide(); f.registration.dispose(); f.registration.show(f.ctx);
+ assert.equal(f.batches.length, 1);
+ assert.equal(faults, 0);
+});
+
+test("atomic hides preserve the fresh foreign Plan loadout and fresh show adds only Guild names", () => {
+ const f = fixture(); f.registration.show(f.ctx);
+ f.pi.setActiveTools(["plan_read", "plan_exit"]);
+ f.eligible(false); f.registration.hide(); f.registration.show(f.ctx);
+ assert.deepEqual(f.active(), ["plan_read", "plan_exit"]);
+ f.pi.setActiveTools(["read"]); f.eligible(true); f.registration.show(f.ctx);
+ assert.deepEqual(f.active(), ["read", "guild_start", "guild_status", "guild_send", "guild_wait", "guild_cancel"]);
+ assert.equal(f.active().includes("plan_read"), false);
+});
+
+for (const operation of ["show", "hide"] as const) {
+ test(`aborted atomic ${operation} is a sticky fault and cached execution is inert`, async () => {
+  let faults = 0;
+  const f = fixture({onFault: () => { faults++; }});
+  const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+  let abort = false;
+  capability.bind = (...args: any[]) => {
+   const handle = bind(...args);
+   return {...handle, update: (batch: any[]) => abort ? {status: "aborted", reason: "conflict"} : handle.update(batch)};
+  };
+  f.registration.show(f.ctx);
+  const cached = f.definitions.get("guild_status")!;
+  abort = true;
+  if (operation === "show") f.registration.show(f.ctx); else f.registration.hide();
+  assert.equal(faults, 1);
+  assert.equal(f.registration.isActive(), false);
+  assert.equal(f.definitions.get("guild_status")!.exposure, "direct", "failed withdrawal must not pretend publication succeeded");
+  await assert.rejects(cached.execute("cached", {}, undefined, undefined, f.ctx as any), /unavailable/);
+  abort = false; f.registration.show(f.ctx);
+  assert.equal(f.registration.isActive(), false);
+  f.registration.dispose(); assert.equal(f.definitions.get("guild_status")!.exposure, "hidden");
+ });
+}
+
+test("isActive reentry that hides during the final show fence cannot reopen visibility", () => {
+ const f = fixture(); const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+ let checks = 0, armed = false;
+ capability.bind = (...args: any[]) => {
+  const handle = bind(...args);
+  return {...handle, isActive() {
+   if (armed && ++checks === 2) f.registration.hide();
+   return handle.isActive();
+  }};
+ };
+ f.onRegister(() => { armed = true; });
+ f.registration.show(f.ctx);
+ assert.equal(f.registration.isActive(), false);
+ assert.equal(f.hooks.size, 0);
+ assert.deepEqual(f.active(), ["read"]);
+});
+
+for (const operation of ["bind", "hide"] as const) {
+ test(`retirement during ${operation} does not latch a fault`, () => {
+  let faults = 0;
+  const f = fixture({onFault: () => { faults++; }});
+  if (operation === "bind") (f.pi as any).atomicOwnedTools.bind = (_names: string[], retire: () => void) => {
+   retire(); throw new Error("retired bind");
+  };
+  else { f.registration.show(f.ctx); f.onRegister(f.retire); }
+  if (operation === "bind") f.registration.show(f.ctx); else f.registration.hide();
+  assert.equal(faults, 0);
+  f.onRegister(() => {});
+  if (operation === "hide") {
+   const next = createBackgroundToolRegistration(f.pi, f.options);
+   next.show(f.ctx); assert.equal(next.isActive(), true); next.dispose();
+   assert.equal(faults, 0);
+  }
+ });
+}
+
+for (const boundary of ["unsubscribe", "update", "unsubscribe-fault"] as const) {
+ test(`dispose reentry during hide from ${boundary} releases exactly once`, () => {
+  let released = 0, faults = 0;
+  const f = fixture({onFault: () => { faults++; f.registration.dispose(); }});
+  const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+  capability.bind = (...args: any[]) => {
+   const handle = bind(...args);
+   return {...handle, dispose() { released++; return handle.dispose(); }};
+  };
+  if (boundary !== "update") {
+   const on = f.pi.on.bind(f.pi);
+   f.pi.on = ((name: any, callback: any) => {
+    const off = on(name, callback);
+    return () => { off(); if (boundary === "unsubscribe-fault") throw new Error("off failed"); f.registration.dispose(); };
+   }) as typeof f.pi.on;
+  }
+  f.registration.show(f.ctx);
+  if (boundary === "update") f.onRegister(() => f.registration.dispose());
+  f.registration.hide(); f.registration.dispose();
+  assert.equal(released, 1);
+  assert.equal(faults, boundary === "unsubscribe-fault" ? 1 : 0);
+  assert.equal(f.registration.isActive(), false);
+  assert.deepEqual(f.active(), ["read"]);
+ });
+}
+
+for (const variant of ["missing-update", "wrong-protocol", "throwing-getter", "throwing-cleanup", "retire-getter", "replace-getter", "poison-call"] as const) {
+ test(`qualification cleans only its returned resource: ${variant}`, () => {
+  let released = 0, faults = 0;
+  const f = fixture({onFault: () => { faults++; f.registration.dispose(); }});
+  const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+  let next: ReturnType<typeof createBackgroundToolRegistration> | undefined;
+  capability.bind = (_names: string[], retire: () => void) => {
+   const dispose = function(this: unknown) {
+    assert.equal(this, candidate); released++;
+    if (variant === "throwing-cleanup") throw new Error("cleanup failed");
+    return {status: "committed"};
+   };
+   (dispose as any).call = () => assert.fail("untrusted call property");
+   (dispose as any).bind = () => assert.fail("untrusted bind property");
+   const candidate = {protocol: variant === "wrong-protocol" ? "future" : "pi-atomic-owned-tools-v1",
+    isActive: () => true, dispose,
+    get update() {
+     if (variant === "throwing-getter") throw new Error("validation failed");
+     if (variant === "retire-getter") retire();
+     if (variant === "replace-getter") {
+      capability.bind = bind;
+      next = createBackgroundToolRegistration(f.pi, f.options); next.show(f.ctx);
+     }
+     return variant === "poison-call" ? () => ({status: "committed"}) : undefined;
+    }};
+   return candidate;
+  };
+  f.registration.show(f.ctx);
+  f.registration.dispose();
+  assert.equal(released, variant === "retire-getter" || variant === "replace-getter" ? 0 : 1);
+  assert.equal(faults, ["retire-getter", "replace-getter", "poison-call"].includes(variant) ? 0 : 1);
+  if (next) { assert.equal(next.isActive(), true); next.dispose(); }
+ });
+}
+
+test("final disposal of an inactive claim checks it once without retrying", () => {
+ const f = fixture();
+ const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+ let inactive = false, checks = 0;
+ capability.bind = (...args: any[]) => {
+  const handle = bind(...args);
+  return {...handle, isActive() { if (inactive) { checks++; return false; } return handle.isActive(); }};
+ };
+ f.registration.show(f.ctx); inactive = true;
+ f.registration.dispose();
+ assert.equal(checks, 1);
+});
+
+test("retirement during a live check does not latch its thrown error", () => {
+ let faults = 0;
+ const f = fixture({onFault: () => { faults++; }});
+ const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+ capability.bind = (...args: any[]) => {
+  const handle = bind(...args);
+  return {...handle, isActive() { f.retire(); throw new Error("retired check"); }};
+ };
+ f.registration.show(f.ctx);
+ assert.equal(faults, 0);
+});
+
+for (const failure of ["aborted", "throws"] as const) {
+ for (const ownership of ["local", "retired", "replaced"] as const) {
+  test(`unsubscribe disposal ${failure} reports only current cleanup ownership: ${ownership}`, async () => {
+   let faults = 0, released = 0;
+   const f = fixture({onFault: () => { faults++; }});
+   const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+   let next: ReturnType<typeof createBackgroundToolRegistration> | undefined;
+   capability.bind = (...args: any[]) => {
+    const handle = bind(...args);
+    return {...handle, dispose() {
+     released++;
+     f.registration.hide(); // Cleanup reentry changes intent again, not ownership.
+     if (ownership === "retired") f.retire();
+     if (ownership === "replaced") {
+      capability.bind = bind;
+      next = createBackgroundToolRegistration(f.pi, f.options); next.show(f.ctx);
+     }
+     if (failure === "throws") throw new Error("release failed");
+     return {status: "aborted"};
+    }};
+   };
+   const on = f.pi.on.bind(f.pi);
+   f.pi.on = ((name: any, callback: any) => {
+    const off = on(name, callback);
+    return () => { off(); f.registration.dispose(); };
+   }) as typeof f.pi.on;
+   f.registration.show(f.ctx);
+   const cached = f.definitions.get("guild_status")!;
+   f.registration.hide();
+   const batches = f.batches.length;
+   f.registration.dispose(); f.registration.show(f.ctx);
+   assert.equal(faults, ownership === "local" ? 1 : 0);
+   assert.equal(released, 1);
+   assert.equal(f.batches.length, batches);
+   assert.equal(f.registration.isActive(), false);
+   await assert.rejects(cached.execute("cached", {}, undefined, undefined, f.ctx as any), /unavailable/);
+   if (next) { assert.equal(next.isActive(), true); next.dispose(); assert.deepEqual(f.active(), ["read"]); }
+  });
+ }
+}
+
+for (const ownership of ["local", "retired", "replaced"] as const) {
+ test(`dispose during bind reports throwing candidate release only while owned: ${ownership}`, async () => {
+  let faults = 0, released = 0;
+  const f = fixture({onFault: () => { faults++; }});
+  const capability = (f.pi as any).atomicOwnedTools, bind = capability.bind;
+  let next: ReturnType<typeof createBackgroundToolRegistration> | undefined;
+  // Cache an execution closure without keeping an earlier provider claim alive.
+  f.registration.show(f.ctx);
+  const cached = f.definitions.get("guild_status")!;
+  f.retire();
+  const registration = createBackgroundToolRegistration(f.pi, f.options);
+  capability.bind = (names: string[], retire: () => void) => {
+   const candidate = bind(names, retire);
+   registration.dispose();
+   return {...candidate, dispose() {
+    released++;
+    registration.hide();
+    if (ownership === "retired") f.retire();
+    if (ownership === "replaced") {
+     capability.bind = bind;
+     next = createBackgroundToolRegistration(f.pi, f.options); next.show(f.ctx);
+    }
+    throw new Error("candidate release failed");
+   }};
+  };
+  const before = f.batches.length;
+  registration.show(f.ctx);
+  const batches = f.batches.length;
+  registration.dispose(); registration.show(f.ctx);
+  assert.equal(faults, ownership === "local" ? 1 : 0);
+  assert.equal(released, 1);
+  assert.equal(batches, before + (ownership === "replaced" ? 1 : 0));
+  assert.equal(f.batches.length, batches);
+  assert.equal(registration.isActive(), false);
+  await assert.rejects(cached.execute("cached", {}, undefined, undefined, f.ctx as any), /unavailable/);
+  if (next) { assert.equal(next.isActive(), true); next.dispose(); assert.deepEqual(f.active(), ["read"]); }
+ });
+}
