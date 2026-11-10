@@ -232,7 +232,7 @@
     },
     {
       "name": "@pithos-kit/guild",
-      "version": "0.10.0",
+      "version": "0.11.0",
       "description": "Bounded software-development and writing Guild roles with content-craft, repository-aware architecture, review, comments, Conventional Commit, and TDD guidance.",
       "pi": {
         "extensions": [
