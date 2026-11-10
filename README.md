@@ -50,8 +50,8 @@ pi:
   version: "1.0.0"
   extensions:
     "@pithos-kit/atlas": "npm:0.9.1"
-    "@pithos-kit/guild": "npm:0.9.0"
-    "@pithos-kit/plan": "npm:0.5.4"
+    "@pithos-kit/guild": "npm:0.11.0"
+    "@pithos-kit/plan": "npm:0.6.0"
     "@pithos-kit/squiggle": "npm:0.7.0"
     "@pithos-kit/translate": "npm:3.0.0"
     "@pithos-kit/web": "npm:0.3.0"
@@ -130,6 +130,8 @@ scripts/pi-patches/suppress-prompt-template-display.mjs
 ```
 
 ## Release
+
+When bumping a package version, also update its pinned version in `test/package-identities.test.mjs` and its package README's `.pithos` version example, and regenerate the Atlas catalog with `npm run catalog:generate` from the repository root. The root package-identity test asserts that these match the package manifests; include that test in release validation, not just the package-local suite.
 
 Packages release independently using the `pithos-kit.<name>-v` tag namespace:
 
