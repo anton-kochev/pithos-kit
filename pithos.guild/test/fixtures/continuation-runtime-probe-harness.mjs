@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { stripVTControlCharacters } from "node:util";
 import { readFile, realpath } from "node:fs/promises";
 import { findPackageJSON } from "node:module";
@@ -11,32 +12,48 @@ assert.deepEqual(Object.keys(process.env).sort(), [
   "HOME", "USERPROFILE", "XDG_CONFIG_HOME", "XDG_CACHE_HOME", "TMPDIR", "TMP", "TEMP",
   "PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY",
 ].sort());
+// Default remains the exact-source 1.4 harness. 1.5 requires pinned copied deployment proof.
+let runtimeVersion = "1.4.0";
+if (process.argv[3] === "--runtime-version") {
+  assert.equal(process.argv[4], "1.5.0", "Explicit deployed version");
+  runtimeVersion = process.argv[4];
+  process.argv.splice(3, 2);
+}
 const cli = await realpath(process.argv[2]);
 const packageRoot = dirname(dirname(cli));
 assert.equal(cli, await realpath(join(packageRoot, "dist/cli.js")));
 const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
 assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
-assert.equal(manifest.version, "1.4.0");
+assert.equal(manifest.version, runtimeVersion);
+if (runtimeVersion === "1.5.0") {
+  const bytes = await readFile(join(packageRoot, "deployed-manifest.json"));
+  const hash = bytes => createHash("sha256").update(bytes).digest("hex");
+  assert.equal(hash(bytes), "c97a03d9dd5cd2faea87c30192fc1a19b5a6a0c9c33f374a09ae57c85d1a614a", "Deployment proof SHA-256");
+  const proof = JSON.parse(bytes);
+  for (const [file, expected] of Object.entries({"package.json": proof.expected["package.json"], ...proof.overlay})) {
+    assert.equal(hash(await readFile(join(packageRoot, file))), expected, `Deployment proof output: ${file}`);
+  }
+}
 assert.equal(manifest.exports["."].import, "./dist/index.js");
 const sdkUrl = pathToFileURL(join(packageRoot, manifest.exports["."].import));
 const sdk = await import(sdkUrl.href);
 const { KeybindingsManager } = await import(pathToFileURL(join(packageRoot, "dist/core/keybindings.js")).href);
-assert.equal(sdk.VERSION, "1.4.0");
+assert.equal(sdk.VERSION, runtimeVersion);
 // Resolve Pi AI from the selected installation, never from this fixture's directory.
 const aiManifestPath = findPackageJSON("@earendil-works/pi-ai", sdkUrl);
 assert.ok(aiManifestPath, "Selected installation must supply Pi AI");
 const aiManifest = JSON.parse(await readFile(aiManifestPath, "utf8"));
 assert.equal(aiManifest.name, "@earendil-works/pi-ai");
-assert.equal(aiManifest.version, "1.4.0");
+assert.equal(aiManifest.version, runtimeVersion);
 assert.equal(aiManifest.exports["."].import, "./dist/index.js");
 const aiUrl = pathToFileURL(join(dirname(aiManifestPath), aiManifest.exports["."].import));
 const ai = await import(aiUrl.href);
 const tuiManifestPath = findPackageJSON("@earendil-works/pi-tui", sdkUrl);
 const tuiManifest = JSON.parse(await readFile(tuiManifestPath, "utf8"));
-assert.equal(tuiManifest.version, "1.4.0");
+assert.equal(tuiManifest.version, runtimeVersion);
 const tuiUrl = pathToFileURL(join(dirname(tuiManifestPath), tuiManifest.main));
 const tui = await import(tuiUrl.href);
-assert.equal(ai.PI_AI_VERSION, "1.4.0");
+assert.equal(ai.PI_AI_VERSION, runtimeVersion);
 const log = (record) => console.log(JSON.stringify(record));
 log({ phase: "runtime", legacyAtomicCapabilityMask: false, version: sdk.VERSION, cli, sdk: sdkUrl.href, ai: aiUrl.href,
   node: process.version, pid: process.pid, aiVersion: ai.PI_AI_VERSION, tui: tuiUrl.href, tuiVersion: tuiManifest.version, scope: "qualified public tools; local scripted transport and in-process runner, not external provider or child certification" });

@@ -8,6 +8,8 @@ The extension adds agent-callable `guild_handover` and controlled `create_commit
 
 Guild hands **one focused task** to an isolated child: choose a role for its permissions and a supported profile for its guidance. Explorer and architect investigate or plan, coder can edit and run tests, reviewer inspects changes without writing, and writer creates scoped prose artifacts without shell access. Guild queues handovers, returns a bounded structured report, and leaves verification and final decisions to the main agent. It does not run an automatic multi-agent pipeline or prove a child's claims.
 
+On a qualified host, coder and reviewer tasks can also run in the background: **three occupied slots and eight pending starts**, in the parent's working directory. Children can ask the parent for clarification and continue in the same process after an answer. Background controls and automatic parent notices remain subject to runtime qualification, Plan protection, and explicit result collection.
+
 For example, in Pi's interactive TUI:
 
 ```text
@@ -18,7 +20,17 @@ Or ask the main agent, “Use explorer/typescript to find the validation path an
 
 ## Install
 
-The blocking path requires Pi **1.0.0 or newer**, unchanged. Background tools are conditional: stock installed Pi **1.4.0** exposes none of the five tools. They require live-qualified `semanticInterrupt` (`pi-semantic-interrupt-v1`) and `atomicOwnedTools` (`pi-atomic-owned-tools-v1`), plus safe Plan policy and owner. Optional qualified `parentContinuation` (`pi-parent-continuation-v1`) additionally enables automatic idle-parent delivery. Package tool metadata describes conditional inventory, not availability on every supported version. Qualification requires the exact protocol, lifetime capability and successful live binding—not semver, function presence or an environment override. The provider-free development harness remains pinned to 0.99.0; it does not certify Pi 1.x or real-provider behavior.
+The blocking path requires Pi **1.0.0 or newer**, unchanged. Installing Guild alone does not add background support to stock Pi. Background tools are conditional on the host runtime. They require live-qualified `semanticInterrupt` (`pi-semantic-interrupt-v1`) and `atomicOwnedTools` (`pi-atomic-owned-tools-v1`), plus safe Plan policy and owner. Optional qualified `parentContinuation` (`pi-parent-continuation-v1`) additionally enables automatic idle-parent delivery. Package tool metadata describes conditional inventory, not availability on every supported version. Qualification requires the exact protocol, lifetime capability and successful live binding—not semver, function presence or an environment override. The provider-free development harness remains pinned to 0.99.0; it does not certify Pi 1.x or real-provider behavior.
+
+### Background support in Pithos
+
+Pithos builds that ship the Guild runtime overlay for **Pi 1.5.0** apply it during the container image build and select the patched Node runtime at startup. On that supported setup, no manual runtime activation or Guild enable flag is needed after a restart or container recreation. The build checks the exact installed files before applying its overlay; an unsupported version or mismatched installation stays on stock Pi. The launcher reports a refused patch. Do not assume that selecting a newer Pi version also supplies background support.
+
+Guild still checks the live capabilities and Plan state. By default, background admission requires a compatible inactive Plan extension; an intentionally Plan-free setup must explicitly assert `PITHOS_GUILD_PLAN_MODE=standalone`. These checks are not bypassed by Pithos startup. Existing blocking handovers remain available without the background capabilities.
+
+The supported Pithos launcher can select the stock runtime instead when `~/.pi/agent/pithos-stock-runtime` exists. Removing that marker restores the normal selection on the next process start. `/reload` does not replace the running Pi core. These are Pithos launcher behaviors, not changes made by the Guild npm package.
+
+### Install Guild
 
 Install the current release:
 
@@ -261,7 +273,7 @@ guild_send({runId: "<runId>", questionId: "<pending questionId>", message: "...a
 guild_wait({runId: "<runId>", timeoutMs: 60000})
 ```
 
-Limits are **3 occupied slots, 8 pending starts and 16 unconsumed records**. Queued admission is not child launch; waiting and stopping retain capacity through cleanup and terminal publication. Each run permits eight questions, 8 KiB question/message text, two pending/in-flight updates and 32 lifetime updates. There are at most 32 concurrent waiters. Terminal report DTOs and whole public tool results have 64 KiB budgets; oversized reports are rejected, not silently truncated into success. Wait timeout is observational, not cancellation.
+Limits are **3 occupied slots, 8 pending starts and 16 unconsumed records**. Queued admission is not child launch; waiting and stopping retain capacity through cleanup and terminal publication. Each run permits eight questions, 8 KiB question/message text, two pending/in-flight updates and 32 lifetime updates. There are at most 32 concurrent waiters. Terminal report DTOs and whole public tool results have 64 KiB budgets; oversized reports are rejected, not silently truncated into success. Wait timeout is observational, not cancellation. While a child is waiting for an answer, use `guild_send` with its exact pending `questionId`; an ordinary update without that ID is not accepted until the question is answered.
 
 `PITHOS_GUILD_PLAN_MODE` is captured once: unset or exact `required` needs a compatible inactive Plan handshake. Exact `standalone` is a trusted parent assertion of absence and rejects any provider reply. Invalid values block background admission only. Safe persisted inactivity and strict Plan protection through cleanup remain required. Shared cwd and task scopes are **not file locks**: coordinate overlapping edits yourself. Guild does not roll back, stash, merge or delete child edits on cancellation.
 
@@ -275,7 +287,7 @@ These manual controls inspect or cancel without a model turn, usage claim or aut
 
 A semantic application interrupt, including Escape dispatched to the native interrupt action, cancels **all active, waiting and queued work**. Escape consumed by a modal or panel is not a semantic interrupt. Completion never restarts an interrupted or retired parent; a healthy qualified parent may receive automatic notices. Only fresh eligible idle intent after drain and safe Plan checks can reactivate the owner. Navigation drains before epoch change; session replacement fences old callbacks. Persisted observations are visible according to their origin session/branch and restore observations, **never children**.
 
-**Automatic idle-parent continuation is conditional on live-qualified `parentContinuation`.** Fair bounded batches coalesce canonical questions and terminal notices; terminal delivery follows publication and cleanup. Notices acknowledge historical commit, not model reading, and neither notices nor status collect child usage. Actual parent inference has its normal usage. Without this optional capability, otherwise qualified background tools and UI/status remain available, but notices add no context messages or model turns. There is no fallback `sendMessage` queue. The [host proposal](../proposals/pi-interrupt-hook/README.md) remains uninstalled.
+**Automatic idle-parent continuation is conditional on live-qualified `parentContinuation`.** Fair bounded batches coalesce canonical questions and terminal notices; terminal delivery follows publication and cleanup. Notices acknowledge historical commit, not model reading, and neither notices nor status collect child usage. Actual parent inference has its normal usage. Without this optional capability, otherwise qualified background tools and UI/status remain available, but notices add no context messages or model turns. There is no fallback `sendMessage` queue. The [original Pi 1.4.0 host proposal](../proposals/pi-interrupt-hook/README.md) records the development contract and its historical tests; current Pithos deployment support is described under [Background support in Pithos](#background-support-in-pithos).
 
 ## Live transparency
 
@@ -401,7 +413,31 @@ Alternatively, set `PI_RPC_PROBE_CLI` to that CLI path. There is no default runt
 
 ### Background qualification and shared scheduling
 
-The current exact-source [uninstalled proposal](../proposals/pi-interrupt-hook/README.md) has distinct proof sets: **8 masked legacy cases** qualify atomic fallback, **16 unmasked connected cases** qualify bounded automatic continuation, and **42 portable tests** cover host contracts. The connected run uses actual Pi 1.4.0 SDK/Runtime/InteractiveMode and packaged Plan, both registration orders and SDK/public-editor Enter routes, terminal I/O doubled, local zero-usage transport and in-process children. It checks held receipt phases, 3 occupied + 8 queued slots and twelfth refusal, coalescing, cleanup, commit boundaries, interrupt/fresh intent, native input priority, tree/reload vetoes and accepted transitions, shutdown and nonjoining closure. Known 80-token/$0.8 child usage is collected once; nested waits claim none. Fixture zero usage does not predict real-provider usage.
+#### Deployed Pi 1.5.0 release checks
+
+`test:deployed-runtime` checks the exact Pithos-shipped Pi 1.5.0 deployment manifest and installed output hashes before copying the runtime into an isolated test directory. It runs the existing **16 connected cases** plus a separate idle-parent question test. The latter releases a child question only after the native parent turn has settled, then requires one automatic notice and response **without `guild_wait` or `guild_status` polling**, followed by an exact reply to the same child.
+
+To check the actual npm package rather than checkout source, run from the repository's `pithos.guild` directory inside the Pithos container:
+
+```bash
+packdir=$(mktemp -d)
+npm pack --pack-destination "$packdir"
+tar -xzf "$packdir"/pithos-kit-guild-*.tgz -C "$packdir"
+PATH=/usr/bin:/bin:"$PATH" npm run test:deployed-runtime -- \
+  /opt/pi-npm/lib/node_modules/@earendil-works/pi-coding-agent \
+  /opt/pi-guild-runtime/versions/1.5.0/manifest.json \
+  "$packdir/package"
+```
+
+The packed Guild version must match the checkout running the probe. The host manifest is separately pinned: arbitrary manifests and changed installed outputs are rejected, not accepted by version number alone. The runtime and Guild source/assets come from the selected inputs; Plan and test fixtures come from the checkout. These checks use the real SDK/InteractiveMode, terminal I/O doubles, local scripted responses, and in-process child runners. They do not replace actual-child transport checks or certify a physical terminal, every provider, or future Pi versions. The launcher checks its protected installed hashes again and removes its temporary runtime after the workers close. Dependencies are read-only by convention, not an OS sandbox.
+
+Ordinary `npm test` runs the portable manifest and release-version checks. The installed-file mutation and packed-runtime integration tests are opt-in through `GUILD_DEPLOYED_TEST_ROOT` and `GUILD_DEPLOYED_TEST_PACKAGE`; their default skips are not evidence of deployment qualification. Require a successful exit from the explicit deployed command, including the separate idle test.
+
+The current release check passed on the launcher's **Node 24.22.2**: all **16 connected cases**, the separate idle-question case, and all **4 validation tests with deployment checks enabled** against a real **70-file npm package**. The default Guild suite reported **921 passed and 2 opt-in skips**, with those deployment checks run separately; typecheck, Plan **391**, Atlas **127** plus typecheck, and root **3** also passed. Local evidence is in `/tmp/guild-release-15-parent-*.log`; temporary logs are not published attestations.
+
+#### Original Pi 1.4.0 evidence
+
+The original exact-source [Pi 1.4.0 proposal](../proposals/pi-interrupt-hook/README.md) has distinct historical proof sets: **8 masked legacy cases** qualify atomic fallback, **16 unmasked connected cases** qualify bounded automatic continuation, and **42 portable tests** cover host contracts. The connected run uses actual Pi 1.4.0 SDK/Runtime/InteractiveMode and packaged Plan, both registration orders and SDK/public-editor Enter routes, terminal I/O doubled, local zero-usage transport and in-process children. It checks held receipt phases, 3 occupied + 8 queued slots and twelfth refusal, coalescing, cleanup, commit boundaries, interrupt/fresh intent, native input priority, tree/reload vetoes and accepted transitions, shutdown and nonjoining closure. Known 80-token/$0.8 child usage is collected once; nested waits claim none. Fixture zero usage does not predict real-provider usage.
 
 From `pithos.guild`, select explicit inputs (overlay launchers have no defaults):
 
@@ -447,7 +483,7 @@ Offline vertical tests enter this facade and launch actual scripted subprocesses
 
 Live registration now uses this composition under one authority: both blocking entry paths delegate through its generic exclusive facade without background projection. Registration captures the Pi events object and a frozen one-field parent `PITHOS_GUILD_PLAN_MODE` snapshot, not a session, branch, model, trust decision, UI, or working directory. The narrow synchronous emit adapter preserves the events receiver. Construction, activation, and shutdown do not discover Plan, attach participants, subscribe to the bus, or launch a background child. Blocking admission now performs Plan discovery with the stable runtime participant, rechecks inactive persisted state, provider readiness, reentry, and owner identity, then reserves synchronously. See the combined installed Guild–Plan probe below for the connected behavior and remaining limitations.
 
-The current registration adds conditional background tools, manual controls, dashboard observation and collection accounting. Same-session native tree retirement/rearm is connected below. The interrupt proposal remains uninstalled; stock Pi still cannot expose background tools. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Qualification remains capability-specific; automatic continuation additionally requires the optional live-qualified context capability.
+The current registration adds conditional background tools, manual controls, dashboard observation and collection accounting. Same-session native tree retirement/rearm is connected below. Background exposure requires the qualified host capabilities; the Pithos Pi 1.5.0 integration supplies them, while installing Guild alone does not. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Qualification remains capability-specific; automatic continuation additionally requires the optional live-qualified context capability.
 
 ### Connected native tree retirement and fresh-intent rearm
 
@@ -459,7 +495,7 @@ Rearm is **activation, not work admission**. An empty branch is persisted inacti
 
 Transcript history remains session-owned and bounded across tree changes. Retired executions finish internally as cancelled without publishing old results onto the new branch, and old trace bindings unbind after execution cleanup. The recorder and whole transcript store are disposed only at terminal `session_shutdown`, which always shuts down the runtime even if no active scope remains. Unrelated native idle waits, pickers and editors are not joined; owned continuation preparation/run/publication/settlement callbacks are joined. Neither the before-tree hook nor input handler waits for host idle.
 
-The installed Pi **1.4.0** source has been inspected: no-op navigation and earlier vetoes may skip Guild's hook; navigation is already busy when before-tree hooks run, and idle is restored in navigation's `finally`, not by `session_tree`. Unit tests invoke registered handlers with deterministic host doubles; they do **not** establish actual native event ordering. The opt-in installed-runtime probe now loads real `registerGuild` through Pi's public extension loader and exercises the connected paths described below, including the injected cleanup-failure veto. Stock Pi still lacks semantic app-interrupt support, and no installed runtime patch is authorized here. Background results now have session-owned observation and explicit collection; exposure remains conditional on host qualification.
+The installed Pi **1.4.0** source has been inspected: no-op navigation and earlier vetoes may skip Guild's hook; navigation is already busy when before-tree hooks run, and idle is restored in navigation's `finally`, not by `session_tree`. Unit tests invoke registered handlers with deterministic host doubles; they do **not** establish actual native event ordering. The opt-in installed-runtime probe now loads real `registerGuild` through Pi's public extension loader and exercises the connected paths described below, including the injected cleanup-failure veto. This historical stock-runtime probe did not install the semantic interrupt capability; it is separate from the current Pithos runtime integration. Background results now have session-owned observation and explicit collection; exposure remains conditional on host qualification.
 
 ### Installed native-navigation probe (Pi 1.4.0)
 

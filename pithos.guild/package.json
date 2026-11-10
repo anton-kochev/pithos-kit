@@ -221,6 +221,7 @@
     "test:shutdown-runtime": "node --import tsx tools/shutdown-runtime-probe.ts",
     "test:navigation-runtime": "node --import tsx tools/navigation-runtime-probe.ts",
     "test:semantic-runtime": "node --import tsx tools/semantic-runtime-probe.ts",
+    "test:deployed-runtime": "node --import tsx tools/deployed-runtime-probe.ts",
     "test:continuation-runtime": "node --import tsx tools/continuation-runtime-probe.ts",
     "test:background-runtime": "node --import tsx tools/background-runner-probe.ts",
     "test:accounting-runtime": "node --import tsx tools/accounting-runtime-probe.ts",

@@ -1,0 +1,39 @@
+{
+	"piVersion": "1.5.0",
+	"upstreamCommit": "f9a26365568127461c47a07a37dcb42c140a3ac5",
+	"sourcePatchSha256": "5146aa29cdc3ce292c3478ebabf864cfed05f035ffb3422f67cb52737fcfb151",
+	"expected": {
+		"package.json": "990aac3caff17b717294fa792b4e3f60b991d274d9f4ab6977d6aa42aa43c95e",
+		"dist/core/agent-session.js": "3a0c07c7ca42589bd505a666c5c925696ab4850aa3aebc3fc419755037a0821a",
+		"dist/core/agent-session-runtime.js": "0e0b6bcd83b092e108ed52bed2c8f0bc28e9d606f4a3ddd8877636163260a019",
+		"dist/core/agent-session-services.js": "20b7aa4b0657b53fb522ea051df26f72901802e03cc06c89e0a8926388bca601",
+		"dist/core/sdk.js": "c43e4e1d49ac3ec4b9f48465bf2081bc5980b55f23d44040d02e9046dea45725",
+		"dist/main.js": "dec83f4f151de1351c9a39ed8ad6752cb5e5d91798daede5780fa401d0e6ec06",
+		"dist/modes/print-mode.js": "bb070a05a16f14d124908a1b374fc714a78f89ca8a1a71add20a09e7e1c9f13d",
+		"dist/modes/rpc/rpc-mode.js": "631697cd35928fc827f4a423538c43ff227b8cbf63c2a2f11060616f55eba6db",
+		"dist/core/extensions/types.js": "447039081a7808371e07d85bacc719a11eea7b66f291b9949de33ef952a809fc",
+		"dist/core/extensions/runner.js": "0e659fb4338069d91c4d0a3b032b51bf8d179a99e6417bc3e39e59b672aaec76",
+		"dist/core/extensions/loader.js": "82ca38a32024bdb2fbbe96120b8cfcdd67de037f5764018d42cf8ca7172cf104",
+		"dist/core/extensions/index.js": "9a99fd14edb60079a3c604d6045cbad7d461c3ba1ce88331f5d549372f14c46d",
+		"dist/index.js": "4569157e6038be9840fa514db4b00a27fd0be9e3622cc7b49a281de6c027d7ff",
+		"dist/modes/interactive/interactive-mode.js": "c34c9c622f781b609d549f21de806bfffd00861e9b73a2b2e15efa7a27060202"
+	},
+	"overlay": {
+		"dist/core/agent-session.js": "29a120fae18f5b0dcc5cf8f74f04d4a1162b67afbbe804fb3c5d1b786b6271be",
+		"dist/core/agent-session-runtime.js": "ab30458ef2f78e4769ffc2dce6c735e3ef830c20fa401b2daf3e26937d4aa36a",
+		"dist/core/agent-session-services.js": "e3a3d9b449e4a1c415cb20018f99ce19e616dcbc47edd5c7149054f9a84b0f2a",
+		"dist/core/sdk.js": "3d750c8db894fedcc31067b8630aeaa641e341a9d0d18c6935f26fe5b65b3059",
+		"dist/main.js": "52271f949807b8ef8021e34ffec45f4376ee662ba50db6afb0cbdb810e66caea",
+		"dist/modes/print-mode.js": "9446e46107a3079e0509d6cf7ff5922b292df6cc665fa3fb29d3b7eaa7739c76",
+		"dist/modes/rpc/rpc-mode.js": "f4cb00b7d25284be00e97d4954fd73a1012435761ab9909a8d294f08d6c8ef93",
+		"dist/core/extensions/types.js": "6ceb3e6ab787d0bd1585051e1c240a90b9c153bcedcc9030f59ccf3f3d595ea1",
+		"dist/core/extensions/runner.js": "4b5df7f84c7d8cb5fcf0aa0782b6b691095a854c2ab7bc696be3a55b47712238",
+		"dist/core/extensions/loader.js": "36637924865b6069905a6abff33975df0213d606cb718048b695fb62a1c1f300",
+		"dist/core/extensions/index.js": "b424227613180d53b2fd33c48565cf06f0b89a58a737dd4086b86bb0641819b2",
+		"dist/index.js": "c10c5035c87d88d0ccf8a38aa996c1c6a159d220ae4eb034c24d9a76cba3af38",
+		"dist/modes/interactive/interactive-mode.js": "b62d04fddf9df7acdc152c4455374bf2786cc68d0bbbda204ae225e0bb286c0b",
+		"dist/core/extensions/atomic-owned-tools.js": "907576d84cbace1c8c7ac4609bb8487de7c206d37d13d4c3b745ea401c28657b",
+		"dist/core/extensions/tool-registry-write.js": "434abc072e9aad44007bf91729fc7509bf39362ebed4890fceee435a33248543",
+		"dist/core/parent-continuation.js": "115785597e8b5375dcee90c7ce849cc951a1db6b4897deced4e49fd2ff2b5010"
+	}
+}
