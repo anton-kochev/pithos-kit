@@ -24,7 +24,7 @@ pi install -l ./pithos.plan
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/plan": "npm:0.6.0"
+    "@pithos-kit/plan": "npm:0.6.1"
 ```
 
 ## Command lifecycle

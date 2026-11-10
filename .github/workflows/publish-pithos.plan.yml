@@ -40,6 +40,10 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
+      - name: Install Guild coordination test dependencies
+        working-directory: pithos.guild
+        run: npm ci
+
       - name: Test
         run: npm test
 
