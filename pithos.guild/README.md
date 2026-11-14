@@ -1,6 +1,6 @@
 # guild
 
-A standalone bounded Guild with stable exploration, architecture, implementation, review, and writing roles; reusable general, front-end, Angular, TypeScript, .NET, Rust, and Go profiles; and content-craft, repository-aware Go engineering, Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, review, and writing roles; reusable general, front-end, Angular, TypeScript, .NET, Rust, and Go profiles; and technical discovery, delivery planning, content-craft, repository-aware Go engineering, Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
@@ -106,6 +106,31 @@ The package-owned `content-craft` skill covers audience-first writing, structure
 Pi-native discovery exposes the skill to the parent when enabled. Every writer child receives the fixed content-craft core through both handover entry paths, independent of that toggle; no other role receives it automatically. Writer does not receive code-comments, review, or TDD cores, and required TDD remains coder-only. A missing or invalid craft core fails writer setup before launch. Receipts attest selected bytes, not editorial quality or factual verification. Use `pi config` or `pi config -l`, then `/reload`, to toggle parent discovery.
 
 Long-form prose goes into the assigned files, not bounded report strings. The report contains `artifacts` (path/description), `sources` (reference/usage), and `checks` (check/outcome), with common blockers and limitations. A succeeded writer report requires at least one artifact; blocked work may have none. Both are child-reported claims. A parent can read the artifact to present or verify it. No automatic publication or reviewer pipeline is installed.
+
+## Technical discovery and delivery planning skills
+
+Two independent, parent-discoverable skills connect ideas and evidence to technical documents and safe delivery increments. Use either at the point you need it; neither starts implementation or requires a full document pipeline.
+
+| Skill | Use it for | Possible outputs |
+| --- | --- | --- |
+| [`technical-discovery`](skills/technical-discovery/SKILL.md) | Clarify an idea, inspect a repository, research constraints, define requirements, compare designs, or draft/review an artifact | Brief, spec/SRS, RFC/design proposal, ADR, contract, operational document |
+| [`delivery-planning`](skills/delivery-planning/SKILL.md) | Split existing scope into outcomes, sequence dependencies and learning, prepare bounded assignments | Release slices, optional user stories, acceptance criteria, agent handoffs |
+
+```text
+/skill:technical-discovery Explore this idea using the repo and relevant sources. Ask focused questions and propose the smallest useful document set. Do not implement.
+/skill:technical-discovery Record the supplied decision as an ADR using our existing format; do not reopen discovery.
+/skill:delivery-planning Split docs/features/invoice-export/spec.md into shippable user stories. Make only the first increment implementation-ready.
+```
+
+Each compact core links references loaded only when needed and optional templates. A standalone ADR need not produce an SRS; a small slice can be its own handoff. Follow existing document locations and formats rather than creating a parallel hierarchy. User stories remain supported, not mandatory: story maps, job stories, integrated scopes, and plain outcomes can help identify useful boundaries. Spikes, migrations, and enablers keep honest labels rather than pretending to be user-facing features.
+
+The skills keep observed facts, confirmed requirements, assumptions, proposals, and accepted decisions distinct. They link requirements, decisions, slices, and checks instead of duplicating canonical content. Material unknowns block the affected implementation readiness, not all drafting. Mergeable is not releasable; security and data integrity needed for safe release cannot be deferred as polish. Plans do not authorize source changes, issue/task synchronization, commits, or publication.
+
+Pi-native discovery exposes these skills to the parent when enabled. Use `pi config` or `pi config -l`, then `/reload`, to select resources. No new role, tool, automatic pipeline, or fixed child injection is added. Guild children do not inherit these skills or the conversation: give a self-contained task with explicit local source, repository-instruction, and reference paths. Keep questions and web research in the parent; `writer/general` drafts from supplied evidence without shell or web access. Reuse content-craft and relevant domain skills rather than duplicating them.
+
+Active Plan mode still blocks ordinary artifact writes and delegation. Use its controlled checkpoints and ask the user to exit before writing documentation files or delegating; exiting is not implementation approval. These skill instructions do not expand permissions or enforce a sandbox.
+
+Packaging tests cover discovery, metadata, and local links—not requirements quality. The repository-only [scenario checks](https://github.com/anton-kochev/pithos-kit/blob/main/pithos.guild/evaluation/discovery-delivery-skills.md) describe representative dry runs and their limits separately from automated tests.
 
 ## Code-review standards skill
 

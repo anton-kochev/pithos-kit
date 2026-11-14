@@ -1,7 +1,7 @@
 {
   "name": "@pithos-kit/guild",
   "version": "0.11.0",
-  "description": "Bounded software-development and writing Guild roles with content-craft, repository-aware architecture, review, comments, Conventional Commit, and TDD guidance.",
+  "description": "Bounded software-development and writing Guild roles with technical discovery, delivery planning, content craft, architecture, review, comments, Conventional Commit, and TDD guidance.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -10,6 +10,8 @@
     "delegation",
     "writing",
     "content-craft",
+    "technical-discovery",
+    "delivery-planning",
     "dotnet",
     "angular",
     "typescript",
@@ -57,7 +59,7 @@
   },
   "pithosKit": {
     "displayName": "Guild",
-    "summary": "Delegate focused software and writing work through bounded role/profile handovers and reusable craft guidance.",
+    "summary": "Delegate focused work through bounded role/profile handovers, with reusable discovery, documentation, delivery planning, and craft guidance.",
     "minimumPi": ">=1.0.0",
     "commands": [
       {
@@ -84,6 +86,16 @@
         "name": "skill:content-craft",
         "usage": "/skill:content-craft [writing brief]",
         "summary": "Load audience-focused writing craft for articles, tutorials, stories, and scripts."
+      },
+      {
+        "name": "skill:technical-discovery",
+        "usage": "/skill:technical-discovery [idea, question, or artifact scope]",
+        "summary": "Gather evidence, clarify requirements, and create or review proportionate technical artifacts."
+      },
+      {
+        "name": "skill:delivery-planning",
+        "usage": "/skill:delivery-planning [scope or specification]",
+        "summary": "Split scope into safe delivery increments and prepare bounded implementation handoffs."
       },
       {
         "name": "skill:code-comments",
@@ -152,6 +164,14 @@
       {
         "name": "content-craft",
         "summary": "Audience-focused writing, format-sensitive structure, voice, and factual grounding."
+      },
+      {
+        "name": "technical-discovery",
+        "summary": "Evidence-backed discovery, requirements, design decisions, and proportionate SDLC documentation."
+      },
+      {
+        "name": "delivery-planning",
+        "summary": "Shippable scope slices, optional user stories, dependency sequencing, and agent-ready handoffs."
       },
       {
         "name": "conventional-commit",
