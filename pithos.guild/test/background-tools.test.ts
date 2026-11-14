@@ -168,6 +168,27 @@ test("controls use captured context and report admission, reply/update dispositi
  f.current(false);
  await assert.rejects(execute(f, "guild_status"), /unavailable/); assert.equal(calls.length, 5);
 });
+test("Go background admission supports only coder/reviewer and keeps TDD coder-only", async () => {
+ const admitted: unknown[] = [];
+ const f = fixture({context: () => context, controls: {start: (input: unknown) => {
+  admitted.push(input); return {...summary, profile: "go"};
+ }} as any});
+ f.registration.show(f.ctx);
+ for (const role of ["coder", "reviewer"]) {
+  const input = {role, profile: "go", task: "Inspect Go behavior"};
+  await execute(f, "guild_start", input);
+  assert.deepEqual(admitted.at(-1), {...input, practices: []});
+ }
+ const required = {role: "coder", profile: "go", task: "Implement Go behavior", practices: [{id: "tdd", policy: "required"}]};
+ await execute(f, "guild_start", required);
+ assert.deepEqual(admitted.at(-1), required);
+ for (const input of [
+  {...required, role: "reviewer"},
+  ...["explorer", "architect", "writer"].map(role => ({role, profile: "go", task: "Work"})),
+  {...required, profile: "golang"},
+ ]) await assert.rejects(execute(f, "guild_start", input), /unavailable/);
+ assert.equal(admitted.length, 3);
+});
 const usage = {input: 7, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 9, cost: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2}};
 const report = {protocol: "guild/2", version: 2, runId: "run", taskId: "task", role: "coder", profile: "typescript", taskOutcome: "succeeded", summary: "child claims", compliance: [], blockers: [], limitations: [], payload: {changes: [], verification: []}};
 function first() {

@@ -1,6 +1,6 @@
 # guild
 
-A standalone bounded Guild with stable exploration, architecture, implementation, review, and writing roles; reusable general, front-end, Angular, TypeScript, .NET, and Rust profiles; and content-craft, repository-aware Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
+A standalone bounded Guild with stable exploration, architecture, implementation, review, and writing roles; reusable general, front-end, Angular, TypeScript, .NET, Rust, and Go profiles; and content-craft, repository-aware Go engineering, Clean Architecture, CQRS, code-review, code-comments, Conventional Commit, and test-driven development guidance for [pi](https://github.com/earendil-works/pi-mono).
 
 The extension adds agent-callable `guild_handover` and controlled `create_commit` tools, plus interactive `/guild-handover` and `/commit` commands. Every handover names a canonical `role/profile`, starts an isolated ephemeral pi process with package-controlled prompts and a role-owned hard tool allowlist, and inherits the parent session's active provider, model, thinking level, working directory, and project-trust decision.
 
@@ -81,8 +81,9 @@ Profiles select package-owned guidance and never add tools:
 | `typescript` | TypeScript, JavaScript, Node.js, modules, runtime boundaries, and async behavior |
 | `dotnet` | .NET, C#, projects, persistence, dependency injection, async behavior, and tests |
 | `rust` | Rust, Cargo, ownership, errors, concurrency, unsafe boundaries, and tests |
+| `go` | Go modules, packages, APIs, errors, concurrency, resource ownership, tests, and conditional domain modeling |
 
-There are 25 supported role/profile pairs: all 24 existing engineering pairs plus `writer/general`. Unsupported writer pairs are rejected, not silently mapped to general. Writer can edit or write assigned artifacts; only `coder` can invoke shell commands. Explorer, architect, and reviewer remain mechanically read-only. Their `git_read` tool, also available to writer, runs only `status`, `diff`, `log`, `show`, `ls-files`, and `blame` without a shell, accepts an exact allowlist of read-only options (no `--output`, external diff, textconv, or signature checks), disables fsmonitor and optional index locks, and caps output at 50 KiB. It never changes staged content, refs, or the working tree; like any plain `git diff`, `diff` may refresh the index stat cache, and repository-configured clean filters still run. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
+There are 29 supported role/profile pairs: all 28 engineering pairs plus `writer/general`. Unsupported writer pairs are rejected, not silently mapped to general. Writer can edit or write assigned artifacts; only `coder` can invoke shell commands. Explorer, architect, and reviewer remain mechanically read-only. Their `git_read` tool, also available to writer, runs only `status`, `diff`, `log`, `show`, `ls-files`, and `blame` without a shell, accepts an exact allowlist of read-only options (no `--output`, external diff, textconv, or signature checks), disables fsmonitor and optional index locks, and caps output at 50 KiB. It never changes staged content, refs, or the working tree; like any plain `git diff`, `diff` may refresh the index stat cache, and repository-configured clean filters still run. `researcher` is intentionally unavailable until Guild has controlled read-only web tools.
 
 ## Writer and content-craft skill
 
@@ -174,6 +175,27 @@ Use `pi config` for global settings or `pi config -l` for a project override to 
 
 TDD previously shipped with the retired `@pithos-kit/skills` package and then Atlas. Remove the retired package at every scope.
 
+## Go profile and engineering skill
+
+Use `explorer/go`, `architect/go`, `coder/go`, or `reviewer/go` for delegated Go work. These targets have the same role-owned tools and isolation as other engineering profiles; `writer/go` is not supported. The compact profile inspects actual module, workspace, toolchain, dependency, and build evidence rather than assuming newer Go APIs or a framework.
+
+```text
+/guild-handover coder/go Reproduce the cancellation bug in internal/worker with a focused test, fix it, and run the relevant checks. Preserve the public API.
+/skill:go-engineering [task context]
+```
+
+The parent-discoverable `go-engineering` skill supplies a common baseline for services, CLIs/tooling, and reusable libraries. It links four references, read only when relevant: testing, design and domain boundaries, concurrency, and workload-specific risks. It covers error contracts, module/workspace compatibility, goroutine ownership and shutdown, bounded verification, security, and measured performance. It preserves appropriate existing frameworks and dependencies; it does not mandate a project template or authorize upgrades.
+
+TDD applies directly to Go. The skill reuses Guild's language-neutral `tdd` methodology and adds Go test idioms and version-aware tooling. To require TDD for a delegated coder, use the existing explicit practice option:
+
+```text
+guild_handover({ role: "coder", profile: "go", task: "Implement the scoped behavior with tests and verification", practices: [{ id: "tdd", policy: "required" }] })
+```
+
+DDD is conditional on meaningful domain complexity. Guidance uses idiomatic Go types, package boundaries, and invariant ownership, with explicit zero-value and aliasing contracts. It does not require repositories for every entity, CQRS, event sourcing, microservices, or .NET-style layers.
+
+The profile and skill are separate entry points. Guild children disable ambient skill discovery: selecting `go` does not automatically inject `go-engineering` or its references. Give children a self-contained task and explicit local reading paths when deeper guidance is needed. Existing coder comments, reviewer standards, and explicitly required coder TDD cores remain unchanged. Use `pi config` or `pi config -l`, then `/reload`, to toggle parent discovery; that toggle does not disable the Go profile.
+
 ## .NET Clean Architecture skill
 
 Guild's `dotnet-clean-architecture` skill helps inspect and evolve repository-connected .NET boundaries without assuming a target framework, language version, package, mediator, ORM, or four-project template. Load it directly with optional task context:
@@ -221,6 +243,7 @@ Use architect/dotnet to design the order cancellation workflow.
 Use architect/frontend to define state ownership for checkout.
 Use coder/angular to add checkout loading and error states.
 Use coder/rust to resolve the parser ownership defect.
+Use coder/go to fix worker cancellation with bounded concurrency tests.
 Use reviewer/general to review the focused change for merge-blocking defects.
 Use writer/general to draft an article from supplied notes at an explicit output path.
 ```

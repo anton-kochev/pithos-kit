@@ -380,6 +380,21 @@ function assertCanonicalDetails(details: Record<string, unknown>, role: string, 
 }
 
 describe("guild extension", () => {
+  it("routes every Go engineering target through tool and direct handovers", async () => {
+    const pi = fakePi(), received: RunGuildRoleOptions[] = [];
+    registerGuild(pi.api as never, {run: async options => {received.push(options); return resultFor(options);}});
+    const ctx = context();
+    for (const role of ["explorer", "architect", "coder", "reviewer"] as const) {
+      const task = `Inspect ${role} Go behavior`;
+      const result = await pi.tool.execute(`go-${role}`, {role, profile: "go", task}, undefined, undefined, ctx);
+      assertCanonicalDetails(result.details, role, "go");
+      await pi.commands.get("guild-handover").handler(`${role}/go ${task}`, ctx);
+      assert.deepEqual(received.slice(-2).map(({role, profile, task}) => ({role, profile, task})), [
+        {role, profile: "go", task}, {role, profile: "go", task},
+      ]);
+    }
+    assert.equal(received.length, 8);
+  });
   it("offers only writer/general, skips its profile picker, and reports writing permissions", async () => {
     const pi = fakePi();
     const received: RunGuildRoleOptions[] = [];
@@ -443,6 +458,7 @@ describe("guild extension", () => {
     assert.doesNotMatch(JSON.stringify(schema), /researcher|member/);
 
     assert.equal(Value.Check(schema, { role: "coder", profile: "typescript", task: "Implement it" }), true);
+    assert.equal(Value.Check(schema, { role: "coder", profile: "go", task: "Implement it" }), true);
     for (const invalid of [
       { member: "typescript-coder", task: "legacy public shape" },
       { role: "researcher", profile: "typescript", task: "invalid role" },
@@ -497,11 +513,11 @@ describe("guild extension", () => {
     const handover = pi.commands.get("guild-handover");
     const completions = handover.getArgumentCompletions("");
     const aliases = Object.entries(GUILD_MEMBER_ALIASES);
-    assert.equal(completions.length, 34);
-    assert.deepEqual(completions.slice(0, 25).map((item: any) => item.value), canonicalTargets());
-    assert.deepEqual(completions.slice(25).map((item: any) => item.value), aliases.map(([alias]) => alias));
+    assert.equal(completions.length, 38);
+    assert.deepEqual(completions.slice(0, 29).map((item: any) => item.value), canonicalTargets());
+    assert.deepEqual(completions.slice(29).map((item: any) => item.value), aliases.map(([alias]) => alias));
     aliases.forEach(([, target], index) => {
-      assert.match(completions[index + 25].description, new RegExp(target.replace("/", "\\/")));
+      assert.match(completions[index + 29].description, new RegExp(target.replace("/", "\\/")));
     });
     assert.deepEqual(
       handover.getArgumentCompletions("coder/").map((item: any) => item.value),
@@ -1057,7 +1073,7 @@ describe("guild extension", () => {
     assert.doesNotMatch(JSON.stringify(pi.messages.map(({ message }) => message.details)), /memberSource|warnings/);
   });
 
-  it("uses a role picker, then profile picker, then multiline editor when direct arguments are omitted", async () => {
+  for (const profile of ["typescript", "go"]) it(`uses role/profile pickers and the editor for ${profile} when direct arguments are omitted`, async () => {
     const pi = fakePi();
     let received: RunGuildRoleOptions | undefined;
     const pickerTitles: string[] = [];
@@ -1073,7 +1089,7 @@ describe("guild extension", () => {
     ctx.ui.select = async (title: string, choices: string[]) => {
       pickerTitles.push(title);
       pickerChoices.push(choices);
-      return pickerTitles.length === 1 ? choices[2] : pickerTitles.length === 2 ? choices[3] : choices[0];
+      return pickerTitles.length === 1 ? choices[2] : pickerTitles.length === 2 ? choices.find(choice => choice.startsWith(`${profile} `)) : choices[0];
     };
     ctx.ui.editor = async (title: string) => {
       editorTitle = title;
@@ -1084,12 +1100,12 @@ describe("guild extension", () => {
 
     assert.deepEqual(pickerTitles, ["Choose a Guild role", "Choose a Guild profile", "Choose coder practice"]);
     assert.equal(pickerChoices[0].length, 5);
-    assert.equal(pickerChoices[1].length, 6);
+    assert.equal(pickerChoices[1].length, 7);
     assert.match(pickerChoices[0][0], /^explorer \[read-only\]/);
     assert.match(pickerChoices[0][2], /^coder \[write-enabled\]/);
-    assert.match(editorTitle, /coder\/typescript/);
+    assert.equal(editorTitle, `Task for coder/${profile}`);
     assert.equal(received?.role, "coder");
-    assert.equal(received?.profile, "typescript");
+    assert.equal(received?.profile, profile);
     assert.equal(received?.task, "  Implement typed boundaries  ");
   });
 
@@ -1334,7 +1350,7 @@ describe("guild extension", () => {
       ],
     );
     assert.deepEqual(
-      [...roster.matchAll(/^- (general|frontend|angular|typescript|dotnet|rust) —/gm)].map((match) => match[1]),
+      [...roster.matchAll(/^- (general|frontend|angular|typescript|dotnet|rust|go) —/gm)].map((match) => match[1]),
       GUILD_PROFILES,
     );
     for (const [alias, target] of Object.entries(GUILD_MEMBER_ALIASES)) {
@@ -1372,6 +1388,10 @@ describe("guild extension", () => {
         assert.equal(notifications[0].level, "info");
         assert.match(notifications[0].message, new RegExp(usage.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
         assert.match(notifications[0].message, /--help, -h/);
+        if (commandName === "guild-handover") {
+          const profiles = notifications[0].message.match(/Profiles:\n([\s\S]*?)\n\nOptions:/)?.[1];
+          assert.deepEqual(profiles?.trim().split("\n").map(line => line.trim()), GUILD_PROFILES);
+        }
         assert.equal(runs, 0);
         assert.equal(waits, 0);
         assert.equal(prompts, 0);

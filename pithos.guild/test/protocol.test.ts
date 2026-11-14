@@ -5,7 +5,7 @@ import { buildTask, validateResult } from "../src/protocol.ts";
 
 import { report } from "./protocol-fixtures.ts";
 
-it("builds one original-text task and validates all 25 supported role/profile result contracts", () => {
+it("builds one original-text task and validates all 29 supported role/profile result contracts", () => {
  for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
   const task = buildTask({ role, profile, task: " original task ", runId: "run", taskId: "task" });
   assert.equal(task.task, " original task ");

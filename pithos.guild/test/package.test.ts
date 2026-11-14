@@ -60,7 +60,7 @@ describe("Guild package metadata", () => {
     assert.match(readme, /guild_handover\(\{ role: "coder", profile: "typescript", task:/);
     assert.match(readme, /only `coder` can invoke shell commands/i);
     assert.match(readme, /`writer\/general`[\s\S]*explicit output path/i);
-    assert.match(readme, /25 supported role\/profile pairs/i);
+    assert.match(readme, /29 supported role\/profile pairs/i);
     assert.match(readme, /unsupported writer pairs are rejected/i);
     assert.match(readme, /researcher.*intentionally unavailable/i);
     assert.match(migration, /no user\/global configuration layer/i);

@@ -2,6 +2,8 @@
 
 **Status: provider-free audit implemented and tested; campaign binding remains unfinished.** This is a prerequisite for receipts, not a new execution mode or permission to spend. The native driver and old connected probe remain disabled.
 
+Go support update: the current target allowlists and provider-free fixtures include `go` for all four engineering roles (28 pairs). The six-profile/24-pair counts below describe the original checkpoint. This addition does not migrate the older session/tool contract, qualify current production launches, or change retained historical evidence.
+
 ## Why a separate audit
 
 The [isolated Guild checkpoint](./e1-offline-guild.md) verifies a deliberately fixed synthetic workflow. Its two children, four requests, exact response text, transport counters and no-child-tool rules cannot grade natural workflows. `src/native-evidence.ts` instead reconciles variable numbers of requests and canonical handovers, including abstention and ordinary allowed tool use. The fixed synthetic checker remains unchanged.

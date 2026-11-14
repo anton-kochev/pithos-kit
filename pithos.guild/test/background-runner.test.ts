@@ -3,7 +3,7 @@ import { channel } from "node:diagnostics_channel";
 import { EventEmitter } from "node:events";
 import { PassThrough } from "node:stream";
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { test } from "node:test";
 import { runBackgroundGuildRoleForTest } from "../src/background-runner.ts";
@@ -24,6 +24,26 @@ test("background RPC completes only after handshake, report, settlement, exit an
  assert.ok(!capture.args.includes("Task: Work"));
  assert.ok(capture.args.some((arg: string) => arg.endsWith("background-child-protocol.ts")));
  assert.deepEqual(result.selectedSkills?.map(skill => skill.id), ["code-comments"]);
+});
+
+for (const role of ["coder", "reviewer"] as const) test(`Go background ${role} uses its profile and unchanged role cores/tools`, {timeout: 8000}, async () => {
+ let args: string[] = [], prompt = "";
+ const result = await runBackgroundGuildRoleForTest({...options, role, profile: "go",
+  ...(role === "coder" ? {practices: [{id: "tdd" as const, policy: "required" as const}]} : {}),
+  onEvent(event) {
+   if (event.type !== "fixture") return;
+   args = event.args as string[];
+   prompt = readFileSync(args[args.indexOf("--append-system-prompt") + 1], "utf8");
+  },
+ }, seam);
+ assert.equal(result.status, "completed", result.errorMessage);
+ assert.equal(result.report?.profile, "go");
+ assert.ok(prompt.includes(readFileSync(new URL("../agents/profiles/go.md", import.meta.url), "utf8").trimEnd()));
+ assert.deepEqual(result.selectedSkills?.map(skill => skill.id), role === "coder" ? ["tdd", "code-comments"] : ["code-review-standards"]);
+ assert.ok(args.includes("--no-skills"));
+ assert.doesNotMatch(prompt, /# Package skill core: go-engineering/);
+ const tools = args[args.indexOf("--tools") + 1].split(",");
+ for (const tool of ["bash", "edit", "write"]) assert.equal(tools.includes(tool), role === "coder");
 });
 
 test("accepts clear_queue bookkeeping after settlement but rejects malformed queue updates", {timeout: 8000}, async () => {

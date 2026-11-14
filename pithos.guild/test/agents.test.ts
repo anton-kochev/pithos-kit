@@ -19,9 +19,9 @@ import {
 } from "../src/agents";
 
 describe("canonical Guild role/profile registry", () => {
-  it("defines five roles, six profiles, and only the 25 supported pairs", () => {
+  it("defines five roles, seven profiles, and only the 29 supported pairs", () => {
     assert.deepEqual(GUILD_ROLES, ["explorer", "architect", "coder", "reviewer", "writer"]);
-    assert.deepEqual(GUILD_PROFILES, ["general", "frontend", "angular", "typescript", "dotnet", "rust"]);
+    assert.deepEqual(GUILD_PROFILES, ["general", "frontend", "angular", "typescript", "dotnet", "rust", "go"]);
 
     for (const role of GUILD_ROLES) assert.equal(isGuildRole(role), true);
     for (const profile of GUILD_PROFILES) assert.equal(isGuildProfile(profile), true);
@@ -31,7 +31,7 @@ describe("canonical Guild role/profile registry", () => {
     const targets = GUILD_ROLES.flatMap((role) =>
       GUILD_ROLE_PROFILES[role].map((profile) => createGuildTarget(role, profile)),
     );
-    assert.equal(new Set(targets).size, 25);
+    assert.equal(new Set(targets).size, 29);
     assert.deepEqual(GUILD_TARGETS, targets);
     assert.equal(Object.isFrozen(GUILD_TARGETS), true);
     assert.equal(Object.isFrozen(GUILD_ROLE_PROFILES), true);
@@ -162,6 +162,8 @@ describe("canonical Guild role/profile registry", () => {
     assert.match(prompts.typescript, /type modeling[\s\S]*runtime[\s\S]*modules[\s\S]*asynchronous/i);
     assert.match(prompts.dotnet, /project boundaries[\s\S]*runtime[\s\S]*dependency injection[\s\S]*persistence[\s\S]*asynchronous[\s\S]*testing/i);
     assert.match(prompts.rust, /ownership[\s\S]*errors[\s\S]*concurrency[\s\S]*Cargo[\s\S]*unsafe[\s\S]*testing/i);
+    assert.match(prompts.go, /go\.mod[\s\S]*go\.work[\s\S]*toolchain/i);
+    assert.match(prompts.go, /packages[\s\S]*interfaces[\s\S]*errors[\s\S]*concurrency[\s\S]*testing/i);
   });
 
   it("resolves only the exact package-owned aliases and canonical targets", () => {

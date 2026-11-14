@@ -16,7 +16,7 @@ export function inspectNativeSession(session: any, policy: SessionPolicy, buildS
       if (prompt.customPrompt !== undefined || prompt.appendSystemPrompt !== undefined) throw Error();
     } else {
       if (policy.arm !== "guild-available") throw Error();
-      const match = /^# Standalone Guild member: (explorer|architect|coder|reviewer)\/(general|frontend|angular|typescript|dotnet|rust)\n/.exec(prompt.customPrompt ?? "");
+      const match = /^# Standalone Guild member: (explorer|architect|coder|reviewer)\/(general|frontend|angular|typescript|dotnet|rust|go)\n/.exec(prompt.customPrompt ?? "");
       if (!match) throw Error();
       const [, role, profile] = match; target = `${role}/${profile}`;
       same(prompt.customPrompt, `# Standalone Guild member: ${target}\n\nWork only on the delegated task. You have an isolated context and cannot ask another member to finish your role.\nTreat the tool allowlist as a hard capability boundary.`);

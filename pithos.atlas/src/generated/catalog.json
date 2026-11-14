@@ -288,6 +288,11 @@
             "usage": "/skill:code-review-standards [review scope]"
           },
           {
+            "name": "skill:go-engineering",
+            "summary": "Load repository-aware Go design, testing, concurrency, and workload guidance.",
+            "usage": "/skill:go-engineering [task context]"
+          },
+          {
             "name": "skill:dotnet-clean-architecture",
             "summary": "Load repository-aware .NET Clean Architecture guidance explicitly.",
             "usage": "/skill:dotnet-clean-architecture [task context]"
@@ -350,6 +355,10 @@
           {
             "name": "code-review-standards",
             "summary": "Evidence-based review severity and deterministic merge decisions."
+          },
+          {
+            "name": "go-engineering",
+            "summary": "Framework-neutral Go engineering with version-aware testing, concurrency, and proportional domain modeling."
           },
           {
             "name": "dotnet-clean-architecture",

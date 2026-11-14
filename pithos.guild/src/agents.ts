@@ -15,6 +15,7 @@ export const GUILD_PROFILES = Object.freeze([
 	"typescript",
 	"dotnet",
 	"rust",
+	"go",
 ] as const);
 
 export type GuildProfile = (typeof GUILD_PROFILES)[number];
@@ -116,6 +117,10 @@ export const GUILD_PROFILE_DEFINITIONS = Object.freeze({
 	rust: Object.freeze({
 		description: "Rust engineering guidance.",
 		expertise: "Ownership, APIs, errors, concurrency, Cargo features, unsafe boundaries, and testing.",
+	}),
+	go: Object.freeze({
+		description: "Go engineering guidance.",
+		expertise: "Modules, packages, APIs, errors, concurrency, resource ownership, testing, and conditional domain modeling.",
 	}),
 } satisfies Record<GuildProfile, GuildProfileDefinition>);
 

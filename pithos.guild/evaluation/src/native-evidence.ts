@@ -219,7 +219,7 @@ export function auditBoundChildRequests(processes: Record<string, string>, expec
       check(event && event.version === 1 && typeof event.childId === "string"
         && /^[a-f0-9]{8}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{4}-[a-f0-9]{12}$/.test(event.childId)
         && typeof event.runId === "string" && event.runId.length >= 1 && event.runId.length <= 1024
-        && /^(explorer|architect|coder|reviewer)$/.test(event.role) && /^(general|frontend|angular|typescript|dotnet|rust)$/.test(event.profile)
+        && /^(explorer|architect|coder|reviewer)$/.test(event.role) && /^(general|frontend|angular|typescript|dotnet|rust|go)$/.test(event.profile)
         && typeof event.taskDigest === "string" && /^[a-f0-9]{64}$/.test(event.taskDigest) && Number.isSafeInteger(event.sequence));
       if (event.type === "start") {
         check(!active && !runs.has(event.childId) && event.sequence === 0
@@ -486,7 +486,7 @@ function auditNativeEvidenceForRuntime(e: NativeEvidence, piVersion: string) {
     for (const [index, run] of trace.childRuns.entries()) {
       unique("child", run.childId);
       const target = `${run.role}/${run.profile}`;
-      check(/^(explorer|architect|coder|reviewer)\/(general|frontend|angular|typescript|dotnet|rust)$/.test(target));
+      check(/^(explorer|architect|coder|reviewer)\/(general|frontend|angular|typescript|dotnet|rust|go)$/.test(target));
       const matching = spawns.filter(r => r.childId === run.childId); check(matching.length === 1 && spawns[index] === matching[0]);
       const c = parentCalls.get(run.runId);
       check(c?.call.name === "guild_handover" && c.call.arguments.role === run.role && c.call.arguments.profile === run.profile

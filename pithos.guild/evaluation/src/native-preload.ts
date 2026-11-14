@@ -54,7 +54,7 @@ if (file !== undefined || process.env.GUILD_EVAL_NATIVE_CONFIG_SHA256 !== undefi
             taskDigest = process.env.GUILD_EVAL_CHILD_TASK_DIGEST, target = `${role}/${profile}`;
           if (!childId || !/^[a-f0-9-]{36}$/.test(childId) || !runId || runId.length > 1024
             || !/^(explorer|architect|coder|reviewer)$/.test(role ?? "")
-            || !/^(general|frontend|angular|typescript|dotnet|rust)$/.test(profile ?? "")
+            || !/^(general|frontend|angular|typescript|dotnet|rust|go)$/.test(profile ?? "")
             || !/^[a-f0-9]{64}$/.test(taskDigest ?? "")) throw Error();
           report({ type: "child_binding", childId, runId, role, profile, target, taskDigest });
         }

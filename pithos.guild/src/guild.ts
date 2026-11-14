@@ -96,12 +96,7 @@ Roles:
   writer (general only; no shell or web access)
 
 Profiles:
-  general
-  frontend
-  angular
-  typescript
-  dotnet
-  rust
+  ${GUILD_PROFILES.join("\n  ")}
 
 Options:
   --help, -h  Show this help
@@ -1595,7 +1590,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		description: [
 			"Hand one task to an isolated canonical Guild role/profile target.",
 			"Roles own permissions: explorer, architect, and reviewer are read-only; coder is write-enabled; writer can edit writing artifacts without shell or web access.",
-			"Profiles select expertise: general, frontend, angular, typescript, dotnet, or rust. Writer supports only general.",
+			"Profiles select expertise: general, frontend, angular, typescript, dotnet, rust, or go. Writer supports only general.",
 		].join(" "),
 		promptSnippet: "Hand focused exploration, architecture, implementation, writing, or review work to an isolated Guild role/profile target",
 		promptGuidelines: [
@@ -1604,7 +1599,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			"For writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Clarify and research in the parent; children have no web or question tools.",
 			"For reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. A plan is optional. Use explicit local file paths for longer context and instruct the child to read those files; preserve material requirements, omit unrelated context and secrets. Reviewers independently challenge plan and implementation, not just plan conformance.",
 			"Children do not inherit the parent conversation and cannot ask questions. Close review context gaps and request another review; ask the user only when information is unavailable. Never present a limited review as complete.",
-			"Choose the profile from repository evidence: general, frontend, angular, typescript, dotnet, or rust.",
+			"Choose the profile from repository evidence: general, frontend, angular, typescript, dotnet, rust, or go.",
 		],
 		parameters: GUILD_HANDOVER_PARAMETERS,
 		prepareArguments: prepareLegacyArguments,

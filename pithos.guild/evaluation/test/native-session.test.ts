@@ -36,7 +36,7 @@ test("rejects session model, tools, resources, trust, settings and actual prompt
 
 test("verifies package-owned child prompts and role ceilings for every canonical target", () => {
   const guildRoot = resolve(".");
-  for (const role of ["explorer", "architect", "coder", "reviewer"]) for (const profile of ["general", "frontend", "angular", "typescript", "dotnet", "rust"]) {
+  for (const role of ["explorer", "architect", "coder", "reviewer"]) for (const profile of ["general", "frontend", "angular", "typescript", "dotnet", "rust", "go"]) {
     const input: any = session();
     const selected = ["read", "grep", "find", "ls", ...(role === "coder" ? ["edit", "write", "bash"] : [])];
     input.getActiveToolNames = () => selected.slice(); input.getAllTools = () => selected.map(name => ({ name }));
@@ -44,6 +44,12 @@ test("verifies package-owned child prompts and role ceilings for every canonical
     input.prompt.appendSystemPrompt = readFileSync(`${guildRoot}/agents/roles/${role}.md`, "utf8").trimEnd() + '\n\n' + readFileSync(`${guildRoot}/agents/profiles/${profile}.md`, "utf8").trimEnd();
     const policy = { cwd: "/fixture", arm: "guild-available" as const, guildRoot, pricing, actor: "child" as const };
     assert.equal(inspectNativeSession(input, policy, () => "native prompt").target, `${role}/${profile}`);
+    const validPrompt = input.prompt.customPrompt;
+    for (const invalidTarget of ["writer/go", "coder/golang", "coder/go/extra"]) {
+      input.prompt.customPrompt = validPrompt.replace(`${role}/${profile}`, invalidTarget);
+      assert.throws(() => inspectNativeSession(input, policy, () => "native prompt"), /Native session policy mismatch/);
+    }
+    input.prompt.customPrompt = validPrompt;
     selected.push("guild_handover");
     assert.throws(() => inspectNativeSession(input, policy, () => "native prompt"), /Native session policy mismatch/);
   }

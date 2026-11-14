@@ -321,6 +321,7 @@ const GUILD_PROFILE_PROMPT_URLS = {
 	typescript: new URL("../agents/profiles/typescript.md", import.meta.url),
 	dotnet: new URL("../agents/profiles/dotnet.md", import.meta.url),
 	rust: new URL("../agents/profiles/rust.md", import.meta.url),
+	go: new URL("../agents/profiles/go.md", import.meta.url),
 } satisfies Record<GuildProfile, URL>;
 
 function guildRoleBaseSystemPrompt(role: GuildRole, profile: GuildProfile): string {

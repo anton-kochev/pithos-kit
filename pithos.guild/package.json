@@ -16,6 +16,8 @@
     "javascript",
     "nodejs",
     "rust",
+    "golang",
+    "go-engineering",
     "code-review",
     "code-comments",
     "tdd",
@@ -99,6 +101,11 @@
         "summary": "Load the evidence-based code-review methodology explicitly."
       },
       {
+        "name": "skill:go-engineering",
+        "usage": "/skill:go-engineering [task context]",
+        "summary": "Load repository-aware Go design, testing, concurrency, and workload guidance."
+      },
+      {
         "name": "skill:dotnet-clean-architecture",
         "usage": "/skill:dotnet-clean-architecture [task context]",
         "summary": "Load repository-aware .NET Clean Architecture guidance explicitly."
@@ -161,6 +168,10 @@
       {
         "name": "code-review-standards",
         "summary": "Evidence-based review severity and deterministic merge decisions."
+      },
+      {
+        "name": "go-engineering",
+        "summary": "Framework-neutral Go engineering with version-aware testing, concurrency, and proportional domain modeling."
       },
       {
         "name": "dotnet-clean-architecture",

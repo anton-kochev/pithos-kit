@@ -184,7 +184,7 @@ test("candidate v2 composes bound content with native context, transport and met
   }
 });
 
-test("candidate v2 request content binds logical projection, parent task and tool policy", () => {
+for (const profile of ["general", "go"]) test(`candidate v2 ${profile} request content binds logical projection, parent task and tool policy`, () => {
   const prompt = "Inspect the fixture and report evidence.", trialIdentity = { version: 1 as const, id: randomUUID(), requestDigest: digest("request") };
   const launch = { version: 1 as const, historyDigest: digest("history"), configurationSha256: digest("configuration"),
     runtimeRequirementSha256: digest("requirement"), invocationDigest: digest("invocation"), scopedAuthIdentityDigest: digest("auth"),
@@ -212,7 +212,7 @@ test("candidate v2 request content binds logical projection, parent task and too
     runtimeRequirementSha256: launch.runtimeRequirementSha256, invocationDigest: launch.invocationDigest, supervisorPid: 6,
     pid: 24, ppid: 6, actor: "parent", sequence, event });
   const processes = { "24.jsonl": jsonl(events.map(envelope)) };
-  const handover = { type: "toolCall", name: "guild_handover", id: handoverId, arguments: { role: "explorer", profile: "general", task: "Inspect." } };
+  const handover = { type: "toolCall", name: "guild_handover", id: handoverId, arguments: { role: "explorer", profile, task: "Inspect." } };
   const parent = jsonl([{ type: "message_end", message: message("response-handover", [handover]) },
     { type: "tool_execution_start", toolName: "guild_handover", toolCallId: handoverId, args: handover.arguments },
     { type: "tool_execution_end", toolName: "guild_handover", toolCallId: handoverId, isError: false,
@@ -249,18 +249,18 @@ test("candidate v2 request content binds logical projection, parent task and too
     assert.throws(() => auditBoundRequestContent(processes, privateExpected), /Bound request content evidence mismatch/);
   }
   const childId = randomUUID(), childPid = 33, childTask = "Inspect.";
-  const spawn = { type: "child_spawn", childId, childPid, runId: handoverId, role: "explorer", profile: "general",
-    target: "explorer/general", taskDigest: digest(childTask) };
+  const spawn = { type: "child_spawn", childId, childPid, runId: handoverId, role: "explorer", profile,
+    target: `explorer/${profile}`, taskDigest: digest(childTask) };
   const parentRows = rows(processes["24.jsonl"]); parentRows.splice(-1, 0, { ...parentRows[0], sequence: parentRows.length - 1, event: spawn });
   parentRows.forEach((row, sequence) => row.sequence = sequence);
   const childLogical = { instructions: "Child instructions", tools: ["find", "grep", "ls", "read"].map(name => ({ type: "function", name })),
     input: [{ role: "user", content: `Task: ${childTask}` }] };
   const childEvents = [{ type: "process_start", node: "v24.20.0", piVersion: "0.85.1", runtimeDigest: requirement.runtimeDigest, trialBindingDigest },
-    { type: "child_binding", childId, runId: handoverId, role: "explorer", profile: "general", target: "explorer/general", taskDigest: digest(childTask) },
+    { type: "child_binding", childId, runId: handoverId, role: "explorer", profile, target: `explorer/${profile}`, taskDigest: digest(childTask) },
     ...observed(randomUUID(), childLogical, { model: "gpt-6-astra", reasoning: { effort: "high" }, ...childLogical }), { type: "process_end", exitCode: 0 }];
   const childEnvelope = (event: any, sequence: number) => ({ ...envelope(event, sequence), pid: childPid, ppid: 24, actor: "child" });
   const childProcesses = { "24.jsonl": jsonl(parentRows), "33.jsonl": jsonl(childEvents.map(childEnvelope)) };
-  const observedIdentity = { version: 1, childId, runId: handoverId, role: "explorer", profile: "general", taskDigest: digest(childTask) };
+  const observedIdentity = { version: 1, childId, runId: handoverId, role: "explorer", profile, taskDigest: digest(childTask) };
   const childTrace = jsonl([{ version: 1, type: "observer_ready" },
     { ...observedIdentity, type: "start", sequence: 0 },
     { ...observedIdentity, type: "stdout", sequence: 1, base64: "" },
@@ -444,9 +444,15 @@ test("native audit requires tool completion before the next assistant attempt", 
 });
 
 test("native audit supports all canonical roles/profiles and multi-turn child tool workflows", () => {
-  for (const role of ["explorer", "architect", "coder", "reviewer"]) for (const profile of ["general", "frontend", "angular", "typescript", "dotnet", "rust"]) {
+  for (const role of ["explorer", "architect", "coder", "reviewer"]) for (const profile of ["general", "frontend", "angular", "typescript", "dotnet", "rust", "go"]) {
     const result = auditNativeEvidence(delegated(role, profile));
     assert.equal(result.processes, 2); assert.equal(result.requests, 4); assert.deepEqual(result.targets, [`${role}/${profile}`]);
+  }
+});
+
+test("native audit rejects unsupported Go role/profile identities", () => {
+  for (const [role, profile] of [["writer", "go"], ["coder", "golang"], ["coder", "go/extra"]]) {
+    assert.throws(() => auditNativeEvidence(delegated(role, profile)), /Native evidence mismatch/);
   }
 });
 
