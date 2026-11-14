@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/guild",
-  "version": "0.11.0",
+  "version": "0.12.0",
   "description": "Bounded software-development and writing Guild roles with technical discovery, delivery planning, content craft, architecture, review, comments, Conventional Commit, and TDD guidance.",
   "keywords": [
     "pi-package",
