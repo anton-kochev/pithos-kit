@@ -93,6 +93,13 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   let pendingAutomaticRecordsByKey = new Map<string, Set<PendingAutomaticRecord>>();
   let stopAutomaticIndicator: (() => void) | undefined;
   let stopInputIndicator: (() => void) | undefined;
+  let inputLifecycle = new AbortController();
+
+  const invalidateInput = (): void => {
+    inputLifecycle.abort();
+    inputLifecycle = new AbortController();
+    clearInputIndicator();
+  };
 
   const clearAutomaticIndicator = (): void => {
     stopAutomaticIndicator?.();
@@ -426,10 +433,12 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     if (activeConfig?.mode !== "on") return { action: "continue" };
 
     const idle = ctx.isIdle();
+    // Pi retains the submission's delivery option and routes the transformed
+    // text after this hook; do not resubmit or wait for the main run to idle.
     const supported = ctx.mode === "tui" &&
       event.source === "interactive" &&
-      event.streamingBehavior === undefined &&
-      idle;
+      (event.streamingBehavior === "steer" || event.streamingBehavior === "followUp" ||
+        (event.streamingBehavior === undefined && idle));
     if (!supported) {
       log.info("translation.input.blocked", {
         sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
@@ -442,19 +451,23 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
         idle,
       });
       restoreInputDraft(event.text, event.source, ctx);
-      notify(ctx, "Input translation supports only ordinary idle interactive prompts; this input was blocked.", "warning");
+      notify(ctx, "Input translation supports only interactive TUI prompts, steering, and follow-ups; this input was blocked.", "warning");
       return { action: "handled" };
     }
 
     const prepared = prepareInboundPrompt(event.text, pi.getCommands());
     if (!prepared) return { action: "continue" };
 
+    const lifecycleSignal = inputLifecycle.signal;
+    const agentSignal = ctx.signal;
+    const signal = agentSignal ? AbortSignal.any([agentSignal, lifecycleSignal]) : lifecycleSignal;
     let stopIndicator = startInputIndicator(ctx, activeConfig, !!activeConfig.englishCheck);
     const started = Date.now();
     let result: TranslationResult;
     try {
       if (activeConfig.englishCheck) {
-        const check = await checkEnglish(prepared.source, activeConfig.englishCheck, ctx.modelRegistry, ctx.signal);
+        const check = await checkEnglish(prepared.source, activeConfig.englishCheck, ctx.modelRegistry, signal);
+        if (lifecycleSignal.aborted) return { action: "handled" };
         log.info("translation.input.english-check", {
           model: activeConfig.englishCheck.model,
           sourceChars: prepared.source.length,
@@ -462,7 +475,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
           outcome: check.outcome,
           classifierUsage: check.classifierUsage,
         });
-        if (check.outcome === "cancelled" || ctx.signal?.aborted) {
+        if (check.outcome === "cancelled" || signal.aborted) {
           restoreInputDraft(event.text, event.source, ctx);
           notify(ctx, inputFailureMessage("cancelled"), "warning");
           return { action: "handled" };
@@ -471,8 +484,9 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
         stopIndicator();
         stopIndicator = startInputIndicator(ctx, activeConfig);
       }
-      result = await translateInput(prepared.source, activeConfig, ctx.modelRegistry, ctx.signal);
+      result = await translateInput(prepared.source, activeConfig, ctx.modelRegistry, signal);
     } catch {
+      if (lifecycleSignal.aborted) return { action: "handled" };
       log.error("translation.input.error", {
         sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
         durationMs: Date.now() - started,
@@ -487,6 +501,9 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
     } finally {
       stopIndicator();
     }
+
+    if (lifecycleSignal.aborted) return { action: "handled" };
+    if (signal.aborted) result = { ok: false, kind: "cancelled", error: "Translation cancelled." };
 
     log.info(result.ok ? "translation.input.complete" : "translation.input.failed", {
       sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(),
@@ -514,14 +531,14 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   pi.on("session_start", async (event, ctx) => {
     log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     clearAutomaticIndicator();
-    clearInputIndicator();
+    invalidateInput();
     clearPendingAutomaticRecords();
     await initialize(ctx);
   });
 
   pi.on("session_tree", (_event, ctx) => {
     clearAutomaticIndicator();
-    clearInputIndicator();
+    invalidateInput();
     clearPendingAutomaticRecords();
     displayCache.restore(ctx.sessionManager.getBranch());
   });
@@ -529,7 +546,7 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
   pi.on("session_shutdown", (event) => {
     log.info("session.shutdown", { reason: event.reason });
     clearAutomaticIndicator();
-    clearInputIndicator();
+    invalidateInput();
   });
 
   pi.on("message_end", async (event, ctx) => {

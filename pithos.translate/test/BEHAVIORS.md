@@ -18,12 +18,13 @@
 
 ## Input interception
 - [x] Keep input translation off by default and pass disabled input through unchanged.
-- [x] Intercept only ordinary idle interactive TUI prompts before skill/template expansion.
+- [x] Intercept idle interactive TUI prompts and busy steering/follow-up messages before skill/template expansion; leave delivery to Pi, including when the main run settles during translation.
 - [x] Return the English text through Pi's `input` transform rather than resubmitting a user message.
+- [x] Cancel pending input work and discard stale results on session lifecycle changes without restoring old drafts; retain caller cancellation even after the main run settles.
 - [x] Preserve attached images in the transform result.
 - [x] Preserve recognized leading skill/template directive tokens and separators exactly, translating only their arguments; pass argument-free directives unchanged.
 - [x] Bypass extension-originated input to prevent loops.
-- [x] Block RPC, print, JSON, steering, follow-up, and non-idle user paths without a translation-model call while input mode is on.
+- [x] Block RPC, print, JSON, and non-idle user paths without a delivery option without a translation-model call while input mode is on.
 - [x] Fail closed on every detectable translation failure, restore the original interactive TUI draft, clear keyed progress, and emit only source-free feedback.
 - [x] Append no session entry for inbound processing; transformed input replaces original prose, while approved English input continues unchanged into the normal main-model flow.
 

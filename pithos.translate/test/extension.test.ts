@@ -433,11 +433,38 @@ describe("translate extension", () => {
     assert.equal(calls, 0);
   });
 
+  it("transforms busy steering and follow-up input without taking over host delivery", async () => {
+    for (const streamingBehavior of ["steer", "followUp"] as const) {
+      const images = [{ type: "image", data: "image-data", mimeType: "image/png" }];
+      let calls = 0;
+      const harness = createHarness([], {
+        createStore: () => ({ scope: "temporary", load: async () => inputConfig() }) as never,
+        translateInput: async (source) => {
+          calls++;
+          assert.equal(source, "Révise ce code");
+          // The main run may finish while the translation request is pending.
+          harness.context.isIdle = () => true;
+          return { ok: true, markdown: "Review this code", usage };
+        },
+      }, undefined, [{ name: "review", source: "prompt" }]);
+      await emit(harness, "session_start");
+      harness.context.isIdle = () => false;
+      const event = { source: "interactive", text: "/review   Révise ce code", images, streamingBehavior };
+      assert.deepEqual(await emit(harness, "input", event), [
+        { action: "transform", text: "/review   Review this code", images },
+      ]);
+      assert.equal(event.streamingBehavior, streamingBehavior);
+      assert.equal(calls, 1);
+      assert.deepEqual(harness.entries, []);
+      assert.deepEqual(harness.editorTexts, []);
+      assert.deepEqual(harness.notifications, []);
+      assert.deepEqual(harness.statuses.at(-1), { key: "pithos.translate.input", text: undefined });
+    }
+  });
+
   it("blocks unsupported inbound paths without calling the translation model", async () => {
     const cases = [
       { name: "rpc source", event: { source: "rpc" } },
-      { name: "steering", event: { source: "interactive", streamingBehavior: "steer" } },
-      { name: "follow-up", event: { source: "interactive", streamingBehavior: "followUp" } },
       { name: "RPC mode", event: { source: "interactive" }, mode: "rpc" },
       { name: "print mode", event: { source: "interactive" }, mode: "print" },
       { name: "JSON mode", event: { source: "interactive" }, mode: "json" },
@@ -475,7 +502,7 @@ describe("translate extension", () => {
 
     await emit(harness, "input", {
       type: "input",
-      source: "interactive",
+      source: "rpc",
       streamingBehavior: "steer",
       text: raw,
     });
@@ -487,7 +514,7 @@ describe("translate extension", () => {
       model: "provider/input-model",
       sourceChars: raw.length,
       mode: "tui",
-      inputSource: "interactive",
+      inputSource: "rpc",
       streamingBehavior: "steer",
       idle: true,
     });
@@ -1231,8 +1258,13 @@ it("approves original input through the real English helper before translation a
     },
   };
   await emit(harness, "session_start");
-  for (const text of ["/review   PRIVATE English `code`", "```ts\nprivateCode()\n```", "Hello"] ) {
-    const event = { source: "interactive", text, images: [{ type: "image", data: "private" }] };
+  for (const [text, streamingBehavior] of [
+    ["/review   PRIVATE English `code`", "steer"],
+    ["```ts\nprivateCode()\n```", "followUp"],
+    ["Hello", undefined],
+  ] as const) {
+    harness.context.isIdle = () => streamingBehavior === undefined;
+    const event = { source: "interactive", text, streamingBehavior, images: [{ type: "image", data: "private" }] };
     const before = structuredClone(event);
     assert.deepEqual(await emit(harness, "input", event), [{ action: "continue" }]);
     assert.deepEqual(event, before);
@@ -1350,9 +1382,6 @@ it("keeps classifier behind input eligibility guards and preserves it across mod
     { source: "interactive", text: "  " },
     { source: "interactive", text: "/review   " },
   ]) assert.deepEqual(await emit(harness, "input", event), [{ action: "continue" }]);
-  for (const streamingBehavior of ["steer", "followUp"] ) {
-    assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello", streamingBehavior }), [{ action: "handled" }]);
-  }
   for (const mode of ["rpc", "print", "json"]) {
     harness.context.mode = mode;
     assert.deepEqual(await emit(harness, "input", { source: "interactive", text: "Hello" }), [{ action: "handled" }]);
@@ -1366,4 +1395,71 @@ it("keeps classifier behind input eligibility guards and preserves it across mod
   await harness.commands.get("translate")!.handler("input-on", harness.context);
   assert.deepEqual(stored.input?.englishCheck, { model: "openai/gpt-6-luna" });
   assert.equal(calls, 0);
+});
+
+it("discards pending busy input on session lifecycle changes without restoring stale drafts", async () => {
+  for (const lifecycle of ["session_start", "session_tree", "session_shutdown"]) {
+    let finish!: (result: any) => void;
+    let requestSignal: AbortSignal | undefined;
+    const harness = createHarness([], {
+      createStore: () => ({ scope: "temporary", load: async () => inputConfig() }) as never,
+      translateInput: async (_source, _config, _registry, signal) => {
+        requestSignal = signal;
+        return new Promise((resolve) => { finish = resolve; });
+      },
+    });
+    await emit(harness, "session_start");
+    harness.context.isIdle = () => false;
+    const pending = emit(harness, "input", { source: "interactive", text: "Ancien brouillon", streamingBehavior: "steer" });
+    await emit(harness, lifecycle);
+    finish({ ok: true, markdown: "Old draft", usage });
+    assert.deepEqual(await pending, [{ action: "handled" }], lifecycle);
+    assert.equal(requestSignal?.aborted, true, lifecycle);
+    assert.deepEqual(harness.editorTexts, [], lifecycle);
+    assert.deepEqual(harness.notifications, [], lifecycle);
+    assert.deepEqual(harness.statuses.at(-1), { key: "pithos.translate.input", text: undefined });
+  }
+});
+
+it("fails closed when a busy input request completes after caller cancellation", async () => {
+  const controller = new AbortController();
+  const harness = createHarness([], {
+    createStore: () => ({ scope: "temporary", load: async () => inputConfig() }) as never,
+    translateInput: async () => {
+      controller.abort();
+      // Pi's context signal can change when the main run settles.
+      harness.context.signal = undefined;
+      return { ok: true, markdown: "Do not deliver", usage };
+    },
+  });
+  await emit(harness, "session_start");
+  harness.context.isIdle = () => false;
+  harness.context.signal = controller.signal;
+  assert.deepEqual(await emit(harness, "input", {
+    source: "interactive", text: "Restaure moi", streamingBehavior: "followUp",
+  }), [{ action: "handled" }]);
+  assert.deepEqual(harness.editorTexts, ["Restaure moi"]);
+  assert.match(harness.notifications.at(-1)?.message ?? "", /cancelled/);
+  assert.deepEqual(harness.statuses.at(-1), { key: "pithos.translate.input", text: undefined });
+});
+
+it("restores busy drafts on translation failure and keeps successful input in the host pipeline", async () => {
+  for (const streamingBehavior of ["steer", "followUp"] as const) {
+    for (const ok of [false, true]) {
+      const harness = createHarness([], {
+        createStore: () => ({ scope: "temporary", load: async () => inputConfig() }) as never,
+        translateInput: async () => ok
+          ? { ok: true, markdown: "Review", usage }
+          : { ok: false, kind: "timeout", error: "Private provider detail" },
+      });
+      await emit(harness, "session_start");
+      harness.context.isIdle = () => false;
+      assert.deepEqual(await emit(harness, "input", {
+        source: "interactive", text: "Révise", streamingBehavior,
+      }), [ok ? { action: "transform", text: "Review" } : { action: "handled" }]);
+      assert.deepEqual(harness.editorTexts, ok ? [] : ["Révise"]);
+      assert.doesNotMatch(JSON.stringify(harness.notifications), /Private provider detail/);
+      assert.deepEqual(harness.statuses.at(-1), { key: "pithos.translate.input", text: undefined });
+    }
+  }
 });

@@ -54,10 +54,10 @@ describe("translate package", () => {
     assert.doesNotMatch(readme, /pithos\.translate\.json/);
     assert.match(readme, /Mermaid.*original/is);
     assert.match(readme, /precede.*display-transforming/is);
-    assert.match(readme, /ordinary idle.*interactive TUI/is);
+    assert.match(readme, /ordinary idle prompts and busy steering\/follow-up.*interactive TUI/is);
     assert.match(readme, /before.*skill.*template.*expansion/is);
     assert.match(readme, /extension-originated.*bypass/is);
-    assert.match(readme, /RPC.*print.*JSON.*steer.*follow-up.*block/is);
+    assert.match(readme, /RPC.*print.*JSON.*without a steering\/follow-up delivery option.*blocked/is);
     assert.match(readme, /directive token.*exact/is);
     assert.match(readme, /attachments.*preserv/is);
     assert.match(readme, /fails? closed.*draft.*restor/is);

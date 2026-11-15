@@ -79,12 +79,12 @@ There is **no fallback model**. Each request uses only that direction's configur
 
 ## Input translation
 
-Input translation is opt-in and off by default. When enabled, Translate supports only an ordinary idle prompt submitted from the interactive TUI:
+Input translation is opt-in and off by default. When enabled, Translate supports ordinary idle prompts and busy steering/follow-up messages submitted from the interactive TUI:
 
 1. Pi dispatches extension commands first.
 2. Translate receives raw prompt text through Pi's `input` event, before skill and prompt-template expansion.
 3. Translate protects byte-sensitive Markdown regions, optionally checks whether the input already needs no English translation, and otherwise asks the configured exact translator for a faithful English translation.
-4. On success it returns Pi's `transform` result. Pi expands any preserved directive and creates one user message containing the translated text.
+4. On success it returns Pi's `transform` result. Pi expands any preserved directive and delivers the translated text using the original submission’s native steering or follow-up behavior (or starts a normal turn when appropriate). Translate does not resubmit the message or wait for the main agent to become idle. Translation adds preprocessing latency before Pi can queue the message.
 
 When translation is performed, the original source is not persisted and does not enter the main model context. When the optional English check approves, the original prompt continues unchanged into the normal main-model flow. It necessarily exists transiently in the local Pi runtime and is sent to the configured translation provider because that provider must read it to translate it. Diagnostics record only source-free operational metadata such as character count, selected model, duration, outcome, and usage; they never record raw inbound text or provider error text.
 
@@ -132,9 +132,9 @@ Extension-originated input is explicitly bypassed to prevent loops and unintende
 
 ### Unsupported paths and failures
 
-While input translation is on, RPC, print, JSON, steering, follow-up, and otherwise non-idle user-input paths are blocked without a translation request. They are never passed untranslated to the main agent. Extension-originated messages bypass this processing entirely. The optional English check runs only after these eligibility guards.
+While input translation is on, RPC, print, JSON, and non-idle user-input paths without a steering/follow-up delivery option are blocked without a translation request. They are never passed untranslated to the main agent. Extension-originated messages bypass this processing entirely. The optional English check runs only after these eligibility guards.
 
-Inbound translation fails closed. Missing or unauthenticated models, unavailable exact models, timeout, cancellation, provider failure, truncated or empty output, altered Markdown placeholders, and unexpected translator errors all stop the prompt. In the interactive TUI, Translate restores the original draft to the editor and shows a source-free error so the user can retry without losing the text. A keyed footer status names English and the configured model while translation is active and is cleared on every outcome and session lifecycle change.
+Inbound translation fails closed. Missing or unauthenticated models, unavailable exact models, timeout, cancellation, provider failure, truncated or empty output, altered Markdown placeholders, and unexpected translator errors all stop the prompt. In the interactive TUI, Translate restores the original draft to the editor and shows a source-free error so the user can retry without losing the text. Pending input work is cancelled and late results are discarded on session start/replacement, tree navigation, reload, and shutdown, without restoring an old draft into the new session. Main-run cancellation also stops pending busy-input translation. A keyed footer status names English and the configured model while translation is active and is cleared on every outcome and session lifecycle change.
 
 ## Manual output translation
 
@@ -195,7 +195,7 @@ Use `/translate input-status` or `/translate output-status` to verify the active
 
 ## Limitations
 
-- Inbound translation supports only ordinary idle interactive TUI prompts; unsupported user paths are deliberately blocked while enabled.
+- Inbound translation supports idle interactive TUI prompts and busy steering/follow-up messages; unsupported user paths are deliberately blocked while enabled.
 - A model-based translator cannot guarantee semantic correctness or language detection when the model returns an apparently valid but inaccurate result. Translate can guarantee fail-closed control flow only for detectable request and validation failures.
 - There is no selected-text translation, history browser, side-by-side view, or general-purpose source-language detector beyond the optional English precheck.
 - Display substitutions use a collision-checked SHA-256 source fingerprint plus exact source text because Markdown transformers receive no session-entry ID.
