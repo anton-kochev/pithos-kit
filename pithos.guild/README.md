@@ -8,7 +8,9 @@ The extension adds agent-callable `guild_handover` and controlled `create_commit
 
 Guild hands **one focused task** to an isolated child: choose a role for its permissions and a supported profile for its guidance. Explorer and architect investigate or plan, coder can edit and run tests, reviewer inspects changes without writing, and writer creates scoped prose artifacts without shell access. Guild queues handovers, returns a bounded structured report, and leaves verification and final decisions to the main agent. It does not run an automatic multi-agent pipeline or prove a child's claims.
 
-On a qualified host, coder and reviewer tasks can also run in the background: **three occupied slots and eight pending starts**, in the parent's working directory. Children can ask the parent for clarification and continue in the same process after an answer. Background controls and automatic parent notices remain subject to runtime qualification, Plan protection, and explicit result collection.
+On a qualified host, **use `guild_start` for normal delegation across all roles**, including `writer/general`: **three occupied slots and eight pending starts**, in the parent's working directory. Admission returns immediately rather than waiting for child completion. The main agent can continue independent work or finish its turn and handle another user request while children keep running. Children can ask the parent for clarification and continue in the same process after an answer. Background controls and automatic parent notices remain subject to runtime qualification, Plan protection, and explicit result collection.
+
+`guild_handover` and `/guild-handover` remain **explicitly blocking** alternatives: they wait for completion and serialize children. They are also available on hosts without background capabilities, but are not a background fallback. A live dashboard or a separate child process does not mean the parent is free.
 
 For example, in Pi's interactive TUI:
 
@@ -61,7 +63,7 @@ pi:
 
 ## Roles and profiles
 
-Roles own responsibility and the repository tool ceiling. Every child additionally receives `guild_submit_result`, a child-only reporting tool with no repository or delegation capability. Background coder/reviewer children also receive `guild_ask_parent` for correlated clarification; it does not expand repository permissions or enable delegation:
+Roles own responsibility and the repository tool ceiling. Every child additionally receives `guild_submit_result`, a child-only reporting tool with no repository or delegation capability. Background children of every role also receive `guild_ask_parent` for correlated clarification; it does not expand repository permissions or enable delegation:
 
 | Role | Responsibility | Tools |
 |---|---|---|
@@ -95,7 +97,7 @@ Use `writer/general` for technical or nontechnical writing. General does not mea
 
 Writer requires an explicit destination in the task. If it is absent, unsafe, outside scope, or would overwrite conflicting content without authorization, the child should report blocked instead of choosing a path. Existing assigned documents may be revised when authorized; preserve unrelated edits. This is prompt guidance, not host-enforced path confinement or a filesystem sandbox. The host validates the report, not the existence, accuracy, or ownership of reported artifacts.
 
-Clarify requirements and research in the parent before handing over. Writer has no shell, web, user-question, publishing, or delegation tools. Supply local source paths or source contents; URLs alone are not read evidence. A writer should report missing essential information, unverified claims, and checks it could not perform honestly. Fiction may invent within its stated frame but must not fabricate factual sourcing or endorsements. Shell-based content builds and executable tutorial checks remain parent/coder responsibilities.
+Clarify requirements and research in the parent before handing over. Writer has no shell, web, direct user-question, publishing, or delegation tools. A background writer can ask the parent for missing context through `guild_ask_parent`; a blocking writer cannot. Supply local source paths or source contents; URLs alone are not read evidence. A writer should report missing essential information, unverified claims, and checks it could not perform honestly. Fiction may invent within its stated frame but must not fabricate factual sourcing or endorsements. Shell-based content builds and executable tutorial checks remain parent/coder responsibilities.
 
 The package-owned `content-craft` skill covers audience-first writing, structure and voice, analogies and concrete examples, factual grounding, revision, and proportionate guidance for articles, tutorials, stories, podcasts, videos, screenplays, and documentary scripts. Load it in the parent with optional context:
 
@@ -273,7 +275,16 @@ Use reviewer/general to review the focused change for merge-blocking defects.
 Use writer/general to draft an article from supplied notes at an explicit output path.
 ```
 
-The main agent invokes the canonical API. Most tasks need no practice option; required TDD is an explicit coder-only choice:
+On a qualified host, the main agent normally invokes `guild_start`:
+
+```text
+guild_start({ role: "explorer", profile: "typescript", task: "Locate input validation and cite relevant files" })
+guild_start({ role: "writer", profile: "general", task: "Revise docs/guide.md for senior engineers using docs/accepted-design.md. Keep the existing format and length; cover the accepted API changes without inventing claims. Edit only docs/guide.md." })
+```
+
+After admission, continue independent work or finish the parent turn. Do not immediately poll or wait merely because a child is running. Keep parent/child edits in separate scopes; there are no file locks or worktrees. On a qualified continuation host, a question or terminal notice brings the parent back when safe, with user input taking priority. A terminal notice is not a collected or verified report: call `guild_wait` with `timeoutMs: 0` to collect it, then verify the claims. Without automatic continuation, use `/guild status` or a fresh user request to inspect and collect work; do not promise an automatic follow-up.
+
+For explicitly blocking delegation, or on hosts without background tools, use the canonical handover API. Most tasks need no practice option; required TDD is an explicit coder-only choice:
 
 ```text
 guild_handover({ role: "explorer", profile: "typescript", task: "Locate input validation and cite relevant files" })
@@ -304,24 +315,24 @@ Both commands also accept `-h`; help returns before idle waits, UI prompts, admi
 
 ### Background tools and manual controls
 
-On a qualified interactive host, coder/reviewer tasks can run concurrently; other roles remain blocking-only.
+On a qualified interactive host, all 29 canonical role/profile pairs can run in the background. Writer remains `general`-only, TDD remains coder-only, and repository tool permissions are unchanged.
 
 | Tool | Purpose |
 |---|---|
 | `guild_start` | Admit a task with canonical role, profile, task and optional coder practices; returns IDs, not proof of launch |
 | `guild_status` | Inspect runs and current untrusted questions without collecting usage |
 | `guild_send` | Send an update, or reply with the exact pending `questionId`; acceptance is not delivery or scope acknowledgment |
-| `guild_wait` | Observe a run and explicitly collect its terminal report; default 30 seconds, maximum 60 |
+| `guild_wait` | Observe a run and explicitly collect its terminal report; non-blocking by default (`timeoutMs: 0`), explicit waits up to 60 seconds |
 | `guild_cancel` | Cancel one run and join cleanup |
 
 ```text
 guild_start({role: "coder", profile: "typescript", task: "...scope and acceptance criteria..."})
 guild_status({runId: "<returned runId>"})
 guild_send({runId: "<runId>", questionId: "<pending questionId>", message: "...answer..."})
-guild_wait({runId: "<runId>", timeoutMs: 60000})
+guild_wait({runId: "<runId>", timeoutMs: 0})
 ```
 
-Limits are **3 occupied slots, 8 pending starts and 16 unconsumed records**. Queued admission is not child launch; waiting and stopping retain capacity through cleanup and terminal publication. Each run permits eight questions, 8 KiB question/message text, two pending/in-flight updates and 32 lifetime updates. There are at most 32 concurrent waiters. Terminal report DTOs and whole public tool results have 64 KiB budgets; oversized reports are rejected, not silently truncated into success. Wait timeout is observational, not cancellation. While a child is waiting for an answer, use `guild_send` with its exact pending `questionId`; an ordinary update without that ID is not accepted until the question is answered.
+Limits are **3 occupied slots, 8 pending starts and 16 unconsumed records**. Queued admission is not child launch; waiting and stopping retain capacity through cleanup and terminal publication. Each run permits eight questions, 8 KiB question/message text, two pending/in-flight updates and 32 lifetime updates. There are at most 32 concurrent waiters. Terminal report DTOs and whole public tool results have 64 KiB budgets; oversized reports are rejected, not silently truncated into success. Wait timeout is observational, not cancellation. A positive `timeoutMs` holds the parent tool call open; use it only when the next step depends on that result or the user explicitly asks to wait. Ending a parent turn or sending an ordinary new request does not cancel background children. While a child is waiting for an answer, use `guild_send` with its exact pending `questionId`; an ordinary update without that ID is not accepted until the question is answered.
 
 `PITHOS_GUILD_PLAN_MODE` is captured once: unset or exact `required` needs a compatible inactive Plan handshake. Exact `standalone` is a trusted parent assertion of absence and rejects any provider reply. Invalid values block background admission only. Safe persisted inactivity and strict Plan protection through cleanup remain required. Shared cwd and task scopes are **not file locks**: coordinate overlapping edits yourself. Guild does not roll back, stash, merge or delete child edits on cancellation.
 
@@ -410,7 +421,7 @@ Each Guild target runs with:
 - an isolated context window and no saved child session;
 - the parent's current provider/model, thinking level, working directory, and trust decision;
 - an explicit package-controlled base system prompt plus exactly one role prompt and one profile prompt, with selected fixed package skill cores embedded after role/profile guidance;
-- the exact role-owned repository tool allowlist plus `guild_submit_result`, with `guild_ask_parent` additionally available to background coder/reviewer children;
+- the exact role-owned repository tool allowlist plus `guild_submit_result`, with `guild_ask_parent` additionally available to background children of every role;
 - `--no-extensions`, `--no-skills`, `--no-prompt-templates`, and `--no-context-files`, with one explicit absolute local `--extension`: package-owned `src/child-protocol.ts` for blocking print/JSON children, or `src/background-child-protocol.ts` for retained background RPC children;
 - no recursive Guild delegation and no user/project member, system-prompt, append-prompt, skill, extension, template, or context-file discovery.
 
@@ -463,7 +474,9 @@ Alternatively, set `PI_RPC_PROBE_CLI` to that CLI path. There is no default runt
 
 #### Deployed Pi 1.5.0 release checks
 
-`test:deployed-runtime` checks the exact Pithos-shipped Pi 1.5.0 deployment manifest and installed output hashes before copying the runtime into an isolated test directory. It runs the existing **16 connected cases** plus a separate idle-parent question test. The latter releases a child question only after the native parent turn has settled, then requires one automatic notice and response **without `guild_wait` or `guild_status` polling**, followed by an exact reply to the same child.
+`test:deployed-runtime` checks the exact Pithos-shipped Pi 1.5.0 deployment manifest and installed output hashes before copying the runtime into an isolated test directory. It runs the existing **16 connected cases**, a separate idle-parent question test, and a writer/new-request acceptance test. The idle test releases a child question only after the native parent turn has settled, then requires one automatic notice and response **without `guild_wait` or `guild_status` polling**, followed by an exact reply to the same child.
+
+The writer test runs the native interactive input loop with terminal I/O doubled. A held `writer/general` run survives parent settlement and a second user request submitted through the editor; that request is answered before the child is released. Completion must then cause one automatic notice/response, followed by validated writer-report collection and at-most-once usage credit. The child is an in-process scripted runner, not a live model or a written artifact. This test does not establish provider instruction-following or a Pi 1.5.2 host port.
 
 To check the actual npm package rather than checkout source, run from the repository's `pithos.guild` directory inside the Pithos container:
 
@@ -479,7 +492,7 @@ PATH=/usr/bin:/bin:"$PATH" npm run test:deployed-runtime -- \
 
 The packed Guild version must match the checkout running the probe. The host manifest is separately pinned: arbitrary manifests and changed installed outputs are rejected, not accepted by version number alone. The runtime and Guild source/assets come from the selected inputs; Plan and test fixtures come from the checkout. These checks use the real SDK/InteractiveMode, terminal I/O doubles, local scripted responses, and in-process child runners. They do not replace actual-child transport checks or certify a physical terminal, every provider, or future Pi versions. The launcher checks its protected installed hashes again and removes its temporary runtime after the workers close. Dependencies are read-only by convention, not an OS sandbox.
 
-Ordinary `npm test` runs the portable manifest and release-version checks. The installed-file mutation and packed-runtime integration tests are opt-in through `GUILD_DEPLOYED_TEST_ROOT` and `GUILD_DEPLOYED_TEST_PACKAGE`; their default skips are not evidence of deployment qualification. Require a successful exit from the explicit deployed command, including the separate idle test.
+Ordinary `npm test` runs the portable manifest and release-version checks. The installed-file mutation and packed-runtime integration tests are opt-in through `GUILD_DEPLOYED_TEST_ROOT` and `GUILD_DEPLOYED_TEST_PACKAGE`; their default skips are not evidence of deployment qualification. Require a successful exit from the explicit deployed command, including the separate idle and writer/new-request tests.
 
 The current release check passed on the launcher's **Node 24.22.2**: all **16 connected cases**, the separate idle-question case, and all **4 validation tests with deployment checks enabled** against a real **70-file npm package**. The default Guild suite reported **921 passed and 2 opt-in skips**, with those deployment checks run separately; typecheck, Plan **391**, Atlas **127** plus typecheck, and root **3** also passed. Local evidence is in `/tmp/guild-release-15-parent-*.log`; temporary logs are not published attestations.
 
@@ -499,7 +512,7 @@ The continuation default requires all 16 cases; focused `--case` runs remain `qu
 
 Parent logs `/tmp/guild-completion-parent-{native16,shared-rpc,tests,typecheck,pack}.log` record 16/16, actual RPC, Guild **919**, typecheck and a **70-file** package dry-run. Selected provider-source checks record **543 passed/36 configured skips** (43 passed/4 skipped files), plus root TypeScript checking in `/tmp/guild-command-parent-provider543{,-tsc}.log`, not the full upstream suite/build. The final parent sweep also passed Plan **391**, Atlas **127** plus typecheck/23-file dry-run, root **3**, stock shutdown/navigation/Plan probes **8/9/10**, the three-worker accounting probe and RPC compatibility probe (`/tmp/guild-completion-parent-*.log`). These are local evidence, not published attestations; no physical TTY, live-provider or broad-version certification is claimed.
 
-One factory-created `GuildExecutionRuntime` per `registerGuild` now owns blocking tool/direct scheduling and shutdown drain through the same private execution authority and registry. Its internal scheduler defaults to three active coder/reviewer background operations and eight pending background operations, independently of the unbounded blocking backlog. A single FIFO and exclusive barriers prevent background work from overtaking already admitted blocking work. Any nonterminal background record (queued, running, waiting, or stopping) refuses new blocking admission; retained terminal records alone do not.
+One factory-created `GuildExecutionRuntime` per `registerGuild` now owns blocking tool/direct scheduling and shutdown drain through the same private execution authority and registry. Its internal scheduler defaults to three active background operations across all roles and eight pending background operations, independently of the unbounded blocking backlog. A single FIFO and exclusive barriers prevent background work from overtaking already admitted blocking work. Any nonterminal background record (queued, running, waiting, or stopping) refuses new blocking admission; retained terminal records alone do not.
 
 The default runtime composes the real background runner lazily; qualified hosts expose the five background tools described above. Blocking reports still use their existing result path rather than background records. Blocking lifecycle and live Plan admission are connected as described below; semantic interrupt integration requires a qualified host. Ordinary Plan-free blocking remains available, without treating silence as proof of Plan absence. Tests using injected runners and stable participant leases verify these scheduling contracts, not actual-runtime, provider, or completed cross-package integration.
 
@@ -517,7 +530,7 @@ Live registration initially activates one owner for both existing blocking entry
 
 Required mode needs exactly one synchronous compatible inactive Plan provider. Missing, active, uncertain, incompatible, duplicate, or unstable providers block admission. Explicit parent `PITHOS_GUILD_PLAN_MODE=standalone` permits zero synchronous replies only; any on-stack reply conflicts with that assertion. Silence is never evidence of Plan absence. As with discovery, late replies are inert: a required handshake cannot be established by a late reply, and standalone relies on the parent's explicit assertion, not asynchronous inventory detection.
 
-Both modes require safely captured inactive persisted branch state. The facade copies only scanner-relevant own data, rejects unsafe relevant persistence shapes, validates and privately copies canonical coder/reviewer input before discovery, attaches the authority's stable participant, then rechecks persistence, provider identity/generation/phase, reentry, and the exact current owner immediately before reservation. Nested admission attempts veto the outer attempt even if caught. Failed admission never detaches coordinator protection or releases independent holds. Existing blocking `guild_handover` and `/guild-handover` retain their ordinary Plan-free behavior under every background setting; their final admission uses the safe persistence reader and live Plan coordination on the shared exclusive scheduler.
+Both modes require safely captured inactive persisted branch state. The facade copies only scanner-relevant own data, rejects unsafe relevant persistence shapes, validates and privately copies canonical role/profile input before discovery, attaches the authority's stable participant, then rechecks persistence, provider identity/generation/phase, reentry, and the exact current owner immediately before reservation. Nested admission attempts veto the outer attempt even if caught. Failed admission never detaches coordinator protection or releases independent holds. Existing blocking `guild_handover` and `/guild-handover` retain their ordinary Plan-free behavior under every background setting; their final admission uses the safe persistence reader and live Plan coordination on the shared exclusive scheduler.
 
 Tests exercise this facade with real registries, authorities and Plan coordinators and injected operations. Registration supplies the bus and captured parent policy to the composed runtime, with conditional public adapters, notifications and explicit collection accounting. These tests are not runtime certification; the blocking Pi minimum remains >=1.0. This is trusted-extension cooperation, not a malicious-extension sandbox; a bus swallowing a handler throw after a valid reply remains undetectable.
 

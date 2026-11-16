@@ -20,11 +20,25 @@ interface Options {
 const owners = new WeakMap<ExtensionAPI, object>();
 const names = ["guild_start", "guild_status", "guild_send", "guild_wait", "guild_cancel"] as const;
 const descriptions = {
- guild_start: "Admit a background coder/reviewer task. Startup is asynchronous; admission does not collect usage.",
+ guild_start: "Delegate a scoped task to any supported Guild role/profile in the background. Returns run IDs without waiting for completion; admission does not collect usage.",
  guild_status: "Inspect background run summaries and pending untrusted child questions without collecting usage.",
  guild_send: "Send an update or question reply. Handled means delivery disposition, not a scope acknowledgement.",
- guild_wait: "Wait for a run and explicitly collect its report. Only the first collection attributes known native usage.",
+ guild_wait: "Collect an available report without waiting by default. Set timeoutMs explicitly only when dependent work needs a bounded wait. Only the first collection attributes known native usage.",
  guild_cancel: "Request cancellation of a background run; the returned child status describes the outcome.",
+};
+const guidelines: Record<typeof names[number], string[]> = {
+ guild_start: [
+  "Prefer guild_start over blocking guild_handover whenever guild_start is available, including explorer, architect, coder, reviewer, and writer tasks.",
+  "After guild_start, continue independent work or finish your turn so the user can send another request while children run. Do not poll guild_status or immediately loop on guild_wait; wait only when your next step actually depends on the result.",
+  "Give guild_start a self-contained task with scope, acceptance criteria, and relevant repository instructions; children do not inherit this conversation. Coordinate non-overlapping edits between the parent and children: all share the working directory, with no file locks or worktree isolation.",
+  "For guild_start writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Research in the parent; writer has no shell or web tools. Background children can ask the parent for missing context through guild_ask_parent.",
+  "For guild_start reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. Use explicit local file paths and instruct the child to read those files; omit secrets. Reviewers independently challenge plan and implementation. Close essential context gaps and request another review; never present a limited review as complete.",
+  "A guild_start admission or completion notice is not verified success. Collect the terminal report with guild_wait and verify child claims before treating work as complete. Automatic notices require qualified parent continuation; do not promise an automatic follow-up when it is unavailable.",
+ ],
+ guild_status: ["Use guild_status for an explicit progress check or recovery, not a polling loop that keeps the parent busy."],
+ guild_send: ["Use guild_send with the exact currently pending questionId to answer a child question; an ordinary update is not a reply or a scope acknowledgment."],
+ guild_wait: ["Use guild_wait with timeoutMs: 0 after a terminal notice to collect the report and usage. A positive timeoutMs holds the parent tool call open; use it only for an actual dependency or an explicit user request to wait."],
+ guild_cancel: ["Use guild_cancel for explicit cancellation. Finishing your turn or handling another user request does not require cancelling background children."],
 };
 const unavailable = () => new Error("Background tools unavailable");
 const exact = {additionalProperties: false};
@@ -35,7 +49,8 @@ const practice = Type.Object({id: Type.Literal("tdd"), policy: Type.Literal("req
 const schemas = {
  guild_start: Type.Union([
   Type.Object({role: Type.Literal("coder"), profile, task, practices: Type.Optional(Type.Array(practice, {maxItems: 1}))}, exact),
-  Type.Object({role: Type.Literal("reviewer"), profile, task, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
+  Type.Object({role: Type.String({enum: ["explorer", "architect", "reviewer"]}), profile, task, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
+  Type.Object({role: Type.Literal("writer"), profile: Type.Literal("general"), task, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
  ]),
  guild_status: Type.Object({runId: Type.Optional(id)}, exact),
  guild_send: Type.Object({runId: id, message: Type.String({minLength: 1, maxLength: 8192}), questionId: Type.Optional(id)}, exact),
@@ -83,6 +98,7 @@ export function createBackgroundToolRegistration(pi: ExtensionAPI, options: Opti
  let handle: Handle | undefined;
  let showing = false, providerRetired = false, revision = 0;
  const definitions: ToolDefinition[] = names.map(name => ({name, label: name, description: descriptions[name],
+  promptSnippet: descriptions[name], promptGuidelines: guidelines[name],
   parameters: schemas[name], defaultActive: false, exposure: "direct",
   async execute(_callId, args, signal, _update, ctx) {
    try {
@@ -114,7 +130,7 @@ export function createBackgroundToolRegistration(pi: ExtensionAPI, options: Opti
      details = summarize(run); text = `Cancellation operation finished; child job: ${run.status}.`;
     } else {
      if (!Check(schemas.guild_wait, args)) throw unavailable();
-     const result = await controls.wait(captured, args.runId, args.timeoutMs,
+     const result = await controls.wait(captured, args.runId, args.timeoutMs ?? 0,
       {collectionId: randomUUID(), toolCallId: _callId}, signal); guard();
      const collection = result.collection;
      details = {reason: result.reason, runs: result.runs.slice(0, 16).map(summarize)};

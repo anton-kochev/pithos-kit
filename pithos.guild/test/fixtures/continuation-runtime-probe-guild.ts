@@ -8,6 +8,7 @@ import type { GuildOwner } from "../../src/execution-authority.ts";
 import type { RunBackgroundGuildRoleOptions } from "../../src/background-runner.ts";
 import type { GuildRoleRunResult } from "../../src/runner.ts";
 import { Type } from "typebox";
+import { childTools, BACKGROUND_CAPABILITY } from "../../src/protocol.ts";
 import { createSemanticInterruptBinding } from "../../src/semantic-interrupt.ts";
 
 // Observe only public capability calls. Proxies retain the actual SDK receivers,
@@ -79,6 +80,7 @@ export default function continuationProbeGuild(pi: ExtensionAPI) {
   });
   const control = {
     SessionManager, TuiMainScreen, createAssistantMessageEventStream, createSemanticInterruptBinding,
+    writerTools: childTools("writer", BACKGROUND_CAPABILITY),
     runtime: undefined as GuildExecutionRuntime | undefined,
     owner: undefined as GuildOwner | undefined,
     context: undefined as ExtensionContext | undefined,

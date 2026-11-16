@@ -3,7 +3,14 @@ const task = JSON.parse(readFileSync(process.env.GUILD_TASK_FILE, 'utf8'));
 const args = process.argv.slice(2);
 const emit = value => process.stdout.write(JSON.stringify(value) + '\n');
 const {task: text, practices, ...header} = task;
-const report = {...header, taskOutcome: practices.length ? 'blocked' : 'succeeded', compliance: practices.length ? [{id: 'tdd', policy: 'required', status: 'blocked', reason: 'Scripted, no task tests', cycles: [], limitations: []}] : [], summary: 'Scripted report', blockers: practices.length ? ['Fixture'] : [], limitations: [], payload: task.role === 'reviewer' ? {scope: [], findings: [], verdict: 'Approve'} : {changes: [], verification: []}};
+const rolePayload = {
+ explorer: {observations: [], unknowns: []},
+ architect: {decisions: [], contracts: [], handoff: []},
+ coder: {changes: [], verification: []},
+ reviewer: {scope: [], findings: [], verdict: 'Approve'},
+ writer: {artifacts: [{path: 'draft.md', description: 'Scripted artifact claim'}], sources: [], checks: []},
+};
+const report = {...header, taskOutcome: practices.length ? 'blocked' : 'succeeded', compliance: practices.length ? [{id: 'tdd', policy: 'required', status: 'blocked', reason: 'Scripted, no task tests', cycles: [], limitations: []}] : [], summary: 'Scripted report', blockers: practices.length ? ['Fixture'] : [], limitations: [], payload: text === 'question-coder-report' ? rolePayload.coder : rolePayload[task.role]};
 const submit = () => {
  emit({type: 'message_end', message: {role: 'assistant', content: [{type: 'toolCall', name: 'guild_submit_result', id: 'submit', arguments: report}], usage: {input: 3}}});
  emit({type: 'tool_execution_start', toolName: 'guild_submit_result', toolCallId: 'submit', args: report});

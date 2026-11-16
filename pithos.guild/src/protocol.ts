@@ -122,7 +122,6 @@ export function hasIdentityMismatch(args: unknown, task: GuildTask): boolean {
 }
 export function childTools(role: GuildRole, capability?: BackgroundCapability): string[] {
  if (capability !== undefined && capability !== BACKGROUND_CAPABILITY) throw new Error("Unsupported Guild capability");
- if (capability && role !== "coder" && role !== "reviewer") throw new Error("Unsupported background Guild role");
  if (!isGuildRole(role)) throw new Error("Unsupported Guild role");
  return [...GUILD_ROLE_DEFINITIONS[role].tools, SUBMIT_TOOL, ...(capability ? [ASK_TOOL] : [])];
 }

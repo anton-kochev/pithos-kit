@@ -254,7 +254,7 @@
           },
           {
             "name": "guild-handover",
-            "summary": "Delegate directly from the interactive TUI.",
+            "summary": "Delegate a blocking task directly from the interactive TUI.",
             "usage": "/guild-handover [role/profile | legacy-alias] [task]"
           },
           {
@@ -316,7 +316,7 @@
         "tools": [
           {
             "name": "guild_handover",
-            "summary": "Hand focused work to an isolated Guild role/profile target."
+            "summary": "Run a blocking handover to an isolated Guild role/profile target; prefer guild_start for background work."
           },
           {
             "name": "create_commit",
@@ -325,7 +325,7 @@
           },
           {
             "name": "guild_start",
-            "summary": "Start bounded background work (qualified hosts only)."
+            "summary": "Delegate bounded background work across all Guild roles without waiting for completion (qualified hosts only)."
           },
           {
             "name": "guild_status",
@@ -333,7 +333,7 @@
           },
           {
             "name": "guild_wait",
-            "summary": "Wait for a result or exact pending question text (qualified hosts only)."
+            "summary": "Collect a result without waiting by default; explicit bounded waits are available (qualified hosts only)."
           },
           {
             "name": "guild_send",

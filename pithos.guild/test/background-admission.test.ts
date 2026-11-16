@@ -74,7 +74,7 @@ test("snapshots canonical input once before discovery and vetoes nested starts e
   await authority.wait(owner, run.id, 1000);
   assert.equal(reads, 1);
   assert.equal((received as typeof input).task, "original");
-  for (const invalid of [{ member: "typescript-coder", task: "x" }, { ...input, mode: "standalone" }, { ...input, role: "explorer" }]) {
+  for (const invalid of [{ member: "typescript-coder", task: "x" }, { ...input, mode: "standalone" }, { ...input, role: "unknown" }]) {
    assert.throws(() => admission.start(owner, invalid, context));
   }
   assert.equal(discoveries, 1);
@@ -306,4 +306,26 @@ test("shared persisted reader reports inactivity without asserting provider abse
  const entry = {type: "custom", customType: "plan-theme-state", get data() {return assert.fail("unsafe persisted getter executed");}};
  assert.throws(() => readPersistedPlanState({getBranch: () => [entry]}), /Unsafe persisted/);
  assert.throws(() => readPersistedPlanState({getBranch: () => new Proxy([], {})}), /Unsafe persisted/);
+});
+
+test("admits every canonical target and rejects invalid pairs and non-coder TDD before discovery", async () => {
+ const { GUILD_ROLES, GUILD_ROLE_PROFILES } = await import("../src/agents.ts");
+ let discoveries = 0;
+ const authority = new GuildExecutionAuthority(() => new BackgroundRunRegistry(() => {}));
+ const owner = authority.activate();
+ const admission = createGuildBackgroundAdmission({authority, bus: {emit() {discoveries++;}}, parentEnvironment: {PITHOS_GUILD_PLAN_MODE: "standalone"}});
+ try {
+  for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
+   const run = admission.start(owner, {...input, role, profile}, context);
+   await authority.wait(owner, run.id, 1000);
+   authority.collect(owner, run.id);
+   authority.release(owner, run.id);
+  }
+  const before = discoveries;
+  for (const invalid of [
+   {...input, role: "writer", profile: "typescript"}, {...input, profile: "unknown"},
+   ...GUILD_ROLES.filter(role => role !== "coder").map(role => ({...input, role, profile: "general", practices: [{id: "tdd", policy: "required"}]})),
+  ]) assert.throws(() => admission.start(owner, invalid, context));
+  assert.equal(discoveries, before);
+ } finally { await authority.shutdown(); }
 });

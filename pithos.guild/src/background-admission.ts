@@ -77,7 +77,6 @@ export function createGuildBackgroundAdmission<C = undefined>({ authority, bus, 
      copy.practices = length ? [copyFields(practices[0], ["id", "policy"])] : [];
     }
     const canonical = validateInput(copy);
-    if (canonical.role !== "coder" && canonical.role !== "reviewer") throw new Error("Unsupported background role.");
     const readiness = discoverPlan(bus, planBoundaryFor(mode, readPersistedPlanState(context)), authority.planParticipant);
     if (readiness.kind === "blocked") throw new Error(`Background admission blocked: ${readiness.reason}`);
     if (readPersistedPlanState(context) !== "inactive") throw new Error("Persisted Plan state is not inactive.");

@@ -140,7 +140,7 @@ test('canonical practices, model, thinking, trust and fixed skill selection are 
  const reviewer = await runBackgroundGuildRoleForTest({...options, role: 'reviewer'}, seam);
  assert.equal(reviewer.status, 'completed', reviewer.errorMessage);
  assert.deepEqual(reviewer.selectedSkills?.map(skill => skill.id), ['code-review-standards']);
- const unsupported = await runBackgroundGuildRoleForTest({...options, role: 'explorer'}, seam);
+ const unsupported = await runBackgroundGuildRoleForTest({...options, role: 'writer', profile: 'typescript'}, seam);
  assert.equal(unsupported.status, 'failed');
 });
 
@@ -247,4 +247,31 @@ test('background trace ends after real child close and cleanup, including cancel
   assert.deepEqual(events.map(({event}) => event.type), ['start', 'end']);
   assert.equal(events[1].event.exitCode, null, 'startup failure has no child exit evidence');
  } finally {telemetry.unsubscribe(listener);}
+});
+
+for (const role of ["explorer", "architect", "writer"] as const) for (const valid of [true, false]) test(`background ${role} resumes with bounded tools and ${valid ? "accepts its role report" : "rejects a coder-shaped report"}`, {timeout: 8000}, async () => {
+ let args: string[] = [], prompt = "", taskFile = "", pid: unknown;
+ const result = await runBackgroundGuildRoleForTest({...options, role, profile: "general", task: valid ? "question" : "question-coder-report",
+  onQuestion: async question => `Answer for ${question.split(" ").at(-1)}`,
+  onEvent(event) {
+   if (event.type !== "fixture") return;
+   args = event.args as string[];
+   taskFile = event.taskFile as string;
+   pid = event.pid;
+   prompt = readFileSync(args[args.indexOf("--append-system-prompt") + 1], "utf8");
+  },
+ }, seam);
+ if (valid) {
+  assert.equal(result.status, "completed", result.errorMessage);
+  assert.equal(result.report?.role, role);
+  assert.equal(result.report?.summary, `Replied in ${pid}`);
+ } else {
+  assert.equal(result.status, "failed");
+  assert.match(result.errorMessage ?? "", /schema|submission|report/i);
+ }
+ assert.ok(taskFile, "a real child reached its handshake");
+ assert.equal(existsSync(taskFile), false);
+ assert.deepEqual(args[args.indexOf("--tools") + 1].split(","), ["read", "grep", "find", "ls", "git_read", ...(role === "writer" ? ["edit", "write"] : []), "guild_submit_result", "guild_ask_parent"]);
+ assert.deepEqual(result.selectedSkills?.map(skill => skill.id), role === "writer" ? ["content-craft"] : []);
+ if (role === "writer") assert.ok(prompt.includes(readFileSync(new URL("../skills/content-craft/SKILL.md", import.meta.url), "utf8")));
 });

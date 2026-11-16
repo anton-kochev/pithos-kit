@@ -82,7 +82,7 @@ Options:
   --help, -h  Show this help`;
 const GUILD_HANDOVER_HELP = `Usage: /guild-handover [<role>/<profile> | <legacy-alias>] [task...]
 
-Directly delegate a task to one canonical Guild role/profile target. Omit the target to choose a role and then a profile, or omit the task to open the multiline task editor.
+Directly delegate a blocking task to one canonical Guild role/profile target. This command waits for completion; for background delegation, ask the main agent to use guild_start on a qualified host. Omit the target to choose a role and then a profile, or omit the task to open the multiline task editor.
 
 For reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. A plan is optional. Use explicit local file paths for longer context and instruct the child to read those files; preserve material requirements, omit unrelated context and secrets. Reviewers independently challenge plan and implementation, not just plan conformance.
 
@@ -1588,17 +1588,18 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		name: "guild_handover",
 		label: "Guild",
 		description: [
-			"Hand one task to an isolated canonical Guild role/profile target.",
+			"Blocking handover: hand one task to an isolated canonical Guild role/profile target and wait for completion. Prefer guild_start for background delegation when available.",
 			"Roles own permissions: explorer, architect, and reviewer are read-only; coder is write-enabled; writer can edit writing artifacts without shell or web access.",
 			"Profiles select expertise: general, frontend, angular, typescript, dotnet, rust, or go. Writer supports only general.",
 		].join(" "),
-		promptSnippet: "Hand focused exploration, architecture, implementation, writing, or review work to an isolated Guild role/profile target",
+		promptSnippet: "Blocking delegation to a Guild role/profile; prefer guild_start for background work when available",
 		promptGuidelines: [
+			"Use guild_start for normal background delegation when available. Use guild_handover only for explicitly blocking delegation or on hosts without background tools; guild_handover keeps the parent busy until completion and serializes children. Never describe it as background execution.",
 			"Use guild_handover with a canonical role, profile, and self-contained task with scope and acceptance criteria.",
 			"Use explorer for repository fact-finding, architect for contracts and implementation handoffs, coder for implementation and verification, reviewer for evidence-based review, and writer/general for writing artifacts.",
-			"For writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Clarify and research in the parent; children have no web or question tools.",
+			"For guild_handover writer/general, supply audience, purpose, format, tone, length, local source material, an explicit output path, and acceptance criteria. Clarify and research in the parent; blocking children have no web or question tools.",
 			"For reviewer, supply the original requirement preferably verbatim, user constraints and decisions with provenance separately from implementer assumptions, exact scope and comparison, optional plan/rationale, and actual verification evidence and limitations. A plan is optional. Use explicit local file paths for longer context and instruct the child to read those files; preserve material requirements, omit unrelated context and secrets. Reviewers independently challenge plan and implementation, not just plan conformance.",
-			"Children do not inherit the parent conversation and cannot ask questions. Close review context gaps and request another review; ask the user only when information is unavailable. Never present a limited review as complete.",
+			"Blocking guild_handover children do not inherit the parent conversation and cannot ask questions. Close review context gaps and request another review; ask the user only when information is unavailable. Never present a limited review as complete.",
 			"Choose the profile from repository evidence: general, frontend, angular, typescript, dotnet, rust, or go.",
 		],
 		parameters: GUILD_HANDOVER_PARAMETERS,

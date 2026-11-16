@@ -63,4 +63,5 @@ test('explicit deployed launcher runs the strict connected matrix from the selec
   assert.match(child.stdout, /"passed":16,"total":16,"failed":0,"qualified":true/);
   assert.match(child.stdout, /Installed SHA-256: unchanged/);
   assert.match(child.stdout, /"phase":"idle-question","status":"passed"/);
+  assert.match(child.stdout, /"phase":"writer-second-request","status":"passed","route":"editor"/);
 });

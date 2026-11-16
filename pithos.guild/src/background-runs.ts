@@ -133,7 +133,6 @@ export class BackgroundRunRegistry<C = undefined> {
     this.assertAdmission();
     if (!value || typeof value !== "object" || Object.hasOwn(value, "member")) throw new Error("Expected canonical input.");
     const input = validateInput(value);
-    if (input.role !== "coder" && input.role !== "reviewer") throw new Error("Unsupported background role.");
     // Input getters can reenter the registry while validation copies the canonical input.
     this.assertAdmission();
     if (this.records.size >= this.limits.records) throw new Error("Registry record capacity exceeded.");

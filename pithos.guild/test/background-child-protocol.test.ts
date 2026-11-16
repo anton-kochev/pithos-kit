@@ -8,7 +8,7 @@ import { buildTask, report } from "./protocol-fixtures.ts";
 
 const capability = "guild-background/1";
 const ask = "guild_ask_parent";
-function harness(role: "coder" | "reviewer" = "coder", mode = "rpc", tools?: string[]) {
+function harness(role: import("../src/agents.ts").GuildRole = "coder", mode = "rpc", tools?: string[]) {
  const task = buildTask({role, profile: "general", task: "Work"});
  const hooks = new Map<string, Function>();
  const registered = new Map<string, any>();
@@ -33,10 +33,10 @@ function harness(role: "coder" | "reviewer" = "coder", mode = "rpc", tools?: str
  const batch = (id: string, name = ask, args: unknown = {question: "Why?"}, extra: any[] = []) => emit("message_end", {message: {role: "assistant", content: [{type: "toolCall", id, name, arguments: args}, ...extra]}});
  return {task, hooks, registered, ctx, controller, stream, emit, ready, batch, get aborted() {return aborted;}};
 }
-it("opts in only coder/reviewer with exact RPC handshake, modes and tools", () => {
+it("opts in every canonical role with exact RPC handshake, modes and tools", () => {
  assert.equal(protocol.BACKGROUND_CAPABILITY, capability);
  assert.equal(protocol.ASK_TOOL, ask);
- for (const role of ["coder", "reviewer"] as const) {
+ for (const role of ["coder", "reviewer", "writer", "architect", "explorer"] as const) {
   assert.deepEqual(protocol.childTools(role, capability), [...protocol.childTools(role), ask]);
   const h = harness(role);
   assert.deepEqual(h.ready().message.details, {protocol: "guild/2", version: 2, runId: h.task.runId, taskId: h.task.taskId, tools: protocol.childTools(role, capability), capability});
@@ -46,7 +46,7 @@ it("opts in only coder/reviewer with exact RPC handshake, modes and tools", () =
   legacy.event({type: "message_end", message: {role: "custom", ...h.ready().message}});
   assert.match(legacy.failure!, /handshake/);
  }
- for (const role of ["writer", "architect", "explorer"] as const) assert.throws(() => protocol.childTools(role, capability), /background/i);
+ assert.throws(() => protocol.childTools("unknown" as any, capability), /role/i);
  for (const option of [null, "wrong", {}]) assert.throws(() => protocol.childTools("coder", option as any), /capability/i);
  for (const mode of ["json", "tui", "print"]) {
   const h = harness("coder", mode);
@@ -60,10 +60,9 @@ it("opts in only coder/reviewer with exact RPC handshake, modes and tools", () =
  for (const options of [{}, {capability, extra: true}, {capability: "wrong"}, null]) assert.throws(() => registerChildProtocol({} as any, task, options as any));
 });
 
-it("overrides the actual reviewer's question prohibition only for the background parent channel", () => {
- const reviewer = readFileSync(new URL("../agents/roles/reviewer.md", import.meta.url), "utf8");
- assert.match(reviewer, /cannot ask questions/i);
- const h = harness("reviewer");
+for (const role of ["coder", "reviewer", "explorer", "architect", "writer"] as const) it(`limits ${role} clarification permission to the background parent channel`, () => {
+ const reviewer = readFileSync(new URL(`../agents/roles/${role}.md`, import.meta.url), "utf8");
+ const h = harness(role);
  const background = h.hooks.get("before_agent_start")!({systemPrompt: reviewer}, h.ctx).systemPrompt;
  assert.ok(background.startsWith(reviewer));
  const appended = background.slice(reviewer.length);
@@ -229,7 +228,7 @@ it("loads the explicit background entry through the same bounded host task loade
   writeFileSync(file, JSON.stringify(task));
   entry(pi as any);
   assert.ok(tools.includes(ask));
-  for (const content of ["x".repeat(48 * 1024 + 1), Buffer.from([0xc3, 0x28]), JSON.stringify({...task, extra: true}), JSON.stringify({...task, role: "explorer"})]) {
+  for (const content of ["x".repeat(48 * 1024 + 1), Buffer.from([0xc3, 0x28]), JSON.stringify({...task, extra: true}), JSON.stringify({...task, role: "unknown"})]) {
    tools.length = 0;
    writeFileSync(file, content);
    assert.throws(() => entry(pi as any));

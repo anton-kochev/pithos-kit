@@ -25,7 +25,7 @@ it("copies canonical input, owns unique IDs, and runs three jobs with a fourth q
   assert.deepEqual(seen, ["Implement", "Implement", "Implement"]);
   assert.equal(runs[3].status, "queued");
   assert.equal(new Set(runs.map(run => run.id)).size, 4);
-  assert.throws(() => registry.start({ ...input, role: "architect" }), /role/i);
+  assert.throws(() => registry.start({ ...input, role: "researcher" }), /input/i);
   assert.throws(() => registry.start({ member: "typescript-coder", task: "x" }), /canonical/i);
   assert.throws(() => registry.start({ ...input, task: "\0" }), /task/i);
   assert.ok(Object.isFrozen(registry.status(runs[0].id)));

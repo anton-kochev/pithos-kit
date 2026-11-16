@@ -201,6 +201,18 @@ export async function main(args: string[]) {
     assert(idle.stdout.toString('utf8').endsWith('\n'));
     assert.deepEqual(JSON.parse(idle.stdout.toString('utf8').trimEnd().split('\n').at(-1)!),
       {phase: 'idle-question', status: 'passed', notices: 1, autoResponses: 1, exactReply: true, pollingTools: 0, nativeSettledBeforeRelease: true});
+    const writer = await runTests(sandbox, realpathSync(process.execPath), 'continuation-runtime-probe-writer-worker.mjs');
+    process.stdout.write(writer.stdout);
+    process.stderr.write(writer.stderr);
+    note(`Writer child exit: code=${writer.code} signal=${writer.signal ?? 'none'}`);
+    assert.equal(writer.failure, undefined);
+    assert.equal(writer.code, 0, 'Writer second-user-request acceptance failed');
+    assert.equal(writer.signal, null);
+    assert.equal(writer.stderr.length, 0);
+    assert(writer.stdout.toString('utf8').endsWith('\n'));
+    assert.deepEqual(JSON.parse(writer.stdout.toString('utf8').trimEnd().split('\n').at(-1)!),
+      {phase: 'writer-second-request', status: 'passed', route: 'editor', childAliveAfterSecondResponse: true,
+        notices: 1, autoResponses: 1, collections: 1, tokens: 80, cost: 0.8});
   } finally {
     try {
       if (before) {

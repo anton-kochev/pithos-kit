@@ -168,14 +168,15 @@ test("controls use captured context and report admission, reply/update dispositi
  f.current(false);
  await assert.rejects(execute(f, "guild_status"), /unavailable/); assert.equal(calls.length, 5);
 });
-test("Go background admission supports only coder/reviewer and keeps TDD coder-only", async () => {
+test("background admission supports every canonical target and keeps TDD coder-only", async () => {
  const admitted: unknown[] = [];
  const f = fixture({context: () => context, controls: {start: (input: unknown) => {
   admitted.push(input); return {...summary, profile: "go"};
  }} as any});
  f.registration.show(f.ctx);
- for (const role of ["coder", "reviewer"]) {
-  const input = {role, profile: "go", task: "Inspect Go behavior"};
+ const { GUILD_ROLES, GUILD_ROLE_PROFILES } = await import("../src/agents.ts");
+ for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
+  const input = {role, profile, task: "Scoped background work"};
   await execute(f, "guild_start", input);
   assert.deepEqual(admitted.at(-1), {...input, practices: []});
  }
@@ -184,10 +185,11 @@ test("Go background admission supports only coder/reviewer and keeps TDD coder-o
  assert.deepEqual(admitted.at(-1), required);
  for (const input of [
   {...required, role: "reviewer"},
-  ...["explorer", "architect", "writer"].map(role => ({role, profile: "go", task: "Work"})),
+  ...["explorer", "architect", "writer"].map(role => ({...required, role, profile: "general"})),
+  {role: "writer", profile: "go", task: "Work"},
   {...required, profile: "golang"},
  ]) await assert.rejects(execute(f, "guild_start", input), /unavailable/);
- assert.equal(admitted.length, 3);
+ assert.equal(admitted.length, 30);
 });
 const usage = {input: 7, output: 2, cacheRead: 0, cacheWrite: 0, totalTokens: 9, cost: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0, total: 2}};
 const report = {protocol: "guild/2", version: 2, runId: "run", taskId: "task", role: "coder", profile: "typescript", taskOutcome: "succeeded", summary: "child claims", compliance: [], blockers: [], limitations: [], payload: {changes: [], verification: []}};
@@ -195,6 +197,27 @@ function first() {
  return {reason: "terminal", runs: [summary], collection: {kind: "first", report: {...summary, report}, nativeUsage: usage,
   receipt: {role: "coder", profile: "typescript", version: 1, sessionId: "session", runId: "run", taskId: "task", collectionId: "collection", toolCallId: "call", native: "claimed", originEntryId: "origin", kind: "collected"} satisfies Extract<LedgerRecord, {kind: "collected"}>}};
 }
+test("guild_wait does not hold the parent unless a wait interval is explicit", async () => {
+ const intervals: unknown[] = [];
+ const f = fixture({context: () => context, controls: {wait: async (_ctx: unknown, _id: string, timeoutMs: unknown) => {
+  intervals.push(timeoutMs); return {reason: "timeout", runs: [summary]};
+ }} as any}); f.registration.show(f.ctx);
+ await execute(f, "guild_wait", {runId: "run"});
+ await execute(f, "guild_wait", {runId: "run", timeoutMs: 30000});
+ assert.deepEqual(intervals, [0, 30000]);
+});
+
+test("background tool guidance prefers independent work or yielding over polling", () => {
+ const f = fixture(); f.registration.show(f.ctx);
+ const start = f.definitions.get("guild_start")!;
+ assert.match(start.promptSnippet ?? "", /background/i);
+ const guidance = start.promptGuidelines?.join("\n") ?? "";
+ for (const expected of [/guild_handover/, /independent work/, /finish your turn/, /do not poll/i, /overlapping edits/, /writer/, /reviewer/])
+  assert.match(guidance, expected);
+ assert.match(f.definitions.get("guild_send")!.promptGuidelines?.join("\n") ?? "", /questionId/);
+ assert.match(f.definitions.get("guild_wait")!.description, /without waiting/i);
+});
+
 test("only first wait collection emits usage and exact receipt; stale awaited collection emits nothing", async () => {
  let result: any = first(), calls = 0;
  const f = fixture({context: () => context, controls: {wait: async (...args: unknown[]) => {
@@ -244,15 +267,16 @@ test("errors are bounded and sanitized, and context reentry prevents service cal
  const g = fixture({context: () => context, controls: {status: () => {throw new Error("secret".repeat(20000));}} as any});
  g.registration.show(g.ctx); await assert.rejects(execute(g, "guild_status"), /^Error: Background tools unavailable$/);
 });
-test("strict schemas allow only canonical coder/reviewer inputs, bounded identities and wait intervals", async () => {
+test("strict schemas allow only canonical role/profile inputs, bounded identities and wait intervals", async () => {
  const {Check} = await import("typebox/value");
  let calls = 0;
  const f = fixture({context: () => context, controls: {start: () => {calls++; return summary;}} as any}); f.registration.show(f.ctx);
  const accepts = (name: string, args: unknown) => Check(f.definitions.get(name)!.parameters, args);
- for (const role of ["coder", "reviewer"]) assert.ok(accepts("guild_start", {role, profile: "typescript", task: "work"}));
+ for (const role of ["coder", "reviewer", "explorer", "architect"]) assert.ok(accepts("guild_start", {role, profile: "typescript", task: "work"}));
+ assert.ok(accepts("guild_start", {role: "writer", profile: "general", task: "work"}));
  assert.ok(accepts("guild_start", {role: "coder", profile: "general", task: "work", practices: [{id: "tdd", policy: "required"}]}));
  for (const args of [
-  {role: "writer", profile: "general", task: "work"}, {role: "coder", profile: "alias", task: "work"},
+  {role: "writer", profile: "typescript", task: "work"}, {role: "coder", profile: "alias", task: "work"},
   {member: "typescript-coder", task: "work"}, {role: "coder", profile: "general", task: "work", extra: 1},
   {role: "reviewer", profile: "general", task: "work", practices: [{id: "tdd", policy: "required"}]},
  ]) { assert.equal(accepts("guild_start", args), false); await assert.rejects(execute(f, "guild_start", args), /unavailable/); }

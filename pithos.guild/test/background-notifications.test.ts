@@ -7,6 +7,22 @@ const question = (runId: string, revision = 1, questionId = "q", textPreview = "
  revision, questionId, textPreview,
 });
 
+test("every canonical target retains questions and terminal notices; unknown roles stay invalid", async () => {
+ const { GUILD_ROLES, GUILD_ROLE_PROFILES } = await import("../src/agents.ts");
+ for (const role of GUILD_ROLES) for (const profile of GUILD_ROLE_PROFILES[role]) {
+  const epoch = {}, buffer = createBackgroundNotifications(epoch);
+  const event = {...question("run"), role, profile};
+  assert.equal(buffer.observe(epoch, event), "accepted");
+  const batch = buffer.reserveBatch();
+  assert.equal(batch.items[0].role, role);
+  buffer.ack(batch.token);
+  assert.equal(buffer.observe(epoch, {...event, revision: 2, kind: "terminal", eventId: "done", status: "completed"}), "accepted");
+  assert.equal(buffer.reserveBatch().items[0].kind, "terminal");
+ }
+ const epoch = {}, buffer = createBackgroundNotifications(epoch);
+ assert.equal(buffer.observe(epoch, {...question("bad"), role: "researcher"}), "invalid-event");
+});
+
 test("three runs retain independent questions and selection does not consume", () => {
  const epoch = {};
  const buffer = createBackgroundNotifications(epoch);
