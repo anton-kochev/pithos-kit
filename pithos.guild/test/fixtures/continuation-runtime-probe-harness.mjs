@@ -13,9 +13,14 @@ assert.deepEqual(Object.keys(process.env).sort(), [
   "PI_CODING_AGENT_DIR", "PI_OFFLINE", "PI_SKIP_VERSION_CHECK", "PI_TELEMETRY",
 ].sort());
 // Default remains the exact-source 1.4 harness. 1.5 requires pinned copied deployment proof.
+// Reviewed deployment manifests by Pi version; keep in step with tools/deployed-runtime-probe.ts.
+const deploymentProofs = {
+  "1.5.0": "c97a03d9dd5cd2faea87c30192fc1a19b5a6a0c9c33f374a09ae57c85d1a614a",
+  "1.5.2": "254d06c86a0b9b0eda6f1b95f78b3d953222ed74ce83170ee23be26b031ee1ec",
+};
 let runtimeVersion = "1.4.0";
 if (process.argv[3] === "--runtime-version") {
-  assert.equal(process.argv[4], "1.5.0", "Explicit deployed version");
+  assert.ok(Object.hasOwn(deploymentProofs, process.argv[4]), "Explicit deployed version");
   runtimeVersion = process.argv[4];
   process.argv.splice(3, 2);
 }
@@ -25,10 +30,10 @@ assert.equal(cli, await realpath(join(packageRoot, "dist/cli.js")));
 const manifest = JSON.parse(await readFile(join(packageRoot, "package.json"), "utf8"));
 assert.equal(manifest.name, "@earendil-works/pi-coding-agent");
 assert.equal(manifest.version, runtimeVersion);
-if (runtimeVersion === "1.5.0") {
+if (runtimeVersion !== "1.4.0") {
   const bytes = await readFile(join(packageRoot, "deployed-manifest.json"));
   const hash = bytes => createHash("sha256").update(bytes).digest("hex");
-  assert.equal(hash(bytes), "c97a03d9dd5cd2faea87c30192fc1a19b5a6a0c9c33f374a09ae57c85d1a614a", "Deployment proof SHA-256");
+  assert.equal(hash(bytes), deploymentProofs[runtimeVersion], "Deployment proof SHA-256");
   const proof = JSON.parse(bytes);
   for (const [file, expected] of Object.entries({"package.json": proof.expected["package.json"], ...proof.overlay})) {
     assert.equal(hash(await readFile(join(packageRoot, file))), expected, `Deployment proof output: ${file}`);

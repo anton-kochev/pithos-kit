@@ -5,16 +5,22 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-// Reviewed in-image 1.5.0 deployment, not a caller-selected trust root.
-export const manifestSha256 = 'c97a03d9dd5cd2faea87c30192fc1a19b5a6a0c9c33f374a09ae57c85d1a614a';
+// Reviewed in-image deployments keyed by exact manifest bytes, not caller-selected trust roots.
+// Each new Pi version needs its own reviewed entry; never widen an existing one.
+export const reviewedDeployments: Readonly<Record<string, {piVersion: string; upstreamCommit: string}>> = Object.freeze({
+  c97a03d9dd5cd2faea87c30192fc1a19b5a6a0c9c33f374a09ae57c85d1a614a: {piVersion: '1.5.0', upstreamCommit: 'f9a26365568127461c47a07a37dcb42c140a3ac5'},
+  '254d06c86a0b9b0eda6f1b95f78b3d953222ed74ce83170ee23be26b031ee1ec': {piVersion: '1.5.2', upstreamCommit: 'b4afdddf44e059c67ccf5097e5317d913521b470'},
+});
 interface DeploymentManifest { piVersion: string; upstreamCommit: string; expected: Record<string, string>; overlay: Record<string, string> }
-export function qualifyManifest(bytes: Buffer): DeploymentManifest {
-  assert.equal(createHash('sha256').update(bytes).digest('hex'), manifestSha256, 'Manifest SHA-256');
+export function qualifyManifest(bytes: Buffer): DeploymentManifest & {sha256: string} {
+  const sha256 = createHash('sha256').update(bytes).digest('hex');
+  const reviewed = Object.hasOwn(reviewedDeployments, sha256) ? reviewedDeployments[sha256] : undefined;
+  assert(reviewed, `Manifest SHA-256 ${sha256} is not a reviewed deployment`);
   const manifest = JSON.parse(bytes.toString('utf8')) as DeploymentManifest;
-  assert.equal(manifest.piVersion, '1.5.0');
-  assert.equal(manifest.upstreamCommit, 'f9a26365568127461c47a07a37dcb42c140a3ac5');
+  assert.equal(manifest.piVersion, reviewed.piVersion);
+  assert.equal(manifest.upstreamCommit, reviewed.upstreamCommit);
   assert.equal(Object.keys(manifest.overlay).length, 16);
-  return manifest;
+  return {...manifest, sha256};
 }
 
 function regular(file: string) {
@@ -32,7 +38,7 @@ export function qualifyInstalled(root: string, manifestPath: string): Record<str
   root = realpathSync(root);
   const pkg = JSON.parse(regular(path.join(root, 'package.json')).toString('utf8'));
   assert.equal(pkg.name, '@earendil-works/pi-coding-agent', 'Package identity');
-  assert.equal(pkg.version, '1.5.0', 'Package version');
+  assert.equal(pkg.version, manifest.piVersion, 'Package version');
   assert.equal(pkg.type, 'module');
   assert.equal(pkg.exports?.['.']?.import, './dist/index.js');
   const expected = { 'package.json': manifest.expected['package.json'], ...manifest.overlay };
@@ -64,8 +70,8 @@ function copy(source: string, destination: string) {
       return true;
     } });
 }
-function runTests(sandbox: string, node: string, worker = 'continuation-runtime-probe-worker.mjs') {
-  const args = [path.join(sandbox, 'pithos.guild/test/fixtures', worker), path.join(sandbox, 'runtime/dist/cli.js'), '--runtime-version', '1.5.0'];
+function runTests(sandbox: string, node: string, runtimeVersion: string, worker = 'continuation-runtime-probe-worker.mjs') {
+  const args = [path.join(sandbox, 'pithos.guild/test/fixtures', worker), path.join(sandbox, 'runtime/dist/cli.js'), '--runtime-version', runtimeVersion];
   note(`Child command: ${JSON.stringify([node, ...args])}`);
   return new Promise<ChildResult>(resolve => {
     const child = spawn(node, args, {
@@ -151,7 +157,8 @@ export async function main(args: string[]) {
     installed = inputPath(args[0], 'directory');
     manifestPath = inputPath(args[1], 'file');
     before = qualifyInstalled(installed, manifestPath);
-    note(`Manifest SHA-256: ${manifestSha256}`);
+    const deployment = qualifyManifest(regular(manifestPath));
+    note(`Manifest SHA-256: ${deployment.sha256} (Pi ${deployment.piVersion})`);
     note(`Installed SHA-256 before: ${JSON.stringify(before)}`);
     const guild = inputPath(args[2] ?? fileURLToPath(new URL('..', import.meta.url)), 'directory');
     const checkout = fileURLToPath(new URL('..', import.meta.url));
@@ -177,7 +184,7 @@ export async function main(args: string[]) {
     for (const entry of ['package.json', 'extensions', 'themes']) copy(path.join(plan, entry), path.join(sandbox, 'pithos.plan', entry));
     for (const entry of readdirSync(fixtures).filter(name => name.startsWith('continuation-runtime-probe-'))) copy(path.join(fixtures, entry), path.join(sandbox, 'pithos.guild/test/fixtures', entry));
     note('Dependencies read-only by convention; not an OS sandbox. Plan and fixture code from checkout; Guild source/assets from explicit package input.');
-    childResult = await runTests(sandbox, realpathSync(process.execPath));
+    childResult = await runTests(sandbox, realpathSync(process.execPath), deployment.piVersion);
     process.stdout.write(childResult.stdout);
     process.stderr.write(childResult.stderr);
     note(`Child exit: code=${childResult.code} signal=${childResult.signal ?? 'none'}`);
@@ -190,7 +197,7 @@ export async function main(args: string[]) {
     const expected = ['questions-one-batch', 'terminals-after-cleanup', 'notice-not-collection', 'foreign-delivery', 'accepted-escape', 'preparing-escape', 'committed-message-start', 'committed-message-end', 'started-escape-capacity', 'required-plan-guild-first', 'required-plan-plan-first', 'tree-held-wake', 'reload-held-wake', 'shutdown-held-wake', 'fresh-input-only', 'nonjoining-close'];
     assert.deepEqual(records.filter(record => record.phase === 'case').map(record => [record.case, record.status]), expected.map(name => [name, 'passed']));
     assert.deepEqual(records.at(-1), {phase: 'summary', passed: 16, total: 16, failed: 0, qualified: true, manifestTotal: 16});
-    const idle = await runTests(sandbox, realpathSync(process.execPath), 'continuation-runtime-probe-idle-worker.mjs');
+    const idle = await runTests(sandbox, realpathSync(process.execPath), deployment.piVersion, 'continuation-runtime-probe-idle-worker.mjs');
     process.stdout.write(idle.stdout);
     process.stderr.write(idle.stderr);
     note(`Idle child exit: code=${idle.code} signal=${idle.signal ?? 'none'}`);
@@ -201,7 +208,7 @@ export async function main(args: string[]) {
     assert(idle.stdout.toString('utf8').endsWith('\n'));
     assert.deepEqual(JSON.parse(idle.stdout.toString('utf8').trimEnd().split('\n').at(-1)!),
       {phase: 'idle-question', status: 'passed', notices: 1, autoResponses: 1, exactReply: true, pollingTools: 0, nativeSettledBeforeRelease: true});
-    const writer = await runTests(sandbox, realpathSync(process.execPath), 'continuation-runtime-probe-writer-worker.mjs');
+    const writer = await runTests(sandbox, realpathSync(process.execPath), deployment.piVersion, 'continuation-runtime-probe-writer-worker.mjs');
     process.stdout.write(writer.stdout);
     process.stderr.write(writer.stderr);
     note(`Writer child exit: code=${writer.code} signal=${writer.signal ?? 'none'}`);

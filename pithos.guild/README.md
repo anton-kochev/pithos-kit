@@ -26,7 +26,7 @@ The blocking path requires Pi **1.0.0 or newer**, unchanged. Installing Guild al
 
 ### Background support in Pithos
 
-Pithos builds that ship the Guild runtime overlay for **Pi 1.5.0** apply it during the container image build and select the patched Node runtime at startup. On that supported setup, no manual runtime activation or Guild enable flag is needed after a restart or container recreation. The build checks the exact installed files before applying its overlay; an unsupported version or mismatched installation stays on stock Pi. The launcher reports a refused patch. Do not assume that selecting a newer Pi version also supplies background support.
+Pithos builds that ship the Guild runtime overlay for **Pi 1.5.0** and **Pi 1.5.2** apply it during the container image build and select the patched Node runtime at startup. On that supported setup, no manual runtime activation or Guild enable flag is needed after a restart or container recreation. The build checks the exact installed files before applying its overlay; an unsupported version or mismatched installation stays on stock Pi. The launcher reports a refused patch. Do not assume that selecting a newer Pi version also supplies background support.
 
 Guild still checks the live capabilities and Plan state. By default, background admission requires a compatible inactive Plan extension; an intentionally Plan-free setup must explicitly assert `PITHOS_GUILD_PLAN_MODE=standalone`. These checks are not bypassed by Pithos startup. Existing blocking handovers remain available without the background capabilities.
 
@@ -472,11 +472,11 @@ Alternatively, set `PI_RPC_PROBE_CLI` to that CLI path. There is no default runt
 
 ### Background qualification and shared scheduling
 
-#### Deployed Pi 1.5.0 release checks
+#### Deployed Pi 1.5.x release checks
 
-`test:deployed-runtime` checks the exact Pithos-shipped Pi 1.5.0 deployment manifest and installed output hashes before copying the runtime into an isolated test directory. It runs the existing **16 connected cases**, a separate idle-parent question test, and a writer/new-request acceptance test. The idle test releases a child question only after the native parent turn has settled, then requires one automatic notice and response **without `guild_wait` or `guild_status` polling**, followed by an exact reply to the same child.
+`test:deployed-runtime` checks an exact reviewed Pithos-shipped deployment manifest (Pi **1.5.0** or **1.5.2**) and installed output hashes before copying the runtime into an isolated test directory. It runs the existing **16 connected cases**, a separate idle-parent question test, and a writer/new-request acceptance test. The idle test releases a child question only after the native parent turn has settled, then requires one automatic notice and response **without `guild_wait` or `guild_status` polling**, followed by an exact reply to the same child.
 
-The writer test runs the native interactive input loop with terminal I/O doubled. A held `writer/general` run survives parent settlement and a second user request submitted through the editor; that request is answered before the child is released. Completion must then cause one automatic notice/response, followed by validated writer-report collection and at-most-once usage credit. The child is an in-process scripted runner, not a live model or a written artifact. This test does not establish provider instruction-following or a Pi 1.5.2 host port.
+The writer test runs the native interactive input loop with terminal I/O doubled. A held `writer/general` run survives parent settlement and a second user request submitted through the editor; that request is answered before the child is released. Completion must then cause one automatic notice/response, followed by validated writer-report collection and at-most-once usage credit. The child is an in-process scripted runner, not a live model or a written artifact. This test does not establish provider instruction-following.
 
 To check the actual npm package rather than checkout source, run from the repository's `pithos.guild` directory inside the Pithos container:
 
@@ -486,15 +486,17 @@ npm pack --pack-destination "$packdir"
 tar -xzf "$packdir"/pithos-kit-guild-*.tgz -C "$packdir"
 PATH=/usr/bin:/bin:"$PATH" npm run test:deployed-runtime -- \
   /opt/pi-npm/lib/node_modules/@earendil-works/pi-coding-agent \
-  /opt/pi-guild-runtime/versions/1.5.0/manifest.json \
+  /opt/pi-guild-runtime/versions/"$(node -p "require('/opt/pi-npm/lib/node_modules/@earendil-works/pi-coding-agent/package.json').version")"/manifest.json \
   "$packdir/package"
 ```
 
-The packed Guild version must match the checkout running the probe. The host manifest is separately pinned: arbitrary manifests and changed installed outputs are rejected, not accepted by version number alone. The runtime and Guild source/assets come from the selected inputs; Plan and test fixtures come from the checkout. These checks use the real SDK/InteractiveMode, terminal I/O doubles, local scripted responses, and in-process child runners. They do not replace actual-child transport checks or certify a physical terminal, every provider, or future Pi versions. The launcher checks its protected installed hashes again and removes its temporary runtime after the workers close. Dependencies are read-only by convention, not an OS sandbox.
+The packed Guild version must match the checkout running the probe. The host manifest is separately pinned: `reviewedDeployments` in the probe and `deploymentProofs` in the continuation harness list each reviewed manifest SHA-256, and the opt-in tests pick `test/fixtures/deployed-runtime-manifest-<version>.json` from the installed version. Arbitrary manifests and changed installed outputs are rejected, not accepted by version number alone. A new Pi version needs a new reviewed entry in all three places. The runtime and Guild source/assets come from the selected inputs; Plan and test fixtures come from the checkout. These checks use the real SDK/InteractiveMode, terminal I/O doubles, local scripted responses, and in-process child runners. They do not replace actual-child transport checks or certify a physical terminal, every provider, or future Pi versions. The launcher checks its protected installed hashes again and removes its temporary runtime after the workers close. Dependencies are read-only by convention, not an OS sandbox.
 
 Ordinary `npm test` runs the portable manifest and release-version checks. The installed-file mutation and packed-runtime integration tests are opt-in through `GUILD_DEPLOYED_TEST_ROOT` and `GUILD_DEPLOYED_TEST_PACKAGE`; their default skips are not evidence of deployment qualification. Require a successful exit from the explicit deployed command, including the separate idle and writer/new-request tests.
 
 The current release check passed on the launcher's **Node 24.22.2**: all **16 connected cases**, the separate idle-question case, and all **4 validation tests with deployment checks enabled** against a real **70-file npm package**. The default Guild suite reported **921 passed and 2 opt-in skips**, with those deployment checks run separately; typecheck, Plan **391**, Atlas **127** plus typecheck, and root **3** also passed. Local evidence is in `/tmp/guild-release-15-parent-*.log`; temporary logs are not published attestations.
+
+The Pi 1.5.2 port passed the same opt-in checks on **Node 24.20.0** in a Pithos project image, against a packed Guild package: all **5 deployment tests** (16 connected cases, idle question, writer/new request, installed mutations) for both 1.5.2 and 1.5.0, with the default suite at **956 passed and 2 opt-in skips** and typecheck clean.
 
 #### Original Pi 1.4.0 evidence
 
@@ -544,7 +546,7 @@ Offline vertical tests enter this facade and launch actual scripted subprocesses
 
 Live registration now uses this composition under one authority: both blocking entry paths delegate through its generic exclusive facade without background projection. Registration captures the Pi events object and a frozen one-field parent `PITHOS_GUILD_PLAN_MODE` snapshot, not a session, branch, model, trust decision, UI, or working directory. The narrow synchronous emit adapter preserves the events receiver. Construction, activation, and shutdown do not discover Plan, attach participants, subscribe to the bus, or launch a background child. Blocking admission now performs Plan discovery with the stable runtime participant, rechecks inactive persisted state, provider readiness, reentry, and owner identity, then reserves synchronously. See the combined installed Guild–Plan probe below for the connected behavior and remaining limitations.
 
-The current registration adds conditional background tools, manual controls, dashboard observation and collection accounting. Same-session native tree retirement/rearm is connected below. Background exposure requires the qualified host capabilities; the Pithos Pi 1.5.0 integration supplies them, while installing Guild alone does not. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Qualification remains capability-specific; automatic continuation additionally requires the optional live-qualified context capability.
+The current registration adds conditional background tools, manual controls, dashboard observation and collection accounting. Same-session native tree retirement/rearm is connected below. Background exposure requires the qualified host capabilities; the Pithos Pi 1.5.0 and 1.5.2 integrations supply them, while installing Guild alone does not. Source inspection of installed Pi 1.4.0's event bus supports synchronous on-stack delivery; its swallowed-handler-error limitation remains. The 0.99 development harness and these checks do not certify Pi >=1.0 compatibility. Qualification remains capability-specific; automatic continuation additionally requires the optional live-qualified context capability.
 
 ### Connected native tree retirement and fresh-intent rearm
 
