@@ -13,6 +13,7 @@ import { registerAtlasFooter } from "./footer.ts";
 import { parsePithosConfig, type ManagedPithosState } from "./pithos-config.ts";
 import { isOfflineEnvironment, RegistryClient } from "./registry.ts";
 import { observeRuntime, type ObservedRuntimePackage } from "./runtime.ts";
+import { diagnoseInputOrder, type InputOrderDiagnostic } from "./input-order.ts";
 import { registerSessionNaming } from "./session-name.ts";
 import { planModeState } from "./safety.ts";
 import { runConfigWizard } from "./ui.ts";
@@ -259,7 +260,7 @@ function formatDoctorFailure(error: unknown, timing: DoctorTimingSnapshot): stri
 	return `${doctorErrorMessage(error)}\n${formatDoctorTiming("Doctor timing", timing)}`;
 }
 
-function formatDoctor(report: DiagnosticsReport, warnings: string[], timing: DoctorTimingSnapshot): string {
+function formatDoctor(report: DiagnosticsReport & { inputOrder: InputOrderDiagnostic }, warnings: string[], timing: DoctorTimingSnapshot): string {
 	const lines = [
 		`Pi active: ${report.activePiVersion}`,
 		`Pi configured for rebuild: ${report.configuredPiVersion ?? "not set"}`,
@@ -274,6 +275,7 @@ function formatDoctor(report: DiagnosticsReport, warnings: string[], timing: Doc
 			pkg.compatibleWithConfiguredPi === false ? "CONFIGURED PI INCOMPATIBLE" : undefined,
 		].filter(Boolean).join("  ")),
 	];
+	lines.push(report.inputOrder.message);
 	lines.push(formatDoctorTiming("Doctor timing", timing));
 	if (warnings.length > 0) lines.push(`Registry warnings: ${warnings.join("; ")}`);
 	return bounded(lines.join("\n"));
@@ -367,14 +369,14 @@ export function registerAtlas(pi: ExtensionAPI, dependencies: AtlasDependencies 
 			timing.measure("runtime", runtime),
 		]);
 		return {
-			report: buildDiagnostics({
+			report: { ...buildDiagnostics({
 				activePiVersion,
 				configuredPiVersion: config.state.piVersion,
 				bundled: catalog.packages,
 				publishedVersions: registryState.publishedVersions,
 				configuredPackages: config.state.packages,
 				runtimePackages,
-			}),
+			}), inputOrder: diagnoseInputOrder(pi.getCommands()) },
 			warnings: registryState.warnings,
 			timing: timing.snapshot(),
 		};

@@ -169,6 +169,8 @@ describe("Atlas extension", () => {
 			} as never);
 
 			assert.match(result.content[0].text, /Doctor timing: total=\d+ms; config=\d+ms; registry=\d+ms; runtime=\d+ms/);
+			assert.match(result.content[0].text, /Input order: both Squiggle and Translate were not detected/);
+			assert.equal(result.details.report.inputOrder.status, "not-applicable");
 			assert.equal(result.content[0].text.length < 40_000, true);
 		} finally {
 			if (previousOffline === undefined) delete process.env.PI_OFFLINE;

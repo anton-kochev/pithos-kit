@@ -71,6 +71,14 @@ Atlas also provides the model-facing `rename_session` tool. Its tool guidance li
 - `patch footer status` inspects the optional built-in-file fallback without changing it.
 - `patch footer apply` explicitly confirms and installs that fallback; `remove` reverses it. Both require a Pi restart. Normal Atlas TUI sessions do not need the patch.
 
+### Squiggle / Translate input order
+
+Doctor also checks that loaded Squiggle precedes Translate, so correction can run before translation when both are enabled. This is read-only and appears in both `/pithos doctor` and `pithos_info` doctor output (including structured `report.inputOrder`). If either package's command is absent, no ordering warning is issued. Runtime toggle state is not exposed by Pi; a reversed-order warning is conditional on enabling both packages, not a claim that both currently process input.
+
+The check infers input-handler order from unsorted extension command provenance, **not** Atlas's alphabetized package inventory or `.pithos` future-build pins. It has no Pi version gate. In the inspected Pi implementations, command enumeration and input handlers follow extension load order. The public documentation guarantees only extension/template/skill grouping, so this remains an inference from observed command order, not proof of handler execution order. Duplicate commands or unrecognized ownership report uncertainty. Recognized provenance includes npm package sources and conventional absolute/relative `pithos.squiggle` / `pithos.translate` local package directories; renamed local directories and direct/auto-discovered files may remain unknown.
+
+For reversed order, inspect `pi list` and effective global/project `.pi/settings.json` package and extension entries, CLI `-e` sources, and auto-discovered extensions. Put Squiggle before Translate in the effective load order, restart Pi, and rerun Doctor. Atlas does not reorder, install, enable, or modify anything.
+
 ## Runtime footer (default)
 
 On every TUI `session_start`, Atlas installs a custom fallback footer at runtime. It renders the current cwd, Git branch, session name, provider, model, reasoning level, and every extension status on bounded lines. It reads session and footer data during each render and subscribes to Git branch changes, so branch, name, model, reasoning, and status changes are reflected without restarting Pi.
