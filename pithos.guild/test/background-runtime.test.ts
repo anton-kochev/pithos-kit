@@ -12,6 +12,7 @@ import { BackgroundRunRegistry } from "../src/background-runs.ts";
 import { GuildExecutionAuthority } from "../src/execution-authority.ts";
 import { createGuildBackgroundAdmission } from "../src/background-admission.ts";
 import { dirname } from "node:path";
+import { LiveTranscriptStore } from "../src/live-transcript.ts";
 
 const fixture = fileURLToPath(new URL("./fixtures/background-child.mjs", import.meta.url));
 const seam = { invocation: (args: string[]) => ({ command: process.execPath, args: [fixture, ...args] }), limits: { command: 2000, handshake: 3000, run: 8000, question: 4000, eof: 1000, term: 500, kill: 1000 } };
@@ -1145,4 +1146,36 @@ test("runtime forwards the stable Plan prehold callback without retiring its exe
  assert.equal(runtime.planParticipant, participant);
  assert.equal(await runtime.runExclusive(expected as never, () => 17), 17);
  await runtime.shutdown();
+});
+
+
+test("oversized terminal tool events retire running transcript calls through bounded immutable observations", async () => {
+ const finish = deferred(); let options!: RunBackgroundGuildRoleOptions;
+ const store = new LiveTranscriptStore(); const observed: any[] = [];
+ const runtime = createGuildBackgroundRuntime({ bus: silent, parentEnvironment: standalone,
+  runner: async value => { options = value; await finish.promise; throw Error("fixture finished"); },
+  onEvent(metadata, event) { observed.push(event); store.ingest(metadata.runId, event); },
+ });
+ const owner = runtime.activate();
+ try {
+  const run = runtime.start(owner, input, context());
+  await new Promise(resolve => setImmediate(resolve));
+  store.start({id: run.id, role: "coder", profile: "typescript", task: "Work", phase: "running", startedAt: 0});
+  for (const type of ["tool_execution_end", "message_end"]) for (const isError of [false, true]) {
+   const id = `${type}-${isError}`;
+   options.onEvent!({type: "tool_execution_start", toolCallId: id, toolName: "read", args: {path: "README.md"}});
+   assert.equal(store.get(run.id)!.entries.at(-1)!.status, "running");
+   const result = {content: [{type: "text", text: "\x1b]52;c;SECRET\x07" + "x".repeat(70 * 1024)}]};
+   const event = type === "tool_execution_end" ? {type, toolCallId: id, toolName: "read", isError, result}
+    : {type, message: {role: "toolResult", toolCallId: id, toolName: "read", isError, ...result}};
+   options.onEvent!(event);
+   assert.equal(store.get(run.id)!.entries.at(-1)!.status, isError ? "failed" : "completed");
+   const projected = observed.at(-1);
+   assert.ok(Buffer.byteLength(JSON.stringify(projected)) <= 64 * 1024);
+   assert.ok(Object.isFrozen(projected));
+   result.content[0].text = "mutated";
+   assert.doesNotMatch(JSON.stringify(projected), /SECRET|mutated|x{100}/);
+   assert.match(store.get(run.id)!.entries.at(-1)!.content, /omitted/);
+  }
+ } finally { finish.resolve(); await runtime.shutdown(); store.dispose(); }
 });

@@ -1,5 +1,6 @@
 import type { ConcurrentRunQueueOptions } from "./concurrent-run-queue.ts";
 import { randomUUID } from "node:crypto";
+import { types } from "node:util";
 import { createGuildBackgroundAdmission, readPersistedPlanState, type BackgroundAdmissionContext } from "./background-admission.ts";
 import { BackgroundRunRegistry, copyResult, type BackgroundSnapshot, type BackgroundLifecycleChange, type BackgroundLimits } from "./background-runs.ts";
 import { GuildExecutionAuthority, type GuildOwner } from "./execution-authority.ts";
@@ -49,6 +50,55 @@ function summarize(update: Parameters<NonNullable<RunBackgroundGuildRoleOptions[
   if (typeof update[key] === "string") strings[key] = preview(update[key]);
  }
  return Object.freeze({ ...strings, usage: Object.freeze(usage) });
+}
+
+class EventObservationLimit extends Error {}
+
+function observationEvent(event: GuildParsedEvent): GuildParsedEvent {
+ const cap = 64 * 1024;
+ let remaining = cap, nodes = 4096;
+ const seen = new Set<object>();
+ const charge = (bytes: number) => { if ((remaining -= bytes) < 0) throw new EventObservationLimit(); };
+ // Bound traversal and serialization before copyResult; never stringify an oversized payload.
+ const measure = (value: unknown, depth = 0): void => {
+  if (--nodes < 0 || depth > 32) throw new EventObservationLimit();
+  if (typeof value === "string") {
+   if (value.length > remaining) throw new EventObservationLimit();
+   charge(Buffer.byteLength(JSON.stringify(value))); return;
+  }
+  if (value === null || typeof value === "boolean" || typeof value === "number") { charge(32); return; }
+  if (!value || typeof value !== "object" || types.isProxy(value)) throw new Error("Invalid event observation.");
+  if (seen.has(value)) throw new Error("Repeated event object.");
+  seen.add(value);
+  const array = Array.isArray(value);
+  const prototype = Object.getPrototypeOf(value);
+  if (array ? prototype !== Array.prototype : prototype !== Object.prototype && prototype !== null) throw new Error("Invalid event prototype.");
+  if (array && value.length > nodes) throw new EventObservationLimit();
+  charge(2);
+  for (const key in value) {
+   const descriptor = Object.getOwnPropertyDescriptor(value, key);
+   if (!descriptor || !("value" in descriptor)) throw new Error("Invalid event property.");
+   measure(key, depth + 1); charge(2); measure(descriptor.value, depth + 1);
+  }
+ };
+ try {
+  measure(event);
+  return copyResult(event, cap) as GuildParsedEvent;
+ } catch (error) {
+  if (!(error instanceof EventObservationLimit)) throw error;
+  // Dropping a large terminal event would leave its delivered start running forever.
+  // Project only lifecycle scalars; output/arguments remain omitted, not retained aliases.
+  const field = (object: unknown, key: string): unknown => object && typeof object === "object" && !types.isProxy(object)
+   ? Object.getOwnPropertyDescriptor(object, key)?.value : undefined;
+  const type = field(event, "type");
+  const message = type === "message_end" ? field(event, "message") : undefined;
+  const source = type === "tool_execution_end" ? event : field(message, "role") === "toolResult" ? message : undefined;
+  const toolCallId = field(source, "toolCallId"), toolName = field(source, "toolName");
+  if (typeof toolCallId !== "string" || !toolCallId || toolCallId.length > 256 || Buffer.byteLength(toolCallId) > 256 || /[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(toolCallId)) throw error;
+  const name = typeof toolName === "string" && toolName.length <= 128 && !/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/.test(toolName) ? toolName : undefined;
+  return copyResult({type: "tool_execution_end", toolCallId, ...(name ? {toolName: name} : {}), isError: field(source, "isError") === true,
+   result: {content: [{type: "text", text: "[tool output omitted: observation limit]"}]}}, cap) as GuildParsedEvent;
+ }
 }
 
 /** Non-owning UI state; intermediate changes may coalesce, never a transcript or report. */
@@ -194,7 +244,7 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
      return request.ask(text, questionSignal);
     },
     onEvent: event => {
-     observe(() => onEvent?.(binding.metadata, copyResult(event, 64 * 1024) as GuildParsedEvent));
+     observe(() => onEvent?.(binding.metadata, observationEvent(event)));
      observe(() => binding.onEvent?.(event));
     },
     onUpdate: update => {

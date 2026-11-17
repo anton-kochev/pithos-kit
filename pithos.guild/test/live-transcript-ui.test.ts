@@ -254,7 +254,7 @@ it("uses semantic activity colors and readable task labels with real ANSI themes
   store.ingest("a", {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", id: "pending", name: "read", arguments: {path: "later"}}]}});
   const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 26}}, realTheme, keys, () => {}, "a", true);
   const output = ui.render(108).join("\n");
-  for (const [color, label] of [["success", "✓ Read done"], ["error", "✗ Read failed: bad"], ["warning", "→ Reading busy"], ["muted", "○ Requested: Read later"], ["warning", "Current: → Reading busy"]] as const) {
+  for (const [color, label] of [["success", "✓ Read done."], ["error", "✗ Failed to read bad."], ["warning", "→ Reading busy."], ["muted", "○ Requested: Read later."]] as const) {
    assert.ok(output.includes(realTheme.fg(color, label)), `${name}/${mode}: ${color} ${label}`);
   }
   assert.ok(output.includes(realTheme.fg("accent", "Task · ") + realTheme.fg("text", "Task a")));
@@ -263,5 +263,65 @@ it("uses semantic activity colors and readable task labels with real ANSI themes
   store.updatePhase("a", "queued");
   assert.ok(ui.render(108).join("\n").includes(realTheme.fg("muted", "○ Queued; no child execution yet")));
   ui.dispose();
+ }
+});
+
+for (const rows of [20, 6]) it(`pages contiguous numbered history in both directions with pinned work at ${rows} rows`, () => {
+ const store = new LiveTranscriptStore(); start(store, "a"); store.updatePhase("a", "running");
+ for (let i = 0; i < 80; i++) append(store, `history-${i}`);
+ for (const id of ["one", "two", "three"]) store.ingest("a", {type: "tool_execution_start", toolCallId: id, toolName: "read", args: {path: id}});
+ const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows}}, theme, keys, () => {}, "a", true);
+ const history = () => [...ui.render(100).join("\n").matchAll(/Assistant: history-(\d+)/g)].map(match => Number(match[1]));
+ try {
+  ui.render(100); ui.handleInput("\x1b[H");
+  const first = history(); assert.equal(first[0], 0); assert.ok(first.length > 0);
+  const pages = [first];
+  for (let i = 0; i < 3; i++) {
+   ui.handleInput("tui.select.pageDown"); const next = history();
+   assert.equal(next[0], pages.at(-1)!.at(-1)! + 1, "PageDown must not skip history");
+   pages.push(next);
+  }
+  for (let i = pages.length - 2; i >= 0; i--) {
+   ui.handleInput("tui.select.pageUp"); assert.deepEqual(history(), pages[i], "PageUp must restore the preceding page");
+  }
+ } finally { ui.dispose(); store.dispose(); }
+});
+
+it("identifies opaque shell commands throughout their lifecycle with bounded safe previews and raw recovery", () => {
+ const store = new LiveTranscriptStore(); start(store, "a"); store.updatePhase("a", "running");
+ const command = "custom-check\n--flag\t" + "x".repeat(100) + " RAW_TAIL\x1b]52;c;SECRET\x07";
+ const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 26}}, theme, keys, () => {}, "a", true);
+ try {
+  store.ingest("a", {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", id: "cmd", name: "bash", arguments: {command}}]}});
+  assert.match(ui.render(108).join("\n"), /Requested: Run shell command: custom-check --flag/);
+  store.ingest("a", {type: "tool_execution_start", toolCallId: "cmd", toolName: "bash", args: {command}});
+  assert.match(ui.render(108).join("\n"), /Running shell command: custom-check --flag/);
+  store.ingest("a", {type: "tool_execution_end", toolCallId: "cmd", isError: true, result: {content: []}});
+  assert.match(ui.render(108).join("\n"), /Failed to run shell command: custom-check --flag/);
+  store.ingest("a", {type: "tool_execution_start", toolCallId: "ok", toolName: "bash", args: {command}});
+  store.ingest("a", {type: "tool_execution_end", toolCallId: "ok", result: {content: []}});
+  const activity = ui.render(108).join("\n");
+  assert.match(activity, /Finished shell command: custom-check --flag/);
+  assert.match(activity, /…/); assert.doesNotMatch(activity, /RAW_TAIL|SECRET|tests passed|\x1b\]/);
+  ui.handleInput("\t"); ui.handleInput("\x1b[H");
+  assert.match(ui.render(108).join("\n"), /RAW_TAIL/);
+ } finally { ui.dispose(); store.dispose(); }
+});
+
+it("distinguishes read sections by valid offset and limit without inventing an end line", () => {
+ for (const [range, label] of [
+  [{offset: 10, limit: 20}, "lines 10–29"],
+  [{limit: 5}, "lines 1–5"],
+  [{offset: 30}, "from line 30"],
+  [{offset: 0, limit: -1}, undefined],
+ ] as const) {
+  const store = new LiveTranscriptStore(); start(store, "a"); store.updatePhase("a", "running");
+  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 20}}, theme, keys, () => {}, "a", true);
+  try {
+   store.ingest("a", {type: "tool_execution_start", toolCallId: "read", toolName: "read", args: {path: "README.md", ...range}});
+   assert.ok(ui.render(108).join("\n").includes(`Reading README.md${label ? ` (${label})` : ""}.`));
+   store.ingest("a", {type: "tool_execution_end", toolCallId: "read", result: {content: []}});
+   assert.ok(ui.render(108).join("\n").includes(`Read README.md${label ? ` (${label})` : ""}.`));
+  } finally { ui.dispose(); store.dispose(); }
  }
 });

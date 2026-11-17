@@ -63,14 +63,14 @@ it("shows chronological observed actions, separates requested tools, and toggles
  store.ingest("full-private-id", {type: "tool_execution_end", toolCallId: "r", result: {content: [{type: "text", text: "secret raw output"}]}});
  store.ingest("full-private-id", {type: "tool_execution_start", toolCallId: "b", toolName: "bash", args: {command: "npm test"}});
  let text = ui.render(100).join("\n");
- assert.match(text, /✓ Read src\/a.ts[\s\S]*→ Running npm test/);
+ assert.match(text, /✓ Read src\/a.ts[\s\S]*→ Running tests\./);
  assert.doesNotMatch(text, /secret raw output|"path"|full-private-id/);
  ui.handleInput("\t"); ui.handleInput("\x1b[H");
  text = ui.render(100).join("\n");
  assert.match(text, /full-private-id/); assert.match(text, /secret raw output/); assert.match(text, /"path"/);
  ui.handleInput("\t");
  store.ingest("full-private-id", {type: "tool_execution_end", toolCallId: "b", isError: true, result: {content: []}});
- assert.match(ui.render(100).join("\n"), /✗ Command failed: npm test/);
+ assert.match(ui.render(100).join("\n"), /✗ Failed to run tests\./);
  assert.doesNotMatch(ui.render(100).join("\n"), /tests passed|✓.*npm test/);
  ui.dispose();
 });
@@ -89,12 +89,12 @@ it("keeps one task sentence in expanded panels, falls back on tiny screens, and 
  assert.match(panel.render(100).join("\n"), /Verify display\./);
  panel.dispose();
 });
-it("renders unknown tools literally with malformed arguments and advertises details at normal widths", () => {
+it("renders unknown tools generically with malformed arguments and advertises details at normal widths", () => {
  const store = new LiveTranscriptStore();
  store.start({id: "a", role: "coder", profile: "typescript", task: "Task", phase: "running", startedAt: 0});
  store.ingest("a", {type: "tool_execution_start", toolCallId: "odd", toolName: "constructor", args: "not json"});
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 24}}, {fg: (_: string, s: string) => s} as any, {matches: (a: string, b: string) => a === b}, () => {}, "a", true);
- assert.match(ui.render(80).join("\n"), /→ constructor/);
+ assert.match(ui.render(80).join("\n"), /→ Using a tool\./);
  assert.match(ui.render(80).at(-1)!, /Tab details/);
  ui.dispose();
 });
@@ -141,24 +141,24 @@ it("keeps the first executing call visible at the live tail of a normal-height i
  capture("\x1b[A"); capture("\x1b[C");
  try {
   const lines = panel.render(100).map(stripTerminalSequences);
-  assert.match(lines.join("\n"), /Current: → Reading file-0.ts/);
+  assert.match(lines.join("\n"), /→ Reading file-0.ts/);
   assert.match(lines.join("\n"), /Requested: Read file-29.ts/);
   assert.ok(lines.length <= 16); assert.ok(lines.every(line => visibleWidth(line) <= 100));
   capture("\x1b[H");
   const paused = panel.render(100).map(stripTerminalSequences).join("\n");
-  assert.match(paused, /Reading file-0.ts[\s\S]*Requested: Read file-1.ts/);
+  assert.match(paused, /Requested: Read file-1.ts[\s\S]*Reading file-0.ts/);
   store.ingest("a", {type: "tool_execution_end", toolCallId: "call-29", result: {content: []}});
   assert.equal(panel.render(100).map(stripTerminalSequences).join("\n"), paused);
   capture("\x1b[F");
-  assert.match(panel.render(100).join("\n"), /Current: → Reading file-0.ts/);
+  assert.match(panel.render(100).join("\n"), /→ Reading file-0.ts/);
  } finally { panel.dispose(); store.dispose(); }
 });
 
-it("summarizes early parallel execution after later calls complete without expanding the live tail", () => {
+it("groups early parallel execution after later calls complete without expanding the live tail", () => {
  const store = new LiveTranscriptStore();
  store.start({id: "a", role: "coder", profile: "typescript", task: "Work", phase: "running", startedAt: 0});
  for (let i = 0; i < 30; i++) {
-  store.ingest("a", {type: "tool_execution_start", toolCallId: `call-${i}`, toolName: "bash", args: {command: i === 0 ? "npm test\n\x1b[31m" + "界".repeat(100) : `command-${i}`}});
+  store.ingest("a", {type: "tool_execution_start", toolCallId: `call-${i}`, toolName: "bash", args: {command: i === 0 ? "npm test" : i === 1 ? "opaque\n\x1b[31m" + "界".repeat(100) : `command-${i}`}});
   if (i > 1) store.ingest("a", {type: "tool_execution_end", toolCallId: `call-${i}`, result: {content: [{type: "text", text: "raw result"}]}});
  }
  let capture: any;
@@ -167,13 +167,15 @@ it("summarizes early parallel execution after later calls complete without expan
  capture("\x1b[A"); capture("\x1b[C");
  try {
   const lines = panel.render(80).map(stripTerminalSequences);
-  assert.match(lines.join("\n"), /Current \(2 executing\): → Running npm test/);
-  assert.match(lines.join("\n"), /Command finished: command-29/);
-  assert.equal(lines.filter(line => line.includes("Current")).length, 1);
+  assert.match(lines.join("\n"), /→ Running tests\./);
+  assert.match(lines.join("\n"), /Finished shell command: command-/);
+  assert.equal(lines.filter(line => line.includes("Running tests.")).length, 1);
+  assert.equal(lines.filter(line => line.includes("Running shell command: opaque")).length, 1);
+  assert.doesNotMatch(lines.join("\n"), /Current/);
   assert.ok(lines.length <= 16); assert.ok(lines.every(line => visibleWidth(line) <= 80));
   assert.doesNotMatch(lines.join("\n"), /\x1b|raw result|tests passed/);
   store.ingest("a", {type: "tool_execution_end", toolCallId: "call-1", result: {content: []}});
-  assert.match(panel.render(80).join("\n"), /Current: → Running npm test/);
+  assert.match(panel.render(80).join("\n"), /→ Running tests\./);
   capture("\t");
   assert.match(panel.render(80).join("\n"), /raw result/);
   assert.doesNotMatch(panel.render(80).join("\n"), /Current/);
@@ -181,4 +183,93 @@ it("summarizes early parallel execution after later calls complete without expan
   assert.doesNotMatch(panel.render(80).join("\n"), /Current|→ Running/);
   assert.match(panel.render(80).join("\n"), /Run cancelled/);
  } finally { panel.dispose(); store.dispose(); }
+});
+
+// Description test list: common shell work; file actions; opaque/conditional commands;
+// lifecycle wording and raw recovery (existing navigation/geometry tests remain in place).
+it("describes compound inspection completion without claiming early failed subcommands succeeded", () => {
+ const store = new LiveTranscriptStore();
+ store.start({id: "descriptions", role: "coder", profile: "typescript", task: "Work", phase: "running", startedAt: 0});
+ const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 40}}, {fg: (_: string, s: string) => s} as any, {matches: (a: string, b: string) => a === b}, () => {}, "descriptions", true);
+ const command = "cat AGENTS.md; git status --short; cat package.json";
+ store.ingest("descriptions", {type: "tool_execution_start", toolCallId: "inspect", toolName: "bash", args: {command}});
+ assert.match(ui.render(160).join("\n"), /Inspecting repository instructions, the working tree, and package metadata\./);
+ // A semicolon list exits successfully when the final cat succeeds, even if earlier commands fail.
+ store.ingest("descriptions", {type: "tool_execution_end", toolCallId: "inspect", isError: false, result: {content: [{type: "text", text: 'cat: AGENTS.md: No such file or directory\nfatal: not a git repository\n{"name":"fixture"}'}]}});
+ assert.match(ui.render(160).join("\n"), /Finished inspection commands\./);
+ assert.doesNotMatch(ui.render(160).join("\n"), /Inspected repository instructions|Inspected the working tree/);
+ assert.doesNotMatch(ui.render(160).join("\n"), /cat AGENTS|git status|Command finished/);
+ ui.handleInput("\t");
+ assert.ok(ui.render(160).join("\n").includes(command));
+ ui.dispose(); store.dispose();
+});
+
+it("uses bounded honest descriptions for file work, checks, and opaque commands", () => {
+ const cases: [string, unknown, string, string][] = [
+  ["read", {path: "test/display-plan.test.ts"}, "Reading tests in test/display-plan.test.ts.", "Read tests in test/display-plan.test.ts."],
+  ["edit", {path: "src/live-transcript-ui.ts"}, "Updating src/live-transcript-ui.ts.", "Updated src/live-transcript-ui.ts."],
+  ["write", {path: "test/colors.test.ts"}, "Writing tests in test/colors.test.ts.", "Wrote tests in test/colors.test.ts."],
+  ["grep", {pattern: "height", path: "test"}, "Searching file contents in test.", "Searched file contents in test."],
+  ["bash", {command: "npm test"}, "Running tests.", "Finished running tests."],
+  ["bash", {command: "npm run typecheck"}, "Running the type check.", "Finished running the type check."],
+  ["git_read", {subcommand: "status"}, "Checking the working tree.", "Checked the working tree."],
+  ["git_read", {subcommand: "log"}, "Inspecting commit history.", "Inspected commit history."],
+  ["bash", {command: "ls -la"}, "Listing files.", "Listed files."],
+  ["bash", {command: "cat " + "a".repeat(200)}, "Reading " + "a".repeat(79) + "….", "Read " + "a".repeat(79) + "…."],
+  ["bash", {command: "cat README.md"}, "Reading README.md.", "Read README.md."],
+  ["bash", {command: "git log --oneline -5"}, "Inspecting commit history.", "Inspected commit history."],
+  ["bash", {command: "git diff --stat"}, "Inspecting changes.", "Inspected changes."],
+  ["bash", {command: "cat src/panel.ts"}, "Reading src/panel.ts.", "Read src/panel.ts."],
+  ["bash", {command: "custom-secret --token hidden"}, "Running shell command: custom-secret --token hidden", "Finished shell command: custom-secret --token hidden"],
+  ["bash", {command: "false && npm test"}, "Running shell command: false && npm test", "Finished shell command: false && npm test"],
+  ["bash", {command: "echo 'npm test'; cat AGENTS.md"}, "Running shell command: echo 'npm test'; cat AGENTS.md", "Finished shell command: echo 'npm test'; cat AGENTS.md"],
+  ["bash", {command: "cat $(evil)"}, "Running shell command: cat $(evil)", "Finished shell command: cat $(evil)"],
+  ["constructor", "malformed", "Using a tool.", "Finished a tool call."],
+ ];
+ for (const [toolName, args, running, completed] of cases) {
+  const store = new LiveTranscriptStore();
+  store.start({id: "a", role: "coder", profile: "typescript", task: "Work", phase: "running", startedAt: 0});
+  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 40}}, {fg: (_: string, s: string) => s} as any, {matches: (a: string, b: string) => a === b}, () => {}, "a", true);
+  store.ingest("a", {type: "tool_execution_start", toolCallId: "one", toolName, args});
+  assert.ok(ui.render(120).join("\n").includes(`→ ${running}`), running);
+  store.ingest("a", {type: "tool_execution_end", toolCallId: "one", result: {content: [{type: "text", text: "private output"}]}});
+  const text = ui.render(120).join("\n");
+  assert.ok(text.includes(`✓ ${completed}`), completed);
+  assert.doesNotMatch(text, /private output|tests passed/);
+  ui.dispose(); store.dispose();
+ }
+});
+
+it("groups executing actions once below history and moves finished calls into history", () => {
+ const store = new LiveTranscriptStore();
+ store.start({id: "a", role: "coder", profile: "typescript", task: "Work", phase: "running", startedAt: 0});
+ const tui = {requestRender() {}, terminal: {rows: 20}};
+ const ui = createLiveTranscriptInspector(store, tui, {fg: (_: string, s: string) => s} as any, {matches: (a: string, b: string) => a === b}, () => {}, "a", true);
+ for (const id of ["first", "second", "done"]) store.ingest("a", {type: "tool_execution_start", toolCallId: id, toolName: "read", args: {path: id}});
+ store.ingest("a", {type: "tool_execution_end", toolCallId: "done", result: {content: []}});
+ store.ingest("a", {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", id: "pending", name: "read", arguments: {path: "later"}}]}});
+ let text = ui.render(100).map(stripTerminalSequences).join("\n");
+ assert.match(text, /✓ Read done\.[\s\S]*Requested: Read later\.[\s\S]*→ Reading first\.[\s\S]*→ Reading second\./);
+ assert.equal(text.match(/Reading first/g)?.length, 1); assert.equal(text.match(/Reading second/g)?.length, 1);
+ assert.doesNotMatch(text, /Current/);
+ ui.handleInput("\x1b[H");
+ store.ingest("a", {type: "tool_execution_end", toolCallId: "first", result: {content: []}});
+ text = ui.render(100).map(stripTerminalSequences).join("\n");
+ assert.match(text, /✓ Read done/); // Paused history stays anchored, despite insertion before it.
+ assert.doesNotMatch(text, /Reading first/);
+ ui.handleInput("\x1b[F");
+ text = ui.render(100).map(stripTerminalSequences).join("\n");
+ assert.match(text, /✓ Read first\.[\s\S]*✓ Read done\.[\s\S]*→ Reading second\./);
+ for (let i = 0; i < 15; i++) store.ingest("a", {type: "tool_execution_start", toolCallId: `many-${i}`, toolName: "read", args: {path: `many-${i}`}});
+ for (const rows of [4, 6, 10]) {
+  tui.terminal.rows = rows;
+  const lines = ui.render(50).map(stripTerminalSequences);
+  assert.ok(lines.length <= Math.max(2, rows - 2));
+  assert.ok(lines.every(line => visibleWidth(line) <= 50));
+  if (rows >= 6) assert.match(lines.join("\n"), /more executing/);
+ }
+ ui.handleInput("\t"); tui.terminal.rows = 40; ui.handleInput("\x1b[H");
+ assert.match(ui.render(100).join("\n"), /Run ID: a/);
+ assert.doesNotMatch(ui.render(100).join("\n"), /more executing/);
+ ui.dispose(); store.dispose();
 });

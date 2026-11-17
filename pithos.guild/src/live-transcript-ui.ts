@@ -18,6 +18,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
  let offset = 0;
  let maximum = 0;
  let page = 1;
+ let scrollPage = 1;
  type Position = { id: string; part: string; line: number; character: number };
  let anchor: Position | undefined;
  let renderedPositions: Position[] = [];
@@ -64,7 +65,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
     if (matchesKey(data, "end")) { follow = true; anchor = undefined; anchorNotice = ""; }
     else if (matchesKey(data, "home")) { follow = false; offset = 0; anchor = renderedPositions[offset]; anchorNotice = ""; }
     else {
-     const delta = keys.matches(data, "tui.select.up") ? -1 : keys.matches(data, "tui.select.down") ? 1 : keys.matches(data, "tui.select.pageUp") ? -page : keys.matches(data, "tui.select.pageDown") ? page : 0;
+     const delta = keys.matches(data, "tui.select.up") ? -1 : keys.matches(data, "tui.select.down") ? 1 : keys.matches(data, "tui.select.pageUp") ? -scrollPage : keys.matches(data, "tui.select.pageDown") ? scrollPage : 0;
      if (delta) {
       follow = false; offset = Math.max(0, Math.min(maximum, offset + delta));
       anchor = renderedPositions[offset]; anchorNotice = "";
@@ -96,6 +97,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
    if (expanded) {
     const wrapped: string[] = [];
     const positions: Position[] = [];
+    const runningRows: string[] = [];
     const add = (id: string, part: string, text: string, color: Parameters<Theme["fg"]>[0] = part === "header" ? "accent" : part === "args" ? "muted" : "text") => {
      safe(text).split("\n").forEach((line, logicalLine) => {
       let character = 0;
@@ -111,7 +113,10 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
     };
     if (run) {
      if (raw) add("", "identity", `Run ID: ${run.id}`);
+     const executing = !raw && !["completed", "failed", "cancelled"].includes(run.phase)
+      ? run.entries.filter(entry => entry.kind === "tool" && entry.status === "running") : [];
      for (const entry of run.entries) {
+      if (executing.includes(entry)) continue;
       if (!raw) { add(entry.id, "activity", activityLine(entry, run), activityColor(entry, run)); continue; }
       if (entry !== run.entries[0]) add(entry.id, "spacing", "");
       if (entry.kind === "tool") {
@@ -125,14 +130,27 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
       }
      }
      if (!raw) {
-      // Keep current execution at the live tail without moving history or its anchors.
-      const current = currentActivity(run);
+      const current = run.phase === "running" && executing.length ? undefined : currentActivity(run);
       if (current) add("", "current", truncateToWidth(safe(current), contentWidth, "…"), run.phase === "failed" ? "error" : run.phase === "completed" ? "success" : ["queued", "cancelled"].includes(run.phase) ? "muted" : "warning");
+      // Running rows are a pinned, single-line group, not scrollable history.
+      // Reserve a history row where possible; overflow counts never claim completion.
+      if (executing.length && page) {
+       const budget = Math.max(1, page - 1);
+       const separator = budget >= 3 ? 1 : 0;
+       const slots = budget - separator;
+       const shown = executing.length <= slots ? executing.length : Math.max(0, slots - 1);
+       if (separator) runningRows.push("");
+       for (const entry of executing.slice(0, shown)) runningRows.push(theme.fg(activityColor(entry, run), truncateToWidth(safe(activityLine(entry, run)), contentWidth, "…")));
+       if (shown < executing.length) runningRows.push(theme.fg("warning", truncateToWidth(`${executing.length - shown} more executing · Tab details`, contentWidth, "…")));
+      }
      }
      if (run.diagnostic) add("", "diagnostic", run.diagnostic, "error");
      if (run.truncated) add("", "truncated", "[transcript truncated]", "muted");
     } else add("", "unavailable", "Selected run unavailable (evicted)");
-    maximum = Math.max(0, wrapped.length - page);
+    const historyPage = Math.max(0, page - runningRows.length);
+    // Page navigation follows the last visible history, excluding pinned work.
+    scrollPage = Math.max(1, historyPage);
+    maximum = Math.max(0, wrapped.length - historyPage);
     if (follow) { offset = maximum; anchor = positions[offset]; }
     else {
      let found = anchor ? -1 : offset;
@@ -151,7 +169,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
     // Navigation uses only IDs/numbers from the last displayed layout, never
     // snapshots or old text, so updates between input and render cannot shift it.
     renderedPositions = positions;
-    body = wrapped.slice(offset, offset + page);
+    body = [...wrapped.slice(offset, offset + historyPage), ...runningRows];
    } else {
     const roster = ids(); const index = roster.indexOf(selected ?? "");
     const top = Math.max(0, index - page + 1);
@@ -193,36 +211,91 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
  };
 }
 
+type ActivityDescription = [requested: string, running: string, completed: string];
+
+function commandDescription(command: unknown): ActivityDescription | undefined {
+ if (typeof command !== "string" || command.length > 4096) return undefined;
+ // Only simple, unconditional inspection lists qualify. Shell syntax is not parsed
+ // speculatively: conditionals, substitutions and scripts must not become claimed work.
+ const parts = command.trim().split(/;\s*/);
+ if (parts.length === 1) {
+  if (/^npm (?:test|run test)(?: -- [\w./= -]+)?$/.test(command)) return ["Run tests.", "Running tests.", "Finished running tests."];
+  if (/^npm run typecheck$/.test(command)) return ["Run the type check.", "Running the type check.", "Finished running the type check."];
+  if (/^git diff(?: --(?:stat|shortstat|cached|staged|name-only))*$/.test(command)) return ["Inspect changes.", "Inspecting changes.", "Inspected changes."];
+  if (/^git log(?: --oneline)?(?: -\d+)?$/.test(command)) return toolDescription("git_read", {subcommand: "log"});
+  if (/^ls(?: -[la]+)?$/.test(command)) return toolDescription("ls", {});
+  const read = /^cat ([\w./-]+)$/.exec(command);
+  if (read && !read[1].startsWith("-") && !/^(?:\.\/)?(?:AGENTS\.md|package\.json)$/.test(read[1])) return fileDescription("read", taskPreview(read[1]));
+ }
+ if (parts.length > 3) return undefined;
+ const subjects: string[] = [];
+ for (const part of parts) {
+  if (/^cat (?:\.\/)?AGENTS\.md$/.test(part)) subjects.push("repository instructions");
+  else if (/^git status(?: --short)?$/.test(part)) subjects.push("the working tree");
+  else if (/^cat (?:\.\/)?package\.json$/.test(part)) subjects.push("package metadata");
+  else return undefined;
+ }
+ const subject = subjects.length < 3 ? subjects.join(" and ") : `${subjects[0]}, ${subjects[1]}, and ${subjects[2]}`;
+ // A successful semicolon list only establishes the final command's exit status.
+ return [`Inspect ${subject}.`, `Inspecting ${subject}.`, parts.length > 1 ? "Finished inspection commands." : `Inspected ${subject}.`];
+}
+
+function fileDescription(name: string, path: string | undefined): ActivityDescription {
+ const target = path ? /(?:^|\/)(?:test|tests|__tests__)(?:\/|$)|\.(?:test|spec)\./.test(path) ? `tests in ${path}` : path : "a file";
+ if (name === "edit") return [`Update ${target}.`, `Updating ${target}.`, `Updated ${target}.`];
+ if (name === "write") return [`Write ${target}.`, `Writing ${target}.`, `Wrote ${target}.`];
+ return [`Read ${target}.`, `Reading ${target}.`, `Read ${target}.`];
+}
+
+function toolDescription(name: string | undefined, args: Record<string, unknown>): ActivityDescription {
+ const path = typeof args.path === "string" ? taskPreview(args.path) : undefined;
+ if (name === "bash") {
+  const description = commandDescription(args.command);
+  if (description) return description;
+  const command = typeof args.command === "string" ? taskPreview(args.command) : undefined;
+  return command ? [`Run shell command: ${command}`, `Running shell command: ${command}`, `Finished shell command: ${command}`]
+   : ["Run a shell command.", "Running a shell command.", "Finished a shell command."];
+ }
+ if (name === "read") {
+  const offset = typeof args.offset === "number" && Number.isSafeInteger(args.offset) && args.offset > 0 ? args.offset : 1;
+  const limit = typeof args.limit === "number" && Number.isSafeInteger(args.limit) && args.limit > 0 ? args.limit : undefined;
+  const end = limit === undefined ? undefined : offset + limit - 1;
+  const range = end !== undefined && Number.isSafeInteger(end) ? `lines ${offset}–${end}` : offset > 1 ? `from line ${offset}` : undefined;
+  const description = fileDescription(name, path);
+  return range ? description.map(label => `${label.slice(0, -1)} (${range}).`) as ActivityDescription : description;
+ }
+ if (name === "edit" || name === "write") return fileDescription(name, path);
+ const location = path ? ` in ${path}` : "";
+ if (name === "grep") return [`Search file contents${location}.`, `Searching file contents${location}.`, `Searched file contents${location}.`];
+ if (name === "find") return [`Find files${location}.`, `Finding files${location}.`, `Searched for files${location}.`];
+ if (name === "ls") return [`List files${location}.`, `Listing files${location}.`, `Listed files${location}.`];
+ if (name === "git_read") {
+  if (args.subcommand === "status") return ["Check the working tree.", "Checking the working tree.", "Checked the working tree."];
+  if (args.subcommand === "log") return ["Inspect commit history.", "Inspecting commit history.", "Inspected commit history."];
+  return ["Inspect repository information.", "Inspecting repository information.", "Inspected repository information."];
+ }
+ if (name === "guild_ask_parent") return ["Ask the parent for clarification.", "Asking the parent for clarification.", "Finished the parent exchange."];
+ return ["Use a tool.", "Using a tool.", "Finished a tool call."];
+}
+
 // Labels describe observed tool lifecycle, never inferred intent or task success.
 function activityLine(entry: LiveEntry, run: LiveRunSnapshot): string {
  if (entry.kind === "text") return `Assistant: ${taskPreview(entry.content) ?? "[empty text]"}`;
  if (entry.toolName === "guild_submit_result") return taskPreview(entry.content) ?? "Report submission · not host-validated";
  let args: Record<string, unknown> = {};
  try { const value = JSON.parse(entry.args ?? "{}"); if (value && typeof value === "object" && !Array.isArray(value)) args = value; } catch { /* Truncated/malformed arguments stay available in raw details. */ }
- const field = (name: string) => typeof args[name] === "string" ? taskPreview(args[name] as string) : undefined;
- const target = field("path");
- const labels: Record<string, [string, string, string]> = {
-  read: ["Read", "Reading", "Read"], edit: ["Edit", "Editing", "Edited"], write: ["Write", "Writing", "Wrote"],
-  grep: ["Search", "Searching", "Searched"], find: ["Find", "Finding", "Searched"], ls: ["List", "Listing", "Listed"],
-  bash: ["Run", "Running", "Command finished:"], git_read: ["Inspect Git", "Inspecting Git", "Inspected Git"],
-  guild_ask_parent: ["Ask parent", "Asking parent", "Parent exchange finished"],
- };
- const name = taskPreview(entry.toolName) ?? "tool";
- const verbs = Object.hasOwn(labels, name) ? labels[name] : [name, name, `${name} finished`];
- const detail = name === "bash" ? field("command") : name === "grep" || name === "find" ? [field("pattern"), target].filter(Boolean).join(" in ") : target;
- const suffix = detail ? ` ${detail}` : "";
- if (entry.status === "failed") return `✗ ${name === "bash" ? "Command failed:" : `${verbs[0]} failed:`}${suffix}`;
- if (entry.status === "completed") return `✓ ${verbs[2]}${suffix}`;
- if (["completed", "failed", "cancelled"].includes(run.phase)) return `— Unfinished: ${verbs[0]}${suffix}`;
- return entry.status === "requested" ? `○ Requested: ${verbs[0]}${suffix}` : `→ ${verbs[1]}${suffix}`;
+ const description = toolDescription(entry.toolName, args);
+ // Failure and unfinished states describe the attempted action, never completed substeps.
+ if (entry.status === "failed") return `✗ Failed to ${description[0][0].toLowerCase()}${description[0].slice(1)}`;
+ if (entry.status === "completed") return `✓ ${description[2]}`;
+ if (["completed", "failed", "cancelled"].includes(run.phase)) return `— Unfinished: ${description[0]}`;
+ return entry.status === "requested" ? `○ Requested: ${description[0]}` : `→ ${description[1]}`;
 }
 function currentActivity(run: LiveRunSnapshot): string {
  if (run.phase === "queued") return "○ Queued; no child execution yet";
  if (run.phase === "waiting") return "→ Waiting for parent";
  if (run.phase === "stopping") return "→ Stopping; awaiting cleanup";
  if (run.phase !== "running") return `— Run ${run.phase} (transport state)`;
- const executing = run.entries.filter(entry => entry.kind === "tool" && entry.status === "running");
- if (executing.length) return `Current${executing.length > 1 ? ` (${executing.length} executing)` : ""}: ${activityLine(executing[0], run)}`;
  return run.entries.length ? "→ Awaiting next activity" : "→ Awaiting child events";
 }
 
