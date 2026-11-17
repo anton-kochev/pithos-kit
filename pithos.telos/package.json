@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/telos",
-  "version": "0.4.0",
+  "version": "0.5.0",
   "description": "Telos: session-scoped task checklists with live progress for Pi.",
   "keywords": [
     "pi-package",
@@ -37,18 +37,33 @@
     "summary": "Manage session-owned task checklists with live progress and confirmed orphan cleanup.",
     "minimumPi": ">=1.0.0",
     "commands": [
-      { "name": "tasks", "usage": "/tasks [subcommand] [options]", "summary": "Browse session tasks or confirm orphan cleanup with /tasks cleanup." }
+      {
+        "name": "tasks",
+        "usage": "/tasks [subcommand] [options]",
+        "summary": "Browse session tasks or confirm orphan cleanup with /tasks cleanup."
+      }
     ],
     "tools": [
-      { "name": "telos_tasks", "summary": "Manage the current session's task checklist." }
+      {
+        "name": "telos_tasks",
+        "summary": "Manage the current session's task checklist."
+      }
     ],
     "prompts": [],
     "skills": [],
     "themes": [],
     "agents": [],
     "configuration": [
-      { "kind": "file", "key": ".pi/telos/sessions/<session-key>.md", "summary": "Session-owned task data, ownership metadata, and generated summary; unsaved sessions use memory only." },
-      { "kind": "file", "key": ".pi/telos.json", "summary": "Hot-reloaded refreshIntervalMs (default 1000 ms, minimum 250 ms) and visibleTaskCount (default 10, positive integer)." }
+      {
+        "kind": "file",
+        "key": ".pi/telos/sessions/<session-key>.md",
+        "summary": "Session-owned task data, ownership metadata, and generated summary; unsaved sessions use memory only."
+      },
+      {
+        "kind": "file",
+        "key": ".pi/telos.json",
+        "summary": "Hot-reloaded refreshIntervalMs (default 1000 ms, minimum 250 ms) and visibleTaskCount (default 10, positive integer)."
+      }
     ]
   },
   "pi": {

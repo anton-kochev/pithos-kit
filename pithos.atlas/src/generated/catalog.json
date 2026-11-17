@@ -65,7 +65,7 @@
     },
     {
       "name": "@pithos-kit/atlas",
-      "version": "0.9.1",
+      "version": "0.10.0",
       "description": "Session names, catalog, diagnostics, configuration, and guarded Pi runtime patches for pithos-kit.",
       "pi": {
         "extensions": [
@@ -528,7 +528,7 @@
     },
     {
       "name": "@pithos-kit/telos",
-      "version": "0.4.0",
+      "version": "0.5.0",
       "description": "Telos: session-scoped task checklists with live progress for Pi.",
       "pi": {
         "extensions": [
@@ -603,7 +603,7 @@
     },
     {
       "name": "@pithos-kit/translate",
-      "version": "3.1.0",
+      "version": "3.1.1",
       "description": "Translate interactive input into English and assistant output into a chosen language for Pi.",
       "pi": {
         "extensions": [
