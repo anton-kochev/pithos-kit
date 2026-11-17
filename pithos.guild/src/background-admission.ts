@@ -69,7 +69,7 @@ export function createGuildBackgroundAdmission<C = undefined>({ authority, bus, 
    try {
     if (!authority.isCurrent(owner)) throw new Error("Invalid or stale Guild owner.");
     if (!mode) throw new Error("Invalid background Plan configuration.");
-    const copy = copyFields(input, ["role", "profile", "task", "practices"]);
+    const copy = copyFields(input, ["role", "profile", "task", "practices", "taskSummary"]);
     if (Array.isArray(copy.practices)) {
      const practices = copy.practices;
      const length = practices.length;

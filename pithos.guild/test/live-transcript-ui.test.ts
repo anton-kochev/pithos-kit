@@ -38,7 +38,7 @@ it("wraps plain text/tools within responsive height and preserves manual scroll 
  emit(Array.from({length: 30}, (_, i) => `line ${i} 中文👨‍👩‍👧‍👦`).join("\n"));
  const tui = {requestRender() {}, terminal: {rows: 12}};
  const ui = createLiveTranscriptInspector(store, tui, theme, keys, () => {});
- ui.handleInput("tui.select.confirm");
+ ui.handleInput("tui.select.confirm"); ui.handleInput("\t");
  let lines = ui.render(40); assert.ok(lines.length <= 10); assert.match(lines.join("\n"), /line 29/);
  ui.handleInput("\x1b[H"); lines = ui.render(40); assert.match(lines.join("\n"), /line 0/); assert.match(lines.at(-1)!, /paused/);
  emit(Array.from({length: 35}, (_, i) => `line ${i} 中文`).join("\n"));
@@ -119,6 +119,7 @@ it("paused anchor survives preceding entry eviction", () => {
  const store = new LiveTranscriptStore({maxEntries: 3}); start(store, "a");
  append(store, "earlier"); append(store, "anchor\nsecond\nthird\nfourth\nfifth"); append(store, "later");
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 6}}, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  ui.render(80); ui.handleInput("\x1b[H"); ui.render(80);
  seek(ui, "anchor"); assert.equal(rowText(ui.render(80)[1]), "anchor");
  append(store, "newest");
@@ -129,6 +130,7 @@ it("paused anchor survives logical line and character rewrapping", () => {
  const store = new LiveTranscriptStore(); start(store, "a");
  append(store, "prefix".repeat(8) + "\n" + "abcdefghijklmnopqrstuvwx" + "\ntail\ntail\ntail\ntail");
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 6}}, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  seek(ui, "mnopqrstuvwx", 16);
  assert.equal(rowText(ui.render(16)[1]), "mnopqrstuvwx");
  assert.equal(rowText(ui.render(10)[1]), "mnopqr");
@@ -140,10 +142,11 @@ it("evicted paused anchor reports loss at remaining start until End resumes live
  append(store, "old\nold2\nold3"); append(store, "remaining\nremaining2\nremaining3");
  const tui = {requestRender() {}, terminal: {rows: 6}};
  const ui = createLiveTranscriptInspector(store, tui, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  seek(ui, "old", 100); assert.equal(rowText(ui.render(100)[1]), "old");
  append(store, "new\nnew2\nnew3");
- let lines = ui.render(100); assert.equal(rowText(lines[1]), "Assistant");
- assert.match(lines.join("\n"), /remaining/);
+ let lines = ui.render(100); assert.equal(rowText(lines[1]), "Run ID: a");
+ assert.match(lines.join("\n"), /Assistant/);
  assert.match(lines.at(-1)!, /anchor evicted.*remaining start/); assert.doesNotMatch(lines.at(-1)!, /paused/);
  assert.match(ui.render(100).at(-1)!, /anchor evicted/);
  for (const rows of [1, 2, 3, 4, 6]) for (const width of [1, 2, 5, 20, 100]) {
@@ -160,6 +163,7 @@ it("captures pause against the last rendered content before an intervening evict
  const store = new LiveTranscriptStore({maxEntries: 3}); start(store, "a"); start(store, "b");
  append(store, "earlier"); append(store, "anchor\nsecond\nthird"); append(store, "later");
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 6}}, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  seek(ui, "Assistant");
  // Move to the second entry's text using its last displayed layout.
  for (let i = 0; i < 3; i++) { ui.handleInput("tui.select.down"); ui.render(80); }
@@ -180,6 +184,7 @@ it("renders an opaque padded bounded Guild inspector with short title and plain 
  store.ingest("a", {type: "tool_execution_end", toolCallId: "t", result: {content: [{type: "text", text: "# not markdown\n\x1b]52;c;SECRET\x07safe output"}]}});
  const tui = {requestRender() {}, terminal: {rows: 24}};
  const ui = createLiveTranscriptInspector(store, tui, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  const lines = ui.render(400);
  assert.equal(visibleWidth(lines[0]), 108);
  assert.match(lines[0], /╭.*Guild.*coder\/typescript.*running.*╮/);
@@ -206,6 +211,7 @@ it("labels assistant and ordinary tool input/output separately from an internal 
  store.ingest("a", {type: "tool_execution_end", toolCallId: "t", result: {content: [{type: "text", text: "done"}]}});
  store.ingest("a", {type: "tool_execution_end", toolCallId: "r", toolName: "guild_submit_result", result: {details: {summary: "Fixed card"}}});
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 24}}, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  const text = ui.render(108).join("\n");
  assert.match(text, /Assistant/); assert.match(text, /Tool · read/); assert.match(text, /Input ·/); assert.match(text, /Output ·/);
  assert.match(text, /Submission/); assert.match(text, /Report submitted/); assert.doesNotMatch(text, /guild_submit_result.*completed/);
@@ -216,6 +222,7 @@ it("preserves narrow Unicode tool output as sanitized plain text rather than mar
  const text = "中文界中文界中文界中文界";
  store.ingest("a", {type: "tool_execution_end", toolCallId: "t", toolName: "read", result: {content: [{type: "text", text: text + "\x1b]52;c;secret\x07"}]}});
  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 26}}, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  const lines = ui.render(12);
  assert.ok(lines.every(line => visibleWidth(line) === 12));
  assert.equal(lines.map(rowText).join("").replace(/[^中文界]/g, ""), text);
@@ -226,10 +233,35 @@ it("keeps the back control visible on a narrow terminal even after anchor evicti
  const store = new LiveTranscriptStore({maxEntries: 1}); start(store, "a"); append(store, "old\nold2\nold3");
  const tui = {requestRender() {}, terminal: {rows: 6}};
  const ui = createLiveTranscriptInspector(store, tui, theme, keys, () => {}, "a", true);
+ ui.handleInput("\t");
  seek(ui, "old"); append(store, "new\nnew2\nnew3"); ui.render(80);
  for (const rows of [3, 4, 6, 12]) {
   tui.terminal.rows = rows;
   assert.match(rowText(ui.render(20).at(-1)!), /Esc back/);
  }
  ui.dispose();
+});
+
+it("uses semantic activity colors and readable task labels with real ANSI themes without leaking child escapes", async () => {
+ const { loadThemeFromPath } = await import("../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/theme.js");
+ for (const name of ["light", "dark"]) for (const mode of ["truecolor", "256color"] as const) {
+  const realTheme = loadThemeFromPath(new URL(`../node_modules/@earendil-works/pi-coding-agent/dist/modes/interactive/theme/${name}.json`, import.meta.url).pathname, mode);
+  const store = new LiveTranscriptStore(); start(store, "a"); store.updatePhase("a", "running");
+  for (const [id, status] of [["done", "completed"], ["bad", "failed"], ["busy", "running"]]) {
+   store.ingest("a", {type: "tool_execution_start", toolCallId: id, toolName: "read", args: {path: id + "\x1b]52;c;SECRET\x07"}});
+   if (status !== "running") store.ingest("a", {type: "tool_execution_end", toolCallId: id, isError: status === "failed", result: {content: [{type: "text", text: "output"}]}});
+  }
+  store.ingest("a", {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", id: "pending", name: "read", arguments: {path: "later"}}]}});
+  const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 26}}, realTheme, keys, () => {}, "a", true);
+  const output = ui.render(108).join("\n");
+  for (const [color, label] of [["success", "✓ Read done"], ["error", "✗ Read failed: bad"], ["warning", "→ Reading busy"], ["muted", "○ Requested: Read later"], ["warning", "Current: → Reading busy"]] as const) {
+   assert.ok(output.includes(realTheme.fg(color, label)), `${name}/${mode}: ${color} ${label}`);
+  }
+  assert.ok(output.includes(realTheme.fg("accent", "Task · ") + realTheme.fg("text", "Task a")));
+  assert.doesNotMatch(output, /SECRET|\x1b\]|\x07/);
+  assert.ok(ui.render(20).every(line => visibleWidth(line) <= 20));
+  store.updatePhase("a", "queued");
+  assert.ok(ui.render(108).join("\n").includes(realTheme.fg("muted", "○ Queued; no child execution yet")));
+  ui.dispose();
+ }
 });

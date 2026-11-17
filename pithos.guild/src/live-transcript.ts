@@ -1,13 +1,13 @@
 export type LiveActivePhase = "queued" | "running" | "waiting" | "stopping";
 export type LivePhase = LiveActivePhase | "completed" | "failed" | "cancelled";
 export type LiveRunStart = Readonly<{
-  id: string; role: string; profile: string; task: string;
+  id: string; role: string; profile: string; task: string; taskSummary?: string;
   phase: LiveActivePhase; startedAt: number;
 }>;
 export type LiveEntry = Readonly<{
   id: string; kind: "text" | "tool"; content: string;
   toolCallId?: string; toolName?: string; args?: string;
-  status?: "running" | "completed" | "failed";
+  status?: "requested" | "running" | "completed" | "failed";
 }>;
 export type LiveRunSnapshot = Readonly<Omit<LiveRunStart, "phase"> & {
   phase: LivePhase; version: number; diagnostic?: string;
@@ -56,9 +56,10 @@ export class LiveTranscriptStore {
     const role = this.text(input.role, 128);
     const profile = this.text(input.profile, 128);
     const task = this.text(input.task, this.limits.maxTaskBytes);
+    const summary = input.taskSummary === undefined ? undefined : this.text(input.taskSummary, 512);
     const snapshot = { id: input.id, role: role.value, profile: profile.value,
-      task: task.value, phase: input.phase, startedAt: input.startedAt,
-      entries: Object.freeze([]), truncated: role.truncated || profile.truncated || task.truncated,
+      task: task.value, ...(summary ? {taskSummary: summary.value} : {}), phase: input.phase, startedAt: input.startedAt,
+      entries: Object.freeze([]), truncated: role.truncated || profile.truncated || task.truncated || summary?.truncated === true,
       retainedBytes: 0, version: 1 };
     this.retain(input.id, snapshot);
     this.changed();
@@ -124,7 +125,7 @@ export class LiveTranscriptStore {
         const block = record(part);
         if (block?.type === "text" && typeof block.text === "string") put(index, block.text);
         if (block?.type === "toolCall") {
-          const tools = this.tool({ ...run, entries, truncated }, block.id, block.name, block.arguments, undefined, "running");
+          const tools = this.tool({ ...run, entries, truncated }, block.id, block.name, block.arguments, undefined, "requested");
           entries = [...tools.entries];
           truncated ||= tools.truncated;
         }
@@ -168,19 +169,19 @@ export class LiveTranscriptStore {
     this.version++;
   }
   private tool(run: LiveRunSnapshot, callId: unknown, name: unknown, args: unknown, result: unknown,
-    status: "running" | "completed" | "failed"): Pick<LiveRunSnapshot, "entries" | "truncated"> {
+    status: "requested" | "running" | "completed" | "failed"): Pick<LiveRunSnapshot, "entries" | "truncated"> {
     if (typeof callId !== "string" || !callId) return run;
     if (!this.validId(callId)) return { entries: run.entries, truncated: true };
     const entries = [...run.entries];
     const index = entries.findIndex(entry => entry.kind === "tool" && entry.toolCallId === callId);
     const previous = index < 0 ? undefined : entries[index];
-    if (previous?.status !== undefined && previous.status !== "running" && status === "running") return run;
+    if (previous?.status && ((status === "requested" && previous.status !== "requested") || (["completed", "failed"].includes(previous.status) && status === "running"))) return run;
     const toolName = typeof name === "string" ? this.text(name, 128) : undefined;
     const submission = (toolName?.value ?? previous?.toolName) === "guild_submit_result";
     const argument = submission || args === undefined ? undefined : argumentText(args, this.limits.maxStringBytes);
     const summary = submissionSummary(args) ?? submissionSummary(record(result)?.details);
     const output = this.text(submission
-      ? `${status === "running" ? "Report submission" : "Report submitted"} · not host-validated${summary ? ` — ${summary}` : previous?.content.includes(" — ") ? ` — ${previous.content.split(" — ").slice(1).join(" — ")}` : ""}`
+      ? `${status === "requested" ? "Report submission requested" : status === "running" ? "Report submission" : status === "failed" ? "Report submission failed" : "Report submitted"} · not host-validated${summary ? ` — ${summary}` : previous?.content.includes(" — ") ? ` — ${previous.content.split(" — ").slice(1).join(" — ")}` : ""}`
       : result === undefined ? previous?.content ?? "" : content(record(result)?.content, this.limits.maxStringBytes, this.limits.maxEntries));
     const entry: LiveEntry = Object.freeze({ id: previous?.id ?? `t:${callId}`, kind: "tool", toolCallId: callId as string,
       toolName: toolName?.value ?? previous?.toolName,
@@ -205,7 +206,7 @@ export class LiveTranscriptStore {
       (bytes(run) > this.limits.maxRunBytes && run.entries.length)) {
       run.entries.shift(); run.truncated = true;
     }
-    for (const key of ["task", "diagnostic"] as const) {
+    for (const key of ["task", "taskSummary", "diagnostic"] as const) {
       const value = run[key];
       const excess = bytes(run) - this.limits.maxRunBytes;
       if (value !== undefined && excess > 0) {
@@ -330,7 +331,7 @@ function argumentText(value: unknown, limit: number): { value: string; truncated
 
 // Account every retained string field, not just transcript content (UTF-8 bytes).
 function bytes(run: LiveRunSnapshot): number {
-  const strings = [run.id, run.role, run.profile, run.task, run.phase, run.diagnostic ?? ""];
+  const strings = [run.id, run.role, run.profile, run.task, run.phase, run.taskSummary ?? "", run.diagnostic ?? ""];
   for (const entry of run.entries) strings.push(entry.id, entry.kind, entry.content,
     entry.toolCallId ?? "", entry.toolName ?? "", entry.args ?? "", entry.status ?? "");
   return strings.reduce((total, value) => total + Buffer.byteLength(value), 0);

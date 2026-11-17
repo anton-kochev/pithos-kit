@@ -26,6 +26,7 @@ export function createInlineGuildPanel(store: LiveTranscriptStore, tui: PanelTui
  let detail: LiveTranscriptInspector | undefined;
  let mouseRows = new Map<number, string>();
  let detailHeight = 1;
+ let rosterTaskVisible = false;
  const keys = getKeybindings();
  const roster = () => ids;
  const render = () => { if (!disposed) { tui.requestRender(); changed(); } };
@@ -37,7 +38,7 @@ export function createInlineGuildPanel(store: LiveTranscriptStore, tui: PanelTui
   detail = createLiveTranscriptInspector(store, {
    requestRender: () => { if (!disposed) tui.requestRender(); },
    terminal: { get rows() { return detailHeight + 2; } },
-  }, theme, keys, () => {}, selected, true, true);
+  }, theme, keys, () => {}, selected, true, true, () => rosterTaskVisible);
  };
  const capture: TerminalInputHandler = data => {
   if (disposed) return;
@@ -63,7 +64,7 @@ export function createInlineGuildPanel(store: LiveTranscriptStore, tui: PanelTui
     if (keys.matches(data, "tui.select.down") && index === available.length - 1) release();
     else selected = available[Math.max(0, Math.min(available.length - 1, index + (keys.matches(data, "tui.select.up") ? -1 : 1)))];
    }
-  } else if (detail && (keys.matches(data, "tui.select.pageUp") || keys.matches(data, "tui.select.pageDown") || matchesKey(data, "home") || matchesKey(data, "end"))) {
+  } else if (detail && (keys.matches(data, "tui.select.pageUp") || keys.matches(data, "tui.select.pageDown") || matchesKey(data, "home") || matchesKey(data, "end") || matchesKey(data, "tab"))) {
    detail.handleInput(data);
   } else {
    release(); render(); return;
@@ -105,15 +106,20 @@ export function createInlineGuildPanel(store: LiveTranscriptStore, tui: PanelTui
   },
   render(width) {
    if (disposed || width <= 0) return [];
-   const budget = Math.max(1, Math.min(24, Math.floor(tui.terminal.rows / 2)));
+   // Expanded sessions borrow space only when the editor still has six rows.
+   const rows = tui.terminal.rows;
+   const budget = detail && rows >= 18
+    ? Math.max(1, Math.min(40, Math.floor(rows * 2 / 3), rows - 6))
+    : Math.max(1, Math.min(24, Math.floor(rows / 2)));
    const available = roster();
    const selectedIndex = Math.max(0, available.indexOf(selected ?? ""));
    // On tiny screens prioritize the detail's collapse control over roster chrome.
+   rosterTaskVisible = budget > 5;
    if (detail && budget <= 5) {
     mouseRows.clear(); detailHeight = budget;
     return detail.render(width);
    }
-   const count = Math.max(1, Math.min(available.length, budget - 3 - (detail ? 8 : 0)));
+   const count = Math.max(1, Math.min(available.length, Math.floor((budget - 3 - (detail ? 8 : 0)) / 2)));
    const top = Math.max(0, Math.min(selectedIndex, available.length - count));
    const shown = available.slice(top, top + count);
    const rowLines = shown.map(id => {
@@ -131,8 +137,12 @@ export function createInlineGuildPanel(store: LiveTranscriptStore, tui: PanelTui
    shown.forEach((id, index) => {
     mouseRows.set(output.length, id);
     output.push(compact[index + 2]);
+    const run = store.get(id);
+    const task = taskPreview(run?.taskSummary) ?? taskPreview(run?.task);
+    const taskRow = createGuildPanel(["", `  Task: ${task ?? "unavailable"}`], theme).render(width)[2];
+    output.push(taskRow);
     if (detail && id === selected) {
-     detailHeight = Math.max(1, budget - compact.length - 1);
+     detailHeight = Math.max(1, budget - compact.length - shown.length - 1);
      output.push(`${guildPanelAnsi(theme).background}${" ".repeat(width)}\x1b[49m`, ...detail.render(width));
     }
    });

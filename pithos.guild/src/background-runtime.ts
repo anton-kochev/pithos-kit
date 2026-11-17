@@ -18,6 +18,7 @@ export interface BackgroundRunMetadata {
  readonly profile: GuildInput["profile"];
  /** At most 160 UTF-8 bytes, without splitting a Unicode code point. */
  readonly taskPreview: string;
+ readonly taskSummary?: string;
  readonly cwd: string;
  readonly model?: string;
  readonly thinkingLevel?: string;
@@ -59,6 +60,7 @@ export interface BackgroundChange extends Omit<BackgroundLifecycleChange, "id"> 
  readonly profile: GuildInput["profile"];
  /** At most 160 UTF-8 bytes, without splitting a Unicode code point. */
  readonly taskPreview: string;
+ readonly taskSummary?: string;
 }
 
 export interface BackgroundAdmissionObservation {
@@ -318,7 +320,7 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
       if (captureGuard.reentered) throw new Error("Reentrant background reservation.");
       if (!authority.isCurrent(owner)) throw new Error("Invalid or stale Guild owner.");
       metadata = Object.freeze({ owner, runId: id, taskId, role: input.role, profile: input.profile,
-       taskPreview: preview(input.task), cwd: binding.cwd, model: binding.model,
+       taskPreview: preview(input.task), taskSummary: input.taskSummary, cwd: binding.cwd, model: binding.model,
        thinkingLevel: binding.thinkingLevel, projectTrusted: binding.projectTrusted });
       reservedId = id; bindings.set(id, binding);
       updates.set(id, { owner, count: 0, inFlight: 0, pending: [] });
@@ -331,7 +333,7 @@ export function createGuildBackgroundRuntime({ bus, parentEnvironment, runner = 
        taskPreview += character;
       }
       return onChange?.(Object.freeze({ ...state, owner, runId: id, taskId,
-       role: admitted.input.role, profile: admitted.input.profile, taskPreview }));
+       role: admitted.input.role, profile: admitted.input.profile, taskPreview, taskSummary: admitted.input.taskSummary }));
      },
      onTerminal(snapshot: BackgroundSnapshot) {
       bindings.delete(snapshot.id); discard(snapshot.id);

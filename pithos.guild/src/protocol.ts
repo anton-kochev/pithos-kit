@@ -17,7 +17,7 @@ export const SUBMIT_TOOL = "guild_submit_result";
 export const PROTOCOL = "guild/2";
 export const LIMITS = Object.freeze({ task: 32 * 1024, input: 40 * 1024, envelope: 48 * 1024, result: 48 * 1024, string: 2048, list: 32, id: 128, line: 1024 * 1024, stdout: 16 * 1024 * 1024, stderr: 64 * 1024 });
 export interface GuildPractice { id: "tdd"; policy: "required" }
-export interface GuildInput { role: GuildRole; profile: GuildProfile; task: string; practices: GuildPractice[] }
+export interface GuildInput { role: GuildRole; profile: GuildProfile; task: string; taskSummary?: string; practices: GuildPractice[] }
 function exactKeys(value: unknown, required: string[], optional: string[] = []): asserts value is Record<string, unknown> {
  if (!value || typeof value !== "object" || Array.isArray(value) || required.some(key => !Object.hasOwn(value, key)) || Object.keys(value).some(key => !required.includes(key) && !optional.includes(key))) throw new Error("Invalid Guild object keys");
 }
@@ -28,7 +28,7 @@ export function validateInput(value: unknown): GuildInput {
   const [role, profile] = GUILD_MEMBER_ALIASES[value.member].split("/");
   value = {role, profile, task: value.task};
  }
- exactKeys(value, ["role", "profile", "task"], ["practices"]);
+ exactKeys(value, ["role", "profile", "task"], ["practices", "taskSummary"]);
  if (!isGuildRole(value.role) || !isGuildProfile(value.profile) || typeof value.task !== "string") throw new Error("Invalid Guild input");
  createGuildTarget(value.role, value.profile);
  const practices = Object.hasOwn(value, "practices") ? value.practices : [];
@@ -38,20 +38,23 @@ export function validateInput(value: unknown): GuildInput {
   if (practice.id !== "tdd" || practice.policy !== "required") throw new Error("Invalid Guild practice");
  }
  if (!value.task.trim() || value.task.includes("\0") || Buffer.byteLength(value.task) > LIMITS.task) throw new Error("Invalid Guild task or task byte limit exceeded");
- const input: GuildInput = {role: value.role, profile: value.profile, task: value.task, practices: practices.map(() => ({id: "tdd", policy: "required"}))};
+ const taskSummary = value.taskSummary;
+ if (Object.hasOwn(value, "taskSummary") && (typeof taskSummary !== "string" || !taskSummary.trim() || taskSummary.includes("\0") || Buffer.byteLength(taskSummary) > 512)) throw new Error("Invalid Guild taskSummary or summary byte limit exceeded");
+ const input: GuildInput = {role: value.role, profile: value.profile, task: value.task, ...(typeof taskSummary === "string" ? {taskSummary} : {}), practices: practices.map(() => ({id: "tdd", policy: "required"}))};
  if (Buffer.byteLength(JSON.stringify(input)) > LIMITS.input) throw new Error("Guild input byte limit exceeded");
  return input;
 }
-export interface GuildTask extends GuildInput {
+export interface GuildTask extends Omit<GuildInput, "taskSummary"> {
  protocol: typeof PROTOCOL;
  version: 2;
  runId: string;
  taskId: string;
 }
 export function buildTask(input: Omit<GuildInput, "practices"> & { practices?: GuildPractice[]; runId: string; taskId: string }): GuildTask {
- exactKeys(input, ["role", "profile", "task", "runId", "taskId"], ["practices"]);
+ exactKeys(input, ["role", "profile", "task", "runId", "taskId"], ["practices", "taskSummary"]);
  const {runId, taskId, ...publicInput} = input;
- const canonical = validateInput(publicInput);
+ // Display metadata must never become child instructions or envelope fields.
+ const {taskSummary: _summary, ...canonical} = validateInput(publicInput);
  if ([runId, taskId].some(id => typeof id !== "string" || !id.trim() || Buffer.byteLength(id) > LIMITS.id)) throw new Error("Invalid Guild run/task identity");
  const task: GuildTask = {protocol: PROTOCOL, version: 2, runId, taskId, ...canonical};
  if (Buffer.byteLength(JSON.stringify(task)) > LIMITS.envelope) throw new Error("Guild envelope byte limit exceeded");

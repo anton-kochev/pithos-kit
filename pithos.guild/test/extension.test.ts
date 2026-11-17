@@ -450,7 +450,7 @@ describe("guild extension", () => {
     registerGuild(pi.api as never, { run: successfulRunner });
 
     const schema = pi.tool.parameters;
-    assert.deepEqual(Object.keys(schema.properties), ["role", "profile", "task", "practices"]);
+    assert.deepEqual(Object.keys(schema.properties), ["role", "profile", "taskSummary", "task", "practices"]);
     assert.deepEqual(schema.required, ["role", "profile", "task"]);
     assert.equal(schema.additionalProperties, false);
     assert.deepEqual(schema.properties.role.enum, GUILD_ROLES);
@@ -680,7 +680,7 @@ describe("guild extension", () => {
       ctx,
     );
 
-    assert.ok(widgetUpdates.some(lines => /running.*Implement validation/.test(lines?.join("\n") ?? "")), "running dashboard must include the task preview");
+    assert.ok(widgetUpdates.some(lines => /running #1/.test(lines?.join("\n") ?? "")), "running dashboard must include the friendly label");
     assert.ok(updates.length >= 3);
     assert.deepEqual(updates.slice(0, 2).map(({ details }) => details.phase), ["queued", "running"]);
     assert.equal(updates[0].details.status, "queued");
@@ -1749,9 +1749,10 @@ it("tracks admitted queued transcripts and immutable runner events separately fr
   },
  });
  const task = "Original\n task";
- const first = pi.tool.execute("live-first", {role: "coder", profile: "typescript", task}, undefined, undefined, context());
+ const first = pi.tool.execute("live-first", {role: "coder", profile: "typescript", task, taskSummary: "Verify display."}, undefined, undefined, context());
  const snapshot = store.get("live-first")!;
  assert.equal(snapshot.task, task);
+ assert.equal(snapshot.taskSummary, "Verify display.");
  assert.equal(snapshot.entries[0].content, "private live text");
  assert.equal(snapshot.entries[1].content, "private tool result");
  assert.ok(Object.isFrozen(snapshot.entries));
@@ -1906,9 +1907,9 @@ it("focuses and expands the stable inline widget while busy, preserving draft an
  assert.match(panel.render(80).join("\n"), /↑ select/);
  assert.equal(capture("\x1b[A"), undefined); draft = "";
  assert.deepEqual(capture("\x1b[A"), {consume: true}); assert.equal(listeners, 1);
- assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(80).join("\n"), /Task · Busy task/);
+ assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(80).join("\n"), /Task: Busy task[^\n]*\n[^\n]*\n[^\n]*Session/);
  await new Promise(resolve => setTimeout(resolve, 1100)); assert.equal(factories, 1);
- assert.deepEqual(capture("\x1b"), {consume: true}); assert.doesNotMatch(panel.render(80).join("\n"), /Task · Busy task/);
+ assert.deepEqual(capture("\x1b"), {consume: true}); assert.doesNotMatch(panel.render(80).join("\n"), /Task: Busy task[^\n]*\n[^\n]*\n[^\n]*Session/);
  const oldCapture = capture; assert.equal(capture("x"), undefined); assert.equal(listeners, 1); assert.equal(oldCapture("\r"), undefined);
  assert.equal((ctx.ui as any).getEditorText(), ""); assert.deepEqual([...pi.commands.keys()], commands);
  capture("\x1b[A"); capture("\r"); gate.resolve(); await child;
@@ -2000,13 +2001,13 @@ it("fullscreen rows expand exact IDs beneath the panel with detail-aware click c
  ctx.ui.custom = (() => {throw new Error("no modal");}) as any;
  const first = pi.tool.execute("row-first", {role: "coder", profile: "typescript", task: "First"}, undefined, undefined, ctx);
  const second = pi.tool.execute("row-second", {role: "coder", profile: "typescript", task: "Second"}, undefined, undefined, ctx);
- let lines = panel.render(100); let row = lines.findIndex((line: string) => /running.*First/.test(line));
+ let lines = panel.render(100); let row = lines.findIndex((line: string) => /running #1/.test(line));
  assert.deepEqual(panel.handleMouse({type: "click", button: "left", y: row}), {handled: true, render: false});
- lines = panel.render(100); assert.match(lines.join("\n"), /Task · First/);
- row = lines.findIndex((line: string) => /queued.*Second/.test(line));
+ lines = panel.render(100); assert.match(lines.join("\n"), /Task: First[^\n]*\n[^\n]*\n[^\n]*Session/);
+ row = lines.findIndex((line: string) => /queued #2/.test(line));
  assert.ok(row > 3); panel.handleMouse({type: "click", button: "left", y: row});
- assert.match(panel.render(100).join("\n"), /Task · Second/);
- gate.resolve(); await first; assert.equal(factories, 1); assert.match(panel.render(100).join("\n"), /Task · Second/);
+ assert.match(panel.render(100).join("\n"), /Task: Second[^\n]*\n[^\n]*\n[^\n]*Session/);
+ gate.resolve(); await first; assert.equal(factories, 1); assert.match(panel.render(100).join("\n"), /Task: Second[^\n]*\n[^\n]*\n[^\n]*Session/);
  secondGate.resolve(); await second; assert.equal(panel, undefined);
  await pi.handlers.get("session_shutdown")({}, ctx);
 });
@@ -2131,7 +2132,7 @@ for (const terminal of ["completed", "failed", "cancelled", "queued-cancelled"] 
  assert.equal(subscriptions, 0); assert.equal(listeners, 1);
  const removed = terminal === "queued-cancelled" ? "Second" : "First";
  const survivor = terminal === "queued-cancelled" ? "First" : "Second";
- const output = panel.render(100).join("\n"); assert.doesNotMatch(output, new RegExp(removed + "|Task ·|Session")); assert.match(output, new RegExp(survivor));
+ const output = panel.render(100).join("\n"); assert.doesNotMatch(output, new RegExp(removed + "|Session")); assert.match(output, new RegExp(survivor));
  // Closing selected compact navigation during a queue phase transition is harmless.
  assert.deepEqual(capture("\x1b"), {consume: true}); assert.equal(capture("\x1b"), undefined);
  assert.equal(controller.signal.aborted, terminal === "cancelled" || terminal === "queued-cancelled");
@@ -3987,12 +3988,13 @@ it("background dashboard observes three occupied and eight queued runs until cle
   await pi.handlers.get("session_start")({}, ctx);
   const ids: string[] = [];
   for (let i = 0; i < 11; i++) {
-   const result = await pi.tools.get("guild_start").execute(`start-${i}`, {role: "coder", profile: "general", task: `Task ${i}`}, undefined, undefined, ctx);
+   const result = await pi.tools.get("guild_start").execute(`start-${i}`, {role: "coder", profile: "general", task: `Task ${i}`, taskSummary: `Objective ${i}.`}, undefined, undefined, ctx);
    ids.push(result.details.runId);
   }
   await new Promise(resolve => setImmediate(resolve));
   assert.match(lines().join("\n"), /3 occupied · 8 queued/);
-  for (const id of ids) { assert.ok(lines().some((line: string) => line.includes(id))); assert.ok(store.get(id)); }
+  for (const [index, id] of ids.entries()) { assert.equal(store.get(id)?.taskSummary, `Objective ${index}.`); assert.ok(!lines().some((line: string) => line.includes(id))); }
+  assert.match(lines().join("\n"), /running #1/); assert.match(lines().join("\n"), /queued #4/);
   assert.equal(pi.messages.length, 0);
   gate.resolve();
   for (const id of ids) await pi.tools.get("guild_wait").execute("wait", {runId: id}, undefined, undefined, ctx);

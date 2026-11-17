@@ -105,6 +105,7 @@ Options:
 const GUILD_HANDOVER_PARAMETERS = Type.Object({
 	role: StringEnum(GUILD_ROLES, { description: "Canonical Guild role that owns permissions and workflow" }),
 	profile: StringEnum(GUILD_PROFILES, { description: "Canonical Guild profile; writer supports only general" }),
+	taskSummary: Type.Optional(Type.String({minLength: 1, maxLength: 512, description: "Short objective sentence for display only; full task remains authoritative"})),
 	task: Type.String({ minLength: 1, description: "Self-contained delegated task, including relevant scope and acceptance criteria" }),
 	practices: Type.Optional(Type.Array(Type.Object({id: StringEnum(["tdd"] as const), policy: StringEnum(["required"] as const)}, {additionalProperties: false}), {maxItems: 1, description: "Coder-only required TDD"})),
 }, { additionalProperties: false });
@@ -128,6 +129,7 @@ const defaultDependencies: GuildDependencies = {
 };
 
 interface PreparedHandover {
+	taskSummary?: string;
 	role: GuildRole;
 	profile: GuildProfile;
 	task: string;
@@ -753,11 +755,11 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				if (backgroundCurrent()) return raw;
 			} catch { /* Unsafe host reads revoke this callback's UI access. */ }
 		};
-		const startBackground = (metadata: Pick<BackgroundRunMetadata, "runId" | "role" | "profile" | "taskPreview">, phase: GuildRunPhase) => {
+		const startBackground = (metadata: Pick<BackgroundRunMetadata, "runId" | "role" | "profile" | "taskPreview" | "taskSummary">, phase: GuildRunPhase) => {
 			if (backgroundRunIds.has(metadata.runId)) return;
 			backgroundRunIds.add(metadata.runId);
 			const run = {id: metadata.runId, role: metadata.role, profile: metadata.profile,
-				task: metadata.taskPreview, phase, startedAt: Date.now()};
+				task: metadata.taskPreview, taskSummary: metadata.taskSummary, phase, startedAt: Date.now()};
 			dashboardRunIds.add(run.id);
 			activeRuns.start(run);
 			observeTranscript(() => transcriptStore.start(run));
@@ -920,7 +922,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 			let terminalDiagnostic: string | undefined;
 			if (publishing()) observeTranscript(() => transcriptStore.start({
 				id: runId, role: prepared.role, profile: prepared.profile,
-				task: prepared.task, phase, startedAt,
+				task: prepared.task, taskSummary: prepared.taskSummary, phase, startedAt,
 			}));
 			log.info("handover.start", { runId, sessionId, role: prepared.role, profile: prepared.profile, model, thinkingLevel });
 
@@ -928,6 +930,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 				if (publishing() && visibility === "dashboard") {
 					dashboardRunIds.add(runId);
 					activeRuns.start({
+						taskSummary: prepared.taskSummary,
 						id: runId,
 						task: prepared.task,
 						role: prepared.role,
@@ -1594,6 +1597,7 @@ export function registerGuild(pi: ExtensionAPI, dependencies: GuildDependencies 
 		].join(" "),
 		promptSnippet: "Blocking delegation to a Guild role/profile; prefer guild_start for background work when available",
 		promptGuidelines: [
+			"Supply guild_handover taskSummary as a short objective sentence for display; keep the full authoritative instructions in task.",
 			"Use guild_start for normal background delegation when available. Use guild_handover only for explicitly blocking delegation or on hosts without background tools; guild_handover keeps the parent busy until completion and serializes children. Never describe it as background execution.",
 			"Use guild_handover with a canonical role, profile, and self-contained task with scope and acceptance criteria.",
 			"Use explorer for repository fact-finding, architect for contracts and implementation handoffs, coder for implementation and verification, reviewer for evidence-based review, and writer/general for writing artifacts.",

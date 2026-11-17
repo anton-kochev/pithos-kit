@@ -8,6 +8,7 @@ interface ActiveGuildRunState {
 	startedAt: number;
 	turns?: number;
 	task?: string;
+	taskSummary?: string;
 }
 
 export interface CanonicalActiveGuildRun extends ActiveGuildRunState {
@@ -28,7 +29,7 @@ export type ActiveGuildRun = CanonicalActiveGuildRun | LegacyActiveGuildRun;
 
 interface TrackedGuildRun extends ActiveGuildRunState {
 	identity: string;
-	preview?: string;
+	label: number;
 	phase: GuildRunPhase;
 }
 
@@ -55,6 +56,7 @@ function elapsedTime(startedAt: number, now: number): string {
 }
 
 export class GuildRunTracker {
+	private sequence = 0;
 	private readonly runs = new Map<string, TrackedGuildRun>();
 
 	get size(): number {
@@ -67,7 +69,7 @@ export class GuildRunTracker {
 		this.runs.set(run.id, {
 			id: run.id,
 			identity,
-			preview: taskPreview(run.task),
+			label: ++this.sequence,
 			phase: run.phase ?? "running",
 			startedAt: run.startedAt,
 			turns: run.turns,
@@ -99,8 +101,8 @@ export class GuildRunTracker {
 		const queued = count("queued");
 		const lines = [`Guild · ${runs.length - queued} occupied · ${queued} queued · ${count("waiting")} waiting · ${count("stopping")} stopping`];
 		for (const run of this.runs.values()) {
-			const turns = run.turns ? ` · ${run.turns} turn${run.turns === 1 ? "" : "s"}` : "";
-			lines.push(`⏳ ${run.identity} · ${taskPreview(run.id) ?? "run"} · ${run.phase} · ${elapsedTime(run.startedAt, now)}${turns}${run.preview ? ` · ${run.preview}` : ""}`);
+			const turns = ` • ${run.turns ?? 0} turn${run.turns === 1 ? "" : "s"}`;
+			lines.push(`• ${taskPreview(run.identity) ?? "Guild"} • ${run.phase} #${run.label} • ${elapsedTime(run.startedAt, now)}${turns}`);
 		}
 		return lines;
 	}

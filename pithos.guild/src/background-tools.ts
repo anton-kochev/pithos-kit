@@ -28,6 +28,7 @@ const descriptions = {
 };
 const guidelines: Record<typeof names[number], string[]> = {
  guild_start: [
+  "Supply guild_start taskSummary as a short objective sentence for display; keep the full authoritative instructions in task.",
   "Prefer guild_start over blocking guild_handover whenever guild_start is available, including explorer, architect, coder, reviewer, and writer tasks.",
   "After guild_start, continue independent work or finish your turn so the user can send another request while children run. Do not poll guild_status or immediately loop on guild_wait; wait only when your next step actually depends on the result.",
   "Give guild_start a self-contained task with scope, acceptance criteria, and relevant repository instructions; children do not inherit this conversation. Coordinate non-overlapping edits between the parent and children: all share the working directory, with no file locks or worktree isolation.",
@@ -44,13 +45,14 @@ const unavailable = () => new Error("Background tools unavailable");
 const exact = {additionalProperties: false};
 const id = Type.String({minLength: 1, maxLength: 256, pattern: "^(?!.*\\u0000)(?=[\\s\\S]*\\S)[\\s\\S]+$"});
 const task = Type.String({minLength: 1, maxLength: 32768});
+const taskSummary = Type.Optional(Type.String({minLength: 1, maxLength: 512, description: "Short objective sentence for display only; full task remains authoritative"}));
 const profile = Type.String({enum: [...GUILD_PROFILES]});
 const practice = Type.Object({id: Type.Literal("tdd"), policy: Type.Literal("required")}, exact);
 const schemas = {
  guild_start: Type.Union([
-  Type.Object({role: Type.Literal("coder"), profile, task, practices: Type.Optional(Type.Array(practice, {maxItems: 1}))}, exact),
-  Type.Object({role: Type.String({enum: ["explorer", "architect", "reviewer"]}), profile, task, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
-  Type.Object({role: Type.Literal("writer"), profile: Type.Literal("general"), task, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
+  Type.Object({role: Type.Literal("coder"), profile, task, taskSummary, practices: Type.Optional(Type.Array(practice, {maxItems: 1}))}, exact),
+  Type.Object({role: Type.String({enum: ["explorer", "architect", "reviewer"]}), profile, task, taskSummary, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
+  Type.Object({role: Type.Literal("writer"), profile: Type.Literal("general"), task, taskSummary, practices: Type.Optional(Type.Array(practice, {maxItems: 0}))}, exact),
  ]),
  guild_status: Type.Object({runId: Type.Optional(id)}, exact),
  guild_send: Type.Object({runId: id, message: Type.String({minLength: 1, maxLength: 8192}), questionId: Type.Optional(id)}, exact),

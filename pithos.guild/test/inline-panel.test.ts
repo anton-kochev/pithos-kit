@@ -16,7 +16,7 @@ it("uses the full available width for inline detail and rewraps on resize", () =
  const panel = createInlineGuildPanel(store, {requestRender() {}, terminal: {rows: 40}}, theme,
   handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · wide"], ["wide"]);
- capture("\x1b[A"); capture("\r");
+ capture("\x1b[A"); capture("\r"); capture("\t");
  for (const width of [200, 80, 320]) {
   const output = panel.render(width).map(stripTerminalSequences);
   const top = output.findIndex(line => line.startsWith("╭"));
@@ -37,14 +37,14 @@ it("removes terminal eviction, leaves neighboring runs collapsed, and bounds tin
  panel.update(["Guild · 2 active", "⏳ coder/typescript · running · 0s · 中文🧪", "⏳ coder/typescript · running · 0s · neighbor"], ["中文🧪", "neighbor"]);
  capture("\x1b[A"); capture("\x1b[A"); capture("\r");
  const expanded = panel.render(80);
- assert.match(expanded.join("\n"), /Task · 中文🧪/); assert.doesNotMatch(expanded.join("\n"), /F6|inspector/);
+ assert.match(expanded.join("\n"), /Task: 中文🧪[^\n]*\n[^\n]*\n[^\n]*Session/); assert.doesNotMatch(expanded.join("\n"), /F6|inspector/);
  // Detail should advertise expansion/navigation rather than duplicate a modal list.
  assert.match(expanded[1], /← collapse/);
  assert.match(expanded[2], /\x1b\[7m● coder\/typescript\x1b\[27m/);
  store.finish("中文🧪", "completed");
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · 0s · neighbor"], ["neighbor"]);
- assert.doesNotMatch(panel.render(80).join("\n"), /unavailable|中文🧪|Task ·/);
- assert.doesNotMatch(panel.render(80).join("\n"), /Task · neighbor/);
+ assert.doesNotMatch(panel.render(80).join("\n"), /unavailable|中文🧪|Session/);
+ assert.doesNotMatch(panel.render(80).join("\n"), /Task: neighbor[^\n]*\n[^\n]*\n[^\n]*Session/);
  for (const rows of [1, 2, 3, 4, 6, 10, 24]) for (const width of [0, 1, 2, 4, 5, 10, 20, 108, 200]) {
   tui.terminal.rows = rows;
   const output = panel.render(width);
@@ -84,7 +84,7 @@ it("activates only empty eligible editors at the nearest row and consumes the bo
  assert.deepEqual(capture("\x1b[A"), {consume: true});
  assert.match(panel.render(100).find(line => line.includes("last"))!, /\x1b\[7m○ coder\/typescript\x1b\[27m/);
  assert.doesNotMatch(panel.render(100).find(line => line.includes("first"))!, /\x1b\[7m/);
- assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(100).join("\n"), /Task · last/);
+ assert.deepEqual(capture("\r"), {consume: true}); assert.match(panel.render(100).join("\n"), /Task: last[^\n]*\n[^\n]*\n[^\n]*Session/);
  assert.deepEqual(capture("\x1b[A"), {consume: true}); // detail scroll, not roster selection
  assert.deepEqual(capture("\x1b"), {consume: true});
  assert.deepEqual(capture("\x1b[B"), {consume: true}); assert.equal(panel.navigating, false);
@@ -109,10 +109,10 @@ it("reactivates at the nearest row without showing another row's retained detail
   handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
  panel.update(["Guild · 2 active", "⏳ coder/typescript · running · first", "⏳ coder/typescript · queued · last"], ["first", "last"]);
  capture("\x1b[A"); capture("\x1b[A"); capture("\r");
- assert.match(panel.render(100).join("\n"), /Task · first/);
+ assert.match(panel.render(100).join("\n"), /Task: first[^\n]*\n[^\n]*\n[^\n]*Session/);
  capture("x"); capture("\x1b[A"); capture("\r");
- assert.match(panel.render(100).join("\n"), /Task · last/);
- assert.doesNotMatch(panel.render(100).join("\n"), /Task · first/); panel.dispose();
+ assert.match(panel.render(100).join("\n"), /Task: last[^\n]*\n[^\n]*\n[^\n]*Session/);
+ assert.doesNotMatch(panel.render(100).join("\n"), /Task: first[^\n]*\n[^\n]*\n[^\n]*Session/); panel.dispose();
 });
 
 it("Right opens one session idempotently and Left collapses without cancelling or releasing selection", () => {
@@ -130,11 +130,11 @@ it("Right opens one session idempotently and Left collapses without cancelling o
  // A click on the row after the inserted session must replace, not stack, detail.
  const row = paused.findIndex(line => line.includes("first")); assert.ok(row >= 0);
  panel.handleMouse!({type: "click", button: "left", x: 2, y: row} as any);
- const switched = panel.render(120); assert.match(switched.join("\n"), /Task · first/); assert.doesNotMatch(switched.join("\n"), /Task · last/);
+ const switched = panel.render(120); assert.match(switched.join("\n"), /Task: first[^\n]*\n[^\n]*\n[^\n]*Session/); assert.doesNotMatch(switched.join("\n"), /Task: last[^\n]*\n[^\n]*\n[^\n]*Session/);
  panel.handleMouse!({type: "click", button: "left", x: 2, y: switched.findIndex(line => line.includes("last"))} as any);
- assert.match(panel.render(120).join("\n"), /Task · last/); assert.equal(peak, 1);
+ assert.match(panel.render(120).join("\n"), /Task: last[^\n]*\n[^\n]*\n[^\n]*Session/); assert.equal(peak, 1);
  capture("\x1b[D"); assert.equal(subscriptions, 0); assert.equal(panel.navigating, true);
- assert.doesNotMatch(panel.render(120).join("\n"), /Task ·/);
+ assert.doesNotMatch(panel.render(120).join("\n"), /Session/);
  assert.equal(store.get("first")?.phase, "running"); assert.equal(store.get("last")?.phase, "running");
  capture("\x1b[C"); capture("\x1b"); assert.equal(subscriptions, 0); assert.equal(panel.navigating, true);
  capture("\x1b"); assert.equal(panel.navigating, false); panel.dispose(); assert.equal(subscriptions, 0);
@@ -150,18 +150,18 @@ it("separates inline sessions with opaque breathing room, padded sections and a 
  capture("\x1b[A"); capture("\x1b[A"); capture("\r");
  const output = panel.render(100); const plain = output.map(stripTerminalSequences);
  const selected = output.findIndex(line => line.includes("\x1b[7m")); const title = plain.findIndex(line => /╭.*Session/.test(line));
- assert.equal(title, selected + 2, "opaque gap before session delimiter"); assert.equal(plain[selected + 1].trim(), "");
+ assert.equal(title, selected + 3, "opaque gap before session delimiter"); assert.equal(plain[selected + 2].trim(), "");
  assert.match(plain[title], /╭─.*✦ Session.*─╮/); assert.doesNotMatch(plain[title], /coder\/typescript|running/);
- assert.match(plain[title + 1], /^│  Task · first/); assert.match(plain[title + 2], /^├─.*Transcript.*─┤/);
+ assert.match(plain[selected + 1], /Task: first/); assert.match(plain[title + 1], /^├─.*Activity.*─┤/);
  const footer = plain.findIndex(line => line.includes("← collapse") && line.includes("live")); assert.ok(footer > title);
  assert.match(plain[footer - 1], /^│ +│$/); assert.match(plain[footer], /^╰─.*← collapse.*─╯/);
  assert.ok(output.slice(selected + 1, footer + 1).every(line => line.startsWith("\x1b[48;5;189m") && visibleWidth(line) === 100));
  const other = plain.findIndex(line => line.includes("last")); assert.ok(other > footer);
  panel.handleMouse!({type: "click", button: "left", x: 2, y: other} as any);
- assert.match(panel.render(100).join("\n"), /Task · last/); assert.doesNotMatch(panel.render(100).join("\n"), /Task · first/);
+ assert.match(panel.render(100).map(stripTerminalSequences).join("\n"), /Task: last[^\n]*\n[^\n]*\n[^\n]*Session/); assert.doesNotMatch(panel.render(100).map(stripTerminalSequences).join("\n"), /Task: first[^\n]*\n[^\n]*\n[^\n]*Session/);
  for (const rows of [1, 2, 4, 6, 8, 10, 12, 20, 48]) for (const width of [1, 2, 4, 6, 10, 20, 100, 200]) {
   tui.terminal.rows = rows; const lines = panel.render(width);
-  assert.ok(lines.length <= Math.max(1, Math.min(24, Math.floor(rows / 2))));
+  assert.ok(lines.length <= (rows >= 18 ? Math.min(40, Math.floor(rows * 2 / 3), rows - 6) : Math.max(1, Math.floor(rows / 2))));
   assert.ok(lines.every(line => visibleWidth(line) <= width));
   if (width >= 20) assert.match(lines.join("\n"), /← collapse/, `${rows} rows keep collapse control`);
  }
@@ -180,10 +180,10 @@ it("inline paused anchors survive resize/preceding eviction and repeated Right; 
  const panel = createInlineGuildPanel(store, {requestRender() {}, terminal: {rows: 48}}, theme,
   handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · a"], ["a"]);
- capture("\x1b[A"); capture("\x1b[C"); panel.render(100); capture("\x1b[H");
+ capture("\x1b[A"); capture("\x1b[C"); capture("\t"); panel.render(100); capture("\x1b[H");
  const firstBody = (width: number) => {
   const lines = panel.render(width).map(stripTerminalSequences);
-  return lines[lines.findIndex(line => line.includes("Transcript")) + 1].replace(/^│ +/, "").replace(/ +│$/, "");
+  return lines[lines.findIndex(line => line.includes("Raw details")) + 1].replace(/^│ +/, "").replace(/ +│$/, "");
  };
  for (let i = 0; firstBody(100) !== "anchor 0 中文" && i < 20; i++) capture("\x1b[B");
  assert.equal(firstBody(100), "anchor 0 中文");
@@ -239,16 +239,16 @@ for (const terminal of ["completed", "failed", "cancelled"] as const) for (const
   store.finish("selected", terminal); assert.equal(store.get("selected")?.phase, terminal);
   panel.update(rows(["before", "after"]), ["before", "after"]);
   const output = panel.render(120).map(stripTerminalSequences).join("\n");
-  assert.equal(subscriptions, 0); assert.doesNotMatch(output, /selected|Task ·|Session/);
+  assert.equal(subscriptions, 0); assert.doesNotMatch(output, /selected|Session/);
   assert.match(output, /coder\/typescript.*after/); assert.match(output, /before/);
   const selectedRow = panel.render(120).find(line => line.includes("after"))!;
   assert.match(selectedRow, /\x1b\[7m.*coder\/typescript.*\x1b\[27m/);
   assert.doesNotMatch(panel.render(120).find(line => line.includes("before"))!, /\x1b\[7m/);
   // Esc racing removal releases compact navigation, rather than opening/cancelling a neighbor.
   assert.deepEqual(capture("\x1b"), {consume: true}); assert.equal(capture("\x1b"), undefined);
-  capture("\x1b[A"); capture("\x1b[C"); assert.match(panel.render(120).join("\n"), /Task · after/);
+  capture("\x1b[A"); capture("\x1b[C"); assert.match(panel.render(120).join("\n"), /Task: after[^\n]*\n[^\n]*\n[^\n]*Session/);
   capture("\x1b[D"); store.updatePhase("after", "running"); panel.update(rows(["before", "after"]), ["before", "after"]);
-  assert.equal(subscriptions, 0); assert.doesNotMatch(panel.render(120).join("\n"), /Task ·/);
+  assert.equal(subscriptions, 0); assert.doesNotMatch(panel.render(120).join("\n"), /Session/);
   assert.equal(store.get("after")?.phase, "running"); panel.dispose();
  });
 }
@@ -262,5 +262,35 @@ it("labels omitted still-active detail but removes it once its active ID disappe
  capture("\x1b[A"); capture("\x1b[A"); capture("\x1b[C");
  assert.match(panel.render(100).join("\n"), /unavailable/);
  panel.update(["Guild · 1 active", "⏳ coder/typescript · running · survivor"], ["survivor"]);
- assert.doesNotMatch(panel.render(100).join("\n"), /omitted|unavailable|Task ·/); panel.dispose();
+ assert.doesNotMatch(panel.render(100).join("\n"), /omitted|unavailable|Session/); panel.dispose();
+});
+
+// Follow-up behavior list: expanded room with editor reserve; semantic activity/task hierarchy.
+it("gives expanded detail two-thirds height up to 40 rows while keeping collapsed and tiny layouts compact", () => {
+ const store = new LiveTranscriptStore(); start(store, "room");
+ store.ingest("room", {type: "message_end", message: {role: "assistant", content: [{type: "text", text: Array.from({length: 100}, (_, i) => `detail ${i}`).join("\n")}]}});
+ let capture: any;
+ const tui = {requestRender() {}, terminal: {rows: 60}};
+ const panel = createInlineGuildPanel(store, tui, theme, handler => {capture = handler; return () => {};}, () => {}, () => "", () => true);
+ panel.update(["Guild · 1 active", "⏳ coder/typescript · running · room"], ["room"]);
+ const collapsed = panel.render(100);
+ capture("\x1b[A"); capture("\x1b[C"); capture("\t");
+ for (const [rows, expected] of [[24, 16], [40, 26], [60, 40], [100, 40], [10, 5]]) {
+  tui.terminal.rows = rows;
+  const output = panel.render(100);
+  assert.equal(output.length, expected, `${rows} terminal rows`);
+  assert.match(stripTerminalSequences(output.join("\n")), /← collapse/);
+ }
+ capture("\x1b[D"); tui.terminal.rows = 60;
+ assert.equal(panel.render(100).length, collapsed.length);
+ panel.dispose();
+});
+it("separates inline task labels from readable task text and muted metadata", () => {
+ const store = new LiveTranscriptStore(); start(store, "readable task");
+ const colors = {fg: (color: string, text: string) => `<${color}>${text}</${color}>`, inverse} as any;
+ const panel = createInlineGuildPanel(store, {requestRender() {}, terminal: {rows: 24}}, colors, () => () => {}, () => {}, () => "", () => true);
+ panel.update(["Guild · 1 active", "⏳ coder/typescript · running · 0s"], ["readable task"]);
+ const output = panel.render(200).join("\n");
+ assert.ok(output.includes("<accent>  Task: </accent><text>readable task</text>"));
+ assert.ok(output.includes("<dim> · running · 0s</dim>")); panel.dispose();
 });

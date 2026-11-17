@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import { visibleWidth } from "@earendil-works/pi-tui";
-import { GuildRunTracker } from "../src/visibility";
+import { GuildRunTracker, taskPreview } from "../src/visibility";
 
 describe("Guild member run visibility", () => {
   it("prefers canonical identity and distinguishes queued from running without exposing run internals", () => {
@@ -32,8 +32,8 @@ describe("Guild member run visibility", () => {
 
     assert.deepEqual(lines, [
       "Guild · 1 occupied · 1 queued · 0 waiting · 0 stopping",
-      "⏳ architect/dotnet · run-1 · queued · 5s · 2 turns · Inspect task · queued",
-      "⏳ coder/angular · run-2 · running · 4s",
+      "• architect/dotnet • queued #1 • 5s • 2 turns",
+      "• coder/angular • running #2 • 4s • 0 turns",
     ]);
     assert.doesNotMatch(lines.join("\n"), /do-not-show|\bread\b/);
   });
@@ -65,7 +65,7 @@ describe("Guild member run visibility", () => {
     tracker.finish("one");
     assert.equal(tracker.size, 1);
     assert.doesNotMatch(tracker.formatLines(1_000).join("\n"), /dotnet-architect|recent|completed/);
-    assert.match(tracker.formatLines(1_000).join("\n"), /⏳ frontend-architect/);
+    assert.match(tracker.formatLines(1_000).join("\n"), /• frontend-architect/);
 
     tracker.finish("two");
     assert.equal(tracker.size, 0);
@@ -83,7 +83,7 @@ it("sanitizes and bounds previews without changing the original task", () => {
   const run = { id: "preview", role: "coder" as const, profile: "typescript" as const,
     phase: "queued" as const, startedAt: 0, task };
   tracker.start(run);
-  const preview = tracker.formatLines(0)[1].split(" · ").slice(4).join(" · ");
+  const preview = taskPreview(task)!;
   assert.equal(run.task, task);
   assert.match(preview, /^Inspect 界/);
   assert.match(preview, /…$/);
@@ -99,7 +99,7 @@ it("counts occupied waiting and stopping slots separately from queued rows with 
   const lines = tracker.formatLines(0);
   assert.equal(lines[0], "Guild · 3 occupied · 8 queued · 1 waiting · 1 stopping");
   assert.equal(lines.length, 12);
-  for (let index = 0; index < 11; index++) assert.ok(lines[index + 1].includes(` · run-${index} · `));
+  for (let index = 0; index < 11; index++) assert.ok(lines[index + 1].includes(` #${index + 1} • `));
   tracker.update("run-1", {phase: "running"});
   assert.equal(tracker.formatLines(0)[0], "Guild · 3 occupied · 8 queued · 0 waiting · 1 stopping");
 });

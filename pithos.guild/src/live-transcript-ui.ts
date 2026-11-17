@@ -1,6 +1,6 @@
 import type { Theme } from "@earendil-works/pi-coding-agent";
 import { matchesKey, stripTerminalSequences, truncateToWidth, visibleWidth, wrapTextWithAnsi, type Component } from "@earendil-works/pi-tui";
-import type { LiveTranscriptStore } from "./live-transcript.ts";
+import type { LiveTranscriptStore, LiveEntry, LiveRunSnapshot } from "./live-transcript.ts";
 import { guildPanelAnsi } from "./ui.ts";
 import { taskPreview } from "./visibility.ts";
 
@@ -9,9 +9,10 @@ interface InspectorKeys { matches(data: string, binding: "tui.select.up" | "tui.
 export interface LiveTranscriptInspector extends Component { handleInput(data: string): void; close(): void; dispose(): void; }
 
 // The viewer owns IDs and offsets, never snapshots. Its only effect is rendering.
-export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: InspectorTui, theme: Theme, keys: InspectorKeys, done: () => void, initialId?: string, initialExpanded = false, inline = false): LiveTranscriptInspector {
+export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: InspectorTui, theme: Theme, keys: InspectorKeys, done: () => void, initialId?: string, initialExpanded = false, inline = false, taskVisible: () => boolean = () => false): LiveTranscriptInspector {
  let selected: string | undefined = initialId ?? store.list().active[0]?.id;
  let expanded = initialExpanded;
+ let raw = false;
  let disposed = false;
  let follow = true;
  let offset = 0;
@@ -53,6 +54,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
    if (disposed) return;
    if (matchesKey(data, "f6")) { close(); return; }
    if (keys.matches(data, "tui.select.cancel")) { if (expanded) expanded = false; else { close(); return; } }
+   else if (expanded && matchesKey(data, "tab")) { raw = !raw; follow = true; anchor = undefined; anchorNotice = ""; }
    else if (keys.matches(data, "tui.select.confirm")) expanded = true;
    else if (!expanded) {
     const roster = ids(); const index = roster.indexOf(selected ?? "");
@@ -76,7 +78,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
    if (!inline) width = Math.min(width, 108);
    const padding = inline && width >= 8 ? 2 : 1;
    const contentWidth = Math.max(1, width - 2 - padding * 2);
-   const height = Math.max(1, Math.min(24, tui.terminal.rows - 2));
+   const height = Math.max(1, Math.min(inline ? 40 : 24, tui.terminal.rows - 2));
    const listing = store.list();
    const truncated = [...listing.active, ...listing.recent].filter(run => run.truncated).length;
    const notice = !expanded ? [
@@ -85,7 +87,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
    ].join(" · ") : "";
    const run = selected ? store.get(selected) : undefined;
    const header = theme.fg("accent", inline ? "✦ Session" : `Guild${expanded && run ? ` · ${safe(run.role)}/${safe(run.profile)} · ${run.phase}` : " inspector"}`);
-   const preview = expanded && run && height >= 5 ? theme.fg("muted", `Task · ${taskPreview(run.task)}`) : undefined;
+   const preview = expanded && run && height >= 5 && !taskVisible() ? theme.fg("accent", "Task · ") + theme.fg("text", taskPreview(run.taskSummary) ?? taskPreview(run.task) ?? "unavailable") : undefined;
    const section = inline && expanded && height >= 7;
    const footerGap = inline && height >= 7;
    page = Math.max(0, height - 2 - (notice ? 1 : 0) - (preview ? 1 : 0) - (section ? 1 : 0) - (footerGap ? 1 : 0));
@@ -94,7 +96,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
    if (expanded) {
     const wrapped: string[] = [];
     const positions: Position[] = [];
-    const add = (id: string, part: string, text: string) => {
+    const add = (id: string, part: string, text: string, color: Parameters<Theme["fg"]>[0] = part === "header" ? "accent" : part === "args" ? "muted" : "text") => {
      safe(text).split("\n").forEach((line, logicalLine) => {
       let character = 0;
       wrapTextWithAnsi(line, contentWidth).forEach(row => {
@@ -102,14 +104,16 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
        // the logical line rather than assuming terminal columns equal characters.
        const start = row ? line.indexOf(row, character) : character;
        const column = Math.max(character, start);
-       wrapped.push(theme.fg(part === "header" ? "accent" : part === "args" ? "muted" : "text", row)); positions.push({id, part, line: logicalLine, character: column});
+       wrapped.push(theme.fg(color, row)); positions.push({id, part, line: logicalLine, character: column});
        character = column + row.length;
       });
      });
     };
     if (run) {
+     if (raw) add("", "identity", `Run ID: ${run.id}`);
      for (const entry of run.entries) {
-      if (wrapped.length) add(entry.id, "spacing", "");
+      if (!raw) { add(entry.id, "activity", activityLine(entry, run), activityColor(entry, run)); continue; }
+      if (entry !== run.entries[0]) add(entry.id, "spacing", "");
       if (entry.kind === "tool") {
        const submission = entry.toolName === "guild_submit_result";
        add(entry.id, "header", submission ? "Submission · child report" : `Tool · ${entry.toolName ?? "tool"} · ${entry.status ?? "running"}`);
@@ -120,8 +124,13 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
        add(entry.id, "content", entry.content);
       }
      }
-     if (run.diagnostic) add("", "diagnostic", run.diagnostic);
-     if (run.truncated) add("", "truncated", "[transcript truncated]");
+     if (!raw) {
+      // Keep current execution at the live tail without moving history or its anchors.
+      const current = currentActivity(run);
+      if (current) add("", "current", truncateToWidth(safe(current), contentWidth, "…"), run.phase === "failed" ? "error" : run.phase === "completed" ? "success" : ["queued", "cancelled"].includes(run.phase) ? "muted" : "warning");
+     }
+     if (run.diagnostic) add("", "diagnostic", run.diagnostic, "error");
+     if (run.truncated) add("", "truncated", "[transcript truncated]", "muted");
     } else add("", "unavailable", "Selected run unavailable (evicted)");
     maximum = Math.max(0, wrapped.length - page);
     if (follow) { offset = maximum; anchor = positions[offset]; }
@@ -155,7 +164,7 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
     });
     if (!roster.length && page) body = ["No active Guild runs"];
    }
-   const footer = theme.fg("dim", expanded ? `${follow ? "live" : anchorNotice || "paused"} · ↑↓/Pg scroll · End live · Esc back · F6 ${initialExpanded ? "back" : "close"}` : "↑↓ select · Enter inspect · Esc close · F6 close");
+   const footer = theme.fg("dim", expanded ? `${follow ? "live" : anchorNotice || "paused"} · Tab ${raw ? "activity" : "details"} · ↑↓/Pg scroll · End live · Esc back · F6 ${initialExpanded ? "back" : "close"}` : "↑↓ select · Enter inspect · Esc close · F6 close");
    const { background } = guildPanelAnsi(theme);
    const pad = (text: string, columns: number) => {
     const clipped = truncateToWidth(text, Math.max(0, columns), "…");
@@ -173,13 +182,56 @@ export function createLiveTranscriptInspector(store: LiveTranscriptStore, tui: I
     : pad(text, width);
    const shortFooter = theme.fg("dim", `${expanded ? follow ? "live" : anchorNotice || "paused" : "Enter inspect"} · Esc ${expanded ? "back" : "close"} · F6 ${initialExpanded ? "back" : "close"}`);
    const compactControl = theme.fg("dim", `Esc ${expanded ? "back" : "close"} · F6 ${initialExpanded ? "back" : "close"}`);
-   const inlineFooter = theme.fg("dim", `← collapse · ${follow ? "live" : anchorNotice || "paused"} · ↑↓/Pg scroll · End live`);
+   const inlineFooter = theme.fg("dim", `← collapse · ${follow ? "live" : anchorNotice || "paused"} · Tab ${raw ? "activity" : "details"} · ↑↓/Pg scroll · End live`);
    const fittedFooter = inline ? (contentWidth < 14 ? "← collapse" : inlineFooter)
     : controls(visibleWidth(controls(footer)) <= contentWidth ? footer : contentWidth < 28 ? compactControl : shortFooter);
    const lines = height === 1 ? [frame(notice ? controls(`${notice} · Esc/F6 close`) : fittedFooter)]
     : height === 2 && notice ? [frame(notice), frame(fittedFooter)]
-    : [edge("╭", header, "╮"), ...(preview ? [frame(preview)] : []), ...(section ? [edge("├", theme.fg("muted", "Transcript"), "┤")] : []), ...body.map(frame), ...(notice && height > 2 ? [frame(theme.fg("muted", notice))] : []), ...(footerGap ? [frame("")] : []), edge("╰", fittedFooter, "╯")];
+    : [edge("╭", header, "╮"), ...(preview ? [frame(preview)] : []), ...(section ? [edge("├", theme.fg("muted", raw ? "Raw details" : "Activity"), "┤")] : []), ...body.map(frame), ...(notice && height > 2 ? [frame(theme.fg("muted", notice))] : []), ...(footerGap ? [frame("")] : []), edge("╰", fittedFooter, "╯")];
    return lines.map(line => `${background}${pad(line, width)}\x1b[49m`);
   },
  };
+}
+
+// Labels describe observed tool lifecycle, never inferred intent or task success.
+function activityLine(entry: LiveEntry, run: LiveRunSnapshot): string {
+ if (entry.kind === "text") return `Assistant: ${taskPreview(entry.content) ?? "[empty text]"}`;
+ if (entry.toolName === "guild_submit_result") return taskPreview(entry.content) ?? "Report submission · not host-validated";
+ let args: Record<string, unknown> = {};
+ try { const value = JSON.parse(entry.args ?? "{}"); if (value && typeof value === "object" && !Array.isArray(value)) args = value; } catch { /* Truncated/malformed arguments stay available in raw details. */ }
+ const field = (name: string) => typeof args[name] === "string" ? taskPreview(args[name] as string) : undefined;
+ const target = field("path");
+ const labels: Record<string, [string, string, string]> = {
+  read: ["Read", "Reading", "Read"], edit: ["Edit", "Editing", "Edited"], write: ["Write", "Writing", "Wrote"],
+  grep: ["Search", "Searching", "Searched"], find: ["Find", "Finding", "Searched"], ls: ["List", "Listing", "Listed"],
+  bash: ["Run", "Running", "Command finished:"], git_read: ["Inspect Git", "Inspecting Git", "Inspected Git"],
+  guild_ask_parent: ["Ask parent", "Asking parent", "Parent exchange finished"],
+ };
+ const name = taskPreview(entry.toolName) ?? "tool";
+ const verbs = Object.hasOwn(labels, name) ? labels[name] : [name, name, `${name} finished`];
+ const detail = name === "bash" ? field("command") : name === "grep" || name === "find" ? [field("pattern"), target].filter(Boolean).join(" in ") : target;
+ const suffix = detail ? ` ${detail}` : "";
+ if (entry.status === "failed") return `✗ ${name === "bash" ? "Command failed:" : `${verbs[0]} failed:`}${suffix}`;
+ if (entry.status === "completed") return `✓ ${verbs[2]}${suffix}`;
+ if (["completed", "failed", "cancelled"].includes(run.phase)) return `— Unfinished: ${verbs[0]}${suffix}`;
+ return entry.status === "requested" ? `○ Requested: ${verbs[0]}${suffix}` : `→ ${verbs[1]}${suffix}`;
+}
+function currentActivity(run: LiveRunSnapshot): string {
+ if (run.phase === "queued") return "○ Queued; no child execution yet";
+ if (run.phase === "waiting") return "→ Waiting for parent";
+ if (run.phase === "stopping") return "→ Stopping; awaiting cleanup";
+ if (run.phase !== "running") return `— Run ${run.phase} (transport state)`;
+ const executing = run.entries.filter(entry => entry.kind === "tool" && entry.status === "running");
+ if (executing.length) return `Current${executing.length > 1 ? ` (${executing.length} executing)` : ""}: ${activityLine(executing[0], run)}`;
+ return run.entries.length ? "→ Awaiting next activity" : "→ Awaiting child events";
+}
+
+// Completion colors describe tool execution, not host validation of the task.
+function activityColor(entry: LiveEntry, run: LiveRunSnapshot): Parameters<Theme["fg"]>[0] {
+ if (entry.kind === "text") return "text";
+ if (entry.status === "failed") return "error";
+ if (entry.toolName === "guild_submit_result") return "muted";
+ if (entry.status === "completed") return "success";
+ if (entry.status === "requested" || ["completed", "failed", "cancelled"].includes(run.phase)) return "muted";
+ return "warning";
 }

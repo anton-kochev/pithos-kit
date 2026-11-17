@@ -34,6 +34,12 @@ function compact(value: string, maxLength = 100): string {
 }
 
 function styledPanelLine(line: string, theme: Theme, selected = false): string {
+	if (line.startsWith("  Task: ")) return theme.fg("accent", "  Task: ") + theme.fg("text", line.slice(8));
+	if (line.startsWith("• ")) {
+		const [identity, ...metadata] = line.slice(2).split(" • ");
+		const label = theme.fg("accent", `• ${identity}`);
+		return (selected ? theme.inverse(label) : label) + theme.fg("dim", ` • ${metadata.join(" • ")}`);
+	}
 	if (line.startsWith("⏳ ")) {
 		const [member = "guild member", ...metadata] = line.slice("⏳ ".length).split(" · ");
 		const queued = metadata[0] === "queued";

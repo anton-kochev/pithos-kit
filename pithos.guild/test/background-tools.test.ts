@@ -661,3 +661,13 @@ for (const ownership of ["local", "retired", "replaced"] as const) {
   if (next) { assert.equal(next.isActive(), true); next.dispose(); assert.deepEqual(f.active(), ["read"]); }
  });
 }
+test("guild_start accepts a parent display sentence without replacing task instructions", async () => {
+ let captured: any;
+ const f = fixture({context: () => context, controls: {start: (input: any) => {captured = input; return summary;}} as any});
+ f.registration.show(f.ctx);
+ const tool = f.definitions.get("guild_start")!;
+ await tool.execute("call", {role: "coder", profile: "typescript", task: "Full instructions", taskSummary: "Verify display."}, undefined, undefined, f.ctx as any);
+ assert.equal(captured.task, "Full instructions"); assert.equal(captured.taskSummary, "Verify display.");
+ assert.match(tool.promptGuidelines!.join(" "), /taskSummary/);
+ f.registration.dispose();
+});
