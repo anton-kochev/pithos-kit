@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { it } from "node:test";
 import { registerChildProtocol } from "../src/child-protocol.ts";
-import { childTools, SUBMIT_TOOL } from "../src/protocol.ts";
+import { BACKGROUND_CAPABILITY, childTools, SUBMIT_TOOL } from "../src/protocol.ts";
 import { buildTask, report } from "./protocol-fixtures.ts";
 
 function harness(tools?: string[]) {
@@ -117,4 +117,37 @@ it("instructs the child to report required TDD as claims without waivers", () =>
  assert.doesNotMatch(JSON.stringify(h.tool.parameters), /"(?:anyOf|oneOf|const)"\s*:/);
  assert.ok(h.tool.parameters.required.includes("compliance"));
  assert.ok(h.tool.parameters.required.includes("taskOutcome"));
+});
+
+const shellContext = {cwd: process.cwd(), sessionManager: {getSessionId: () => "child-session", getSessionFile: () => undefined}};
+
+it("exposes optional bash intent to coder children only, preserving native execution", async () => {
+ for (const background of [false, true]) {
+  const tools = new Map<string, any>();
+  registerChildProtocol({on() {}, getSettings: () => ({}), registerTool: (tool: any) => tools.set(tool.name, tool)} as any,
+   buildTask({role: "coder", profile: "general", task: "Work"}), background ? {capability: BACKGROUND_CAPABILITY} : undefined);
+  const bash = tools.get("bash");
+  assert.ok(bash, "coder bash override must be registered");
+  assert.equal(bash.parameters.properties.intent.type, "string");
+  assert.ok(!bash.parameters.required.includes("intent"));
+  assert.match(bash.description, /intent/i);
+  const result = await bash.execute("shell", {command: "printf intent-test", intent: "Inspect shell output", timeout: 2}, undefined, undefined, shellContext);
+  assert.equal(result.content[0].text, "intent-test");
+  const failure = await bash.execute("fail", {command: "exit 7"}, undefined, undefined, shellContext);
+  assert.equal(failure.isError, true);
+  assert.match(failure.content[0].text, /7/);
+ }
+ for (const role of ["explorer", "architect", "reviewer", "writer"] as const) {
+  const tools: string[] = [];
+  registerChildProtocol({on() {}, registerTool: (tool: any) => tools.push(tool.name)} as any, buildTask({role, profile: "general", task: "Work"}));
+  assert.ok(!tools.includes("bash"));
+ }
+});
+
+it("preserves the shell prefix and Pi session environment for a labeled call", async () => {
+ let bash: any;
+ registerChildProtocol({on() {}, getSettings: () => ({shellCommandPrefix: "export GUILD_INTENT_TEST=prefix-value"}), registerTool: (tool: any) => {if (tool.name === "bash") bash = tool;}} as any,
+  buildTask({role: "coder", profile: "general", task: "Work"}));
+ const result = await bash.execute("prefix", {command: 'printf "%s:%s" "$GUILD_INTENT_TEST" "$PI_SESSION_ID"', intent: "Inspect shell settings"}, undefined, undefined, shellContext);
+ assert.equal(result.content[0].text, "prefix-value:child-session");
 });

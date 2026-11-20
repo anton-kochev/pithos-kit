@@ -6,7 +6,7 @@ export type LiveRunStart = Readonly<{
 }>;
 export type LiveEntry = Readonly<{
   id: string; kind: "text" | "tool"; content: string;
-  toolCallId?: string; toolName?: string; args?: string;
+  toolCallId?: string; toolName?: string; args?: string; shellIntent?: string;
   status?: "requested" | "running" | "completed" | "failed";
 }>;
 export type LiveRunSnapshot = Readonly<Omit<LiveRunStart, "phase"> & {
@@ -176,20 +176,24 @@ export class LiveTranscriptStore {
     const index = entries.findIndex(entry => entry.kind === "tool" && entry.toolCallId === callId);
     const previous = index < 0 ? undefined : entries[index];
     if (previous?.status && ((status === "requested" && previous.status !== "requested") || (["completed", "failed"].includes(previous.status) && status === "running"))) return run;
-    const toolName = typeof name === "string" ? this.text(name, 128) : undefined;
-    const submission = (toolName?.value ?? previous?.toolName) === "guild_submit_result";
+    const boundedName = typeof name === "string" ? this.text(name, 128) : undefined;
+    const toolName = boundedName?.value ?? previous?.toolName;
+    const submission = toolName === "guild_submit_result";
     const argument = submission || args === undefined ? undefined : argumentText(args, this.limits.maxStringBytes);
+    // Retain the label independently: a long command can leave the raw arguments incomplete.
+    const intent = toolName === "bash" ? record(args)?.intent : undefined;
+    const shellIntent = typeof intent === "string" ? this.text(intent, Math.min(512, this.limits.maxStringBytes)).value
+      : toolName === "bash" && args === undefined ? previous?.shellIntent : undefined;
     const summary = submissionSummary(args) ?? submissionSummary(record(result)?.details);
     const output = this.text(submission
       ? `${status === "requested" ? "Report submission requested" : status === "running" ? "Report submission" : status === "failed" ? "Report submission failed" : "Report submitted"} · not host-validated${summary ? ` — ${summary}` : previous?.content.includes(" — ") ? ` — ${previous.content.split(" — ").slice(1).join(" — ")}` : ""}`
       : result === undefined ? previous?.content ?? "" : content(record(result)?.content, this.limits.maxStringBytes, this.limits.maxEntries));
     const entry: LiveEntry = Object.freeze({ id: previous?.id ?? `t:${callId}`, kind: "tool", toolCallId: callId as string,
-      toolName: toolName?.value ?? previous?.toolName,
-      args: submission ? undefined : argument?.value ?? previous?.args,
-      content: output.value, status });
+      toolName, args: submission ? undefined : argument?.value ?? previous?.args,
+      ...(shellIntent ? {shellIntent} : {}), content: output.value, status });
     if (index < 0) entries.push(entry); else entries[index] = entry;
     return { entries: Object.freeze(entries), truncated: run.truncated ||
-      toolName?.truncated === true || argument?.truncated === true || output.truncated };
+      boundedName?.truncated === true || argument?.truncated === true || output.truncated };
   }
   private validId(id: string): boolean {
     return !!id && Buffer.byteLength(id) <= this.limits.maxIdBytes && safe(id) === id;
@@ -333,7 +337,7 @@ function argumentText(value: unknown, limit: number): { value: string; truncated
 function bytes(run: LiveRunSnapshot): number {
   const strings = [run.id, run.role, run.profile, run.task, run.phase, run.taskSummary ?? "", run.diagnostic ?? ""];
   for (const entry of run.entries) strings.push(entry.id, entry.kind, entry.content,
-    entry.toolCallId ?? "", entry.toolName ?? "", entry.args ?? "", entry.status ?? "");
+    entry.toolCallId ?? "", entry.toolName ?? "", entry.args ?? "", entry.shellIntent ?? "", entry.status ?? "");
   return strings.reduce((total, value) => total + Buffer.byteLength(value), 0);
 }
 function clip(value: string, limit: number): string {
@@ -356,7 +360,8 @@ function sameEntries(left: readonly LiveEntry[], right: readonly LiveEntry[]): b
   return left.length === right.length && left.every((entry, index) => {
     const other = right[index];
     return entry.id === other.id && entry.kind === other.kind && entry.content === other.content &&
-      entry.toolCallId === other.toolCallId && entry.toolName === other.toolName && entry.args === other.args && entry.status === other.status;
+      entry.toolCallId === other.toolCallId && entry.toolName === other.toolName && entry.args === other.args &&
+      entry.shellIntent === other.shellIntent && entry.status === other.status;
   });
 }
 

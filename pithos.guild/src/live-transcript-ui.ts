@@ -278,15 +278,20 @@ function toolDescription(name: string | undefined, args: Record<string, unknown>
  return ["Use a tool.", "Using a tool.", "Finished a tool call."];
 }
 
-// Labels describe observed tool lifecycle, never inferred intent or task success.
+// Lifecycle comes from events; supplied intent remains a separate, unverified label.
 function activityLine(entry: LiveEntry, run: LiveRunSnapshot): string {
  if (entry.kind === "text") return `Assistant: ${taskPreview(entry.content) ?? "[empty text]"}`;
  if (entry.toolName === "guild_submit_result") return taskPreview(entry.content) ?? "Report submission · not host-validated";
- let args: Record<string, unknown> = {};
- try { const value = JSON.parse(entry.args ?? "{}"); if (value && typeof value === "object" && !Array.isArray(value)) args = value; } catch { /* Truncated/malformed arguments stay available in raw details. */ }
- const description = toolDescription(entry.toolName, args);
+ const intent = taskPreview(entry.shellIntent);
+ let description: ActivityDescription;
+ if (intent) description = [intent, intent, `Finished: ${intent}`];
+ else {
+  let args: Record<string, unknown> = {};
+  try { const value = JSON.parse(entry.args ?? "{}"); if (value && typeof value === "object" && !Array.isArray(value)) args = value; } catch { /* Truncated/malformed arguments stay available in raw details. */ }
+  description = toolDescription(entry.toolName, args);
+ }
  // Failure and unfinished states describe the attempted action, never completed substeps.
- if (entry.status === "failed") return `✗ Failed to ${description[0][0].toLowerCase()}${description[0].slice(1)}`;
+ if (entry.status === "failed") return intent ? `✗ Failed: ${intent}` : `✗ Failed to ${description[0][0].toLowerCase()}${description[0].slice(1)}`;
  if (entry.status === "completed") return `✓ ${description[2]}`;
  if (["completed", "failed", "cancelled"].includes(run.phase)) return `— Unfinished: ${description[0]}`;
  return entry.status === "requested" ? `○ Requested: ${description[0]}` : `→ ${description[1]}`;

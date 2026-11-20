@@ -206,11 +206,14 @@ it("describes compound inspection completion without claiming early failed subco
 
 it("uses bounded honest descriptions for file work, checks, and opaque commands", () => {
  const cases: [string, unknown, string, string][] = [
-  ["read", {path: "test/display-plan.test.ts"}, "Reading tests in test/display-plan.test.ts.", "Read tests in test/display-plan.test.ts."],
+  ["read", {path: "test/display-plan.test.ts", intent: "Not a shell label"}, "Reading tests in test/display-plan.test.ts.", "Read tests in test/display-plan.test.ts."],
   ["edit", {path: "src/live-transcript-ui.ts"}, "Updating src/live-transcript-ui.ts.", "Updated src/live-transcript-ui.ts."],
   ["write", {path: "test/colors.test.ts"}, "Writing tests in test/colors.test.ts.", "Wrote tests in test/colors.test.ts."],
   ["grep", {pattern: "height", path: "test"}, "Searching file contents in test.", "Searched file contents in test."],
   ["bash", {command: "npm test"}, "Running tests.", "Finished running tests."],
+  ["bash", {command: "npm test", intent: " \n\x1b[31m"}, "Running tests.", "Finished running tests."],
+  ["bash", {command: "npm test", intent: 42}, "Running tests.", "Finished running tests."],
+  ["bash", {command: "npm test", intent: "Inspect " + "x".repeat(100)}, "Inspect " + "x".repeat(71) + "…", "Finished: Inspect " + "x".repeat(71) + "…"],
   ["bash", {command: "npm run typecheck"}, "Running the type check.", "Finished running the type check."],
   ["git_read", {subcommand: "status"}, "Checking the working tree.", "Checked the working tree."],
   ["git_read", {subcommand: "log"}, "Inspecting commit history.", "Inspected commit history."],
@@ -272,4 +275,41 @@ it("groups executing actions once below history and moves finished calls into hi
  assert.match(ui.render(100).join("\n"), /Run ID: a/);
  assert.doesNotMatch(ui.render(100).join("\n"), /more executing/);
  ui.dispose(); store.dispose();
+});
+
+it("shows shell intent without converting completion into verified intent and retains raw commands", () => {
+ const store = new LiveTranscriptStore();
+ store.start({id: "intent", role: "coder", profile: "general", task: "Work", phase: "running", startedAt: 0});
+ const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 40}}, {fg: (_: string, text: string) => text} as any, {matches: (a: string, b: string) => a === b}, () => {}, "intent", true);
+ const args = {command: "printf raw-command; exit 0", intent: "  Run\n\x1b[31m AppHost cleanup tests  "};
+ const render = () => ui.render(120).join("\n");
+ try {
+  store.ingest("intent", {type: "message_end", message: {role: "assistant", content: [{type: "toolCall", id: "b", name: "bash", arguments: args}]}});
+  assert.match(render(), /○ Requested: Run AppHost cleanup tests/);
+  store.ingest("intent", {type: "tool_execution_start", toolCallId: "b", toolName: "bash", args});
+  assert.match(render(), /→ Run AppHost cleanup tests/);
+  assert.doesNotMatch(render(), /raw-command|Requested:/);
+  store.ingest("intent", {type: "tool_execution_end", toolCallId: "b", result: {content: []}});
+  assert.match(render(), /✓ Finished: Run AppHost cleanup tests/);
+  assert.doesNotMatch(render(), /raw-command|tests passed/);
+  ui.handleInput("\t"); ui.handleInput("\x1b[H");
+  assert.match(render(), /printf raw-command; exit 0/);
+  ui.handleInput("\t");
+  store.ingest("intent", {type: "tool_execution_start", toolCallId: "fail", toolName: "bash", args: {...args, command: "exit 7"}});
+  store.ingest("intent", {type: "tool_execution_end", toolCallId: "fail", isError: true, result: {content: []}});
+  assert.match(render(), /✗ Failed: Run AppHost cleanup tests/);
+ } finally { ui.dispose(); store.dispose(); }
+});
+
+it("keeps the shell intent visible when the raw arguments exceed the transcript limit", () => {
+ const store = new LiveTranscriptStore({maxStringBytes: 128});
+ store.start({id: "long-command", role: "coder", profile: "general", task: "Work", phase: "running", startedAt: 0});
+ const ui = createLiveTranscriptInspector(store, {requestRender() {}, terminal: {rows: 40}}, {fg: (_: string, text: string) => text} as any, {matches: (a: string, b: string) => a === b}, () => {}, "long-command", true);
+ try {
+  store.ingest("long-command", {type: "tool_execution_start", toolCallId: "b", toolName: "bash", args: {command: "printf " + "a".repeat(200), intent: "Check generated output"}});
+  assert.equal(store.get("long-command")?.truncated, true);
+  assert.match(ui.render(100).join("\n"), /Check generated output/);
+  store.ingest("long-command", {type: "tool_execution_end", toolCallId: "b", result: {content: []}});
+  assert.match(ui.render(100).join("\n"), /Check generated output/);
+ } finally { ui.dispose(); store.dispose(); }
 });

@@ -1,6 +1,7 @@
 // Explicit child entry only. Never add this file to normal extension discovery.
 import { openSync, fstatSync, readSync, closeSync } from "node:fs";
-import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { createBashToolDefinition, type ExtensionAPI, type ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { Type } from "typebox";
 import { QuestionExchange, ASK_TOOL, BACKGROUND_CAPABILITY, QUESTION_LIMITS, questionSchema, validateQuestion, validateQuestionText, type QuestionOutcome, backgroundCapability, type BackgroundOptions, validateTask, LIMITS, childTools, hasIdentityMismatch, PROTOCOL, resultSchema, SUBMIT_TOOL, validateResult, type GuildTask } from "./protocol.ts";
 import { GIT_READ_TOOL, registerGitReadTool } from "./git-read.ts";
 
@@ -8,6 +9,22 @@ export function registerChildProtocol(pi: ExtensionAPI, task: GuildTask, backgro
  const capability = backgroundCapability(backgroundOptions);
  const tools = childTools(task.role, capability);
  if (tools.includes(GIT_READ_TOOL)) registerGitReadTool(pi);
+ if (tools.includes("bash")) {
+  const native = createBashToolDefinition(process.cwd());
+  pi.registerTool({
+   ...native,
+   description: `${native.description} Include intent on each call so the user can see why it is running.`,
+   parameters: Type.Object({...native.parameters.properties,
+    intent: Type.Optional(Type.String({description: "Short plain-language action, for example 'Run AppHost cleanup tests'. Leave out shell syntax, secrets, and outcome claims."})),
+   }),
+   execute(id, {intent: _intent, ...args}, signal, onUpdate, ctx) {
+    const {shellCommandPrefix, shellPath} = pi.getSettings();
+    // Pass the live context so Pi still injects the child's session environment.
+    return createBashToolDefinition(ctx.cwd, {commandPrefix: shellCommandPrefix, shellPath})
+     .execute(id, args, signal, onUpdate, ctx);
+   },
+  });
+ }
  const questionAbort = new AbortController();
  let questionExecuting = false;
  const questions = capability ? new QuestionExchange() : undefined;
