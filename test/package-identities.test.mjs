@@ -13,7 +13,7 @@ const packages = [
   { directory: "pithos.telos", shortName: "telos", version: "0.5.0" },
   { directory: "pithos.aegis", shortName: "aegis", version: "0.3.0" },
   { directory: "pithos.guild", shortName: "guild", version: "0.14.1" },
-  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.4.0" },
+  { directory: "pithos.context-bar", shortName: "context-bar", version: "0.4.1" },
   { directory: "pithos.plan", shortName: "plan", version: "0.6.1" },
   { directory: "pithos.themes", shortName: "themes", version: "0.2.0" },
   { directory: "pithos.translate", shortName: "translate", version: "3.1.1" },
