@@ -384,7 +384,7 @@ class GuildHandoverProgressCard implements GuildHandoverProgress {
 	invalidate(): void { this.inspection?.invalidate(); }
 
 	render(width: number): string[] {
-		if (this.inspection) return this.inspection.render(Math.min(width, HANDOVER_PROGRESS_MAX_WIDTH));
+		if (this.inspection) return this.inspection.render(Math.min(width, HANDOVER_PROGRESS_MAX_WIDTH)).slice();
 		const cardWidth = Math.max(2, Math.min(width, HANDOVER_PROGRESS_MAX_WIDTH));
 		const innerWidth = Math.max(1, cardWidth - 2);
 		const border = (value: string) => this.theme.fg("borderAccent", value);

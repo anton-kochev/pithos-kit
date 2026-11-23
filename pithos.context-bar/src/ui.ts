@@ -97,7 +97,7 @@ export function withoutTopEditorBorder(editor: EditorComponent): EditorComponent
   return new Proxy(editor, {
     get(target, property) {
       if (property === "render") {
-        return (width: number): string[] => {
+        return (width: number): readonly string[] => {
           const lines = target.render(width);
           return lines[0] !== undefined && isEditorTopBorder(lines[0]) ? lines.slice(1) : lines;
         };
