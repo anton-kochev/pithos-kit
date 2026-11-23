@@ -193,14 +193,26 @@ function roundedPercent(value: number | undefined): string {
   return value === undefined ? "n/a" : `${Math.round(value)}%`;
 }
 
-export function formatCodexUsageFooter(usage: CodexUsage, stale = false): string {
+function formatWindowFooter(label: string, window: CodexUsageWindow, now: number): string {
+  const summary = `${label} ${roundedPercent(window.usedPercent)}`;
+  if (window.resetAt === undefined) return summary;
+  if (window.resetAt <= now) return `${summary} (reset due)`;
+
+  const hours = Math.floor((window.resetAt - now) / 3_600_000);
+  const remaining = hours >= 24
+    ? `${Math.floor(hours / 24)}d`
+    : hours >= 1 ? `${hours}h` : "<1h";
+  return `${summary} (resets in ${remaining})`;
+}
+
+export function formatCodexUsageFooter(usage: CodexUsage, stale = false, now = Date.now()): string {
   return [
     "Codex",
     ...(usage.primary.usedPercent !== undefined
-      ? [`5h ${roundedPercent(usage.primary.usedPercent)}`]
+      ? [formatWindowFooter("5h", usage.primary, now)]
       : []),
     ...(usage.secondary.usedPercent !== undefined
-      ? [`week ${roundedPercent(usage.secondary.usedPercent)}`]
+      ? [formatWindowFooter("week", usage.secondary, now)]
       : []),
     ...(stale ? ["stale"] : []),
   ].join(" · ");
@@ -256,7 +268,7 @@ function extractAccountId(token: string): string {
 function parseCodexUsageAuth(auth: ProviderAuthLike | undefined): ResolvedCodexUsageAuth {
   const apiKey = auth?.auth?.apiKey;
   if (!apiKey || auth?.source?.toLowerCase() !== "oauth") {
-    throw new CodexUsageAuthError("Codex usage requires ChatGPT OAuth authentication");
+    throw new CodexUsageAuthError("Sign in to openai-codex with ChatGPT (OAuth) to read the Codex account's usage.");
   }
   return { apiKey, accountId: extractAccountId(apiKey) };
 }

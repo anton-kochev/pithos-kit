@@ -36,6 +36,7 @@ const CONTEXT_BAR_PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url))
 const WIDGET_KEY = "context-bar";
 const CODEX_USAGE_STATUS_KEY = "context-bar-codex-usage";
 const STATE_ENTRY_TYPE = "context-bar-enabled";
+const OPENAI_CODEX_METER_ENTRY = "context-bar-openai-codex-meter";
 const CODEX_USAGE_REFRESH_INTERVAL_MS = 60_000;
 const CODEX_USAGE_TIMEOUT_MS = 5_000;
 const CODEX_USAGE_AUTH_POLL_MS = 15_000;
@@ -47,7 +48,8 @@ export interface ContextBarDependencies {
   codexUsageTimeoutMs?: number;
   codexUsageAuthPollMs?: number;
 }
-const CONTEXT_BAR_HELP = `Usage: /context-bar [on|off|status|refresh]
+const COMMAND_USAGE = "Usage: /context-bar [on|off|status|refresh|codex-on|codex-off]";
+const CONTEXT_BAR_HELP = `${COMMAND_USAGE}
 
 Toggle the context-window composition bar, set it explicitly on or off, show its current token breakdown and Codex usage, or refresh Codex usage immediately.
 
@@ -56,6 +58,8 @@ Options:
   off          Disable Context Bar
   status       Show context and Codex usage details
   refresh      Refresh Codex usage immediately
+  codex-on     Show the separately signed-in Codex account's quota on OpenAI subscription models
+  codex-off    Stop showing the Codex meter on OpenAI subscription models
   --help, -h   Show this help`;
 
 const CONTEXT_BAR_ARGUMENTS = [
@@ -63,6 +67,8 @@ const CONTEXT_BAR_ARGUMENTS = [
   { value: "off", label: "off", description: "Disable Context Bar" },
   { value: "status", label: "status", description: "Show context and Codex usage details" },
   { value: "refresh", label: "refresh", description: "Refresh Codex usage immediately" },
+  { value: "codex-on", label: "codex-on", description: "Show the Codex account meter on OpenAI subscription models" },
+  { value: "codex-off", label: "codex-off", description: "Hide the Codex account meter on OpenAI subscription models" },
   { value: "--help", label: "--help", description: "Show command help" },
 ];
 
@@ -125,13 +131,13 @@ function emptySnapshot(): ContextSnapshot {
   });
 }
 
-function restoreEnabled(ctx: ExtensionContext): boolean {
+function restoreToggle(ctx: ExtensionContext, entryType: string, fallback: boolean): boolean {
   for (const entry of [...ctx.sessionManager.getBranch()].reverse()) {
-    if (entry.type !== "custom" || entry.customType !== STATE_ENTRY_TYPE) continue;
+    if (entry.type !== "custom" || entry.customType !== entryType) continue;
     const data = entry.data as { enabled?: unknown } | undefined;
     if (typeof data?.enabled === "boolean") return data.enabled;
   }
-  return true;
+  return fallback;
 }
 
 export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDependencies = {}): void {
@@ -142,6 +148,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   const log = createPithosLogger();
   log.info("extension.register");
   let enabled = true;
+  let openAICodexMeter = false;
   let snapshot = emptySnapshot();
   let messages: ContextMessageLike[] = [];
   let systemPrompt = "";
@@ -185,12 +192,14 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
     clearCodexUsageStatus(ctx);
   }
 
-  function isActiveCodexOAuth(ctx: ExtensionContext): boolean {
-    return ctx.model?.provider === "openai-codex" && ctx.modelRegistry.isUsingOAuth(ctx.model);
+  function supportsCodexMeter(ctx: ExtensionContext): boolean {
+    const model = ctx.model;
+    return (model?.provider === "openai-codex" || (openAICodexMeter && model?.provider === "openai"))
+      && ctx.modelRegistry.isUsingOAuth(model);
   }
 
   function isCodexUsageEligible(ctx: ExtensionContext): boolean {
-    return ctx.mode === "tui" && enabled && !isOffline() && isActiveCodexOAuth(ctx);
+    return ctx.mode === "tui" && enabled && !isOffline() && supportsCodexMeter(ctx);
   }
 
   function stopCodexUsageAuthPoll(): void {
@@ -267,7 +276,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
         const effectiveForce = force || codexUsageForceRequested;
         codexUsageForceRequested = false;
         if (!effectiveForce && now() - lastCodexUsageAttemptAt < CODEX_USAGE_REFRESH_INTERVAL_MS) {
-          if (codexUsage) ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage, codexUsageStale));
+          if (codexUsage) ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage, codexUsageStale, now()));
           return;
         }
         while (true) {
@@ -332,7 +341,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
           log.info("codex_usage.refresh.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: now() - started, force: effectiveForce, plan: nextUsage.plan, primary: nextUsage.primary, secondary: nextUsage.secondary });
           codexUsageStale = false;
           codexUsageError = undefined;
-          ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage));
+          ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage, false, now()));
           return;
         }
       } catch (error) {
@@ -356,7 +365,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
         codexUsageError = message;
         codexUsageStale = codexUsage !== undefined;
         if (codexUsage) {
-          ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage, true));
+          ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, formatCodexUsageFooter(codexUsage, true, now()));
         } else {
           ctx.ui.setStatus(CODEX_USAGE_STATUS_KEY, "Codex · usage unavailable");
         }
@@ -519,7 +528,8 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
 
   pi.on("session_start", (event, ctx) => {
     log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
-    enabled = restoreEnabled(ctx);
+    enabled = restoreToggle(ctx, STATE_ENTRY_TYPE, true);
+    openAICodexMeter = restoreToggle(ctx, OPENAI_CODEX_METER_ENTRY, false);
     providerRequestFingerprint = undefined;
     if (enabled) {
       systemPrompt = ctx.getSystemPrompt();
@@ -582,6 +592,11 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   });
 
   pi.on("session_tree", (_event, ctx) => {
+    const nextMeter = restoreToggle(ctx, OPENAI_CODEX_METER_ENTRY, false);
+    if (openAICodexMeter !== nextMeter) {
+      openAICodexMeter = nextMeter;
+      if (ctx.model?.provider === "openai") void refreshCodexUsage(ctx);
+    }
     if (!enabled) return;
     messages = loadSessionMessages(ctx);
     refresh(ctx);
@@ -658,7 +673,19 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
         setEnabled(true, ctx);
         if (!wasEnabled) await refreshCodexUsage(ctx, true);
       } else if (action === "off") setEnabled(false, ctx);
-      else if (action === "refresh") {
+      else if (action === "codex-on" || action === "codex-off") {
+        const next = action === "codex-on";
+        if (openAICodexMeter !== next) {
+          pi.appendEntry(OPENAI_CODEX_METER_ENTRY, { enabled: next });
+          openAICodexMeter = next;
+          if (ctx.model?.provider === "openai") await refreshCodexUsage(ctx);
+        }
+        if (ctx.hasUI) {
+          const state = `Codex account meter for OpenAI subscription models: ${next ? "on" : "off"}.`;
+          const error = next && ctx.model?.provider === "openai" ? codexUsageError : undefined;
+          ctx.ui.notify(error ? `${state} ${error}` : state, error ? "warning" : "info");
+        }
+      } else if (action === "refresh") {
         if (!enabled) {
           invalidateCodexUsage(ctx);
           if (ctx.hasUI) ctx.ui.notify("Enable Context Bar before refreshing Codex usage", "warning");
@@ -669,9 +696,14 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
           if (ctx.hasUI) ctx.ui.notify("Codex usage refresh is unavailable while PI_OFFLINE is enabled", "warning");
           return;
         }
-        if (!isActiveCodexOAuth(ctx)) {
+        if (!supportsCodexMeter(ctx)) {
           invalidateCodexUsage(ctx);
-          if (ctx.hasUI) ctx.ui.notify("Codex usage refresh requires an active OAuth-authenticated Codex model", "warning");
+          if (ctx.hasUI) {
+            const message = ctx.model?.provider === "openai" && ctx.modelRegistry.isUsingOAuth(ctx.model)
+              ? "Use /context-bar codex-on to show usage from your separate openai-codex login."
+              : "Codex usage refresh requires an active OAuth-authenticated Codex model";
+            ctx.ui.notify(message, "warning");
+          }
           return;
         }
         await refreshCodexUsage(ctx, true);
@@ -699,7 +731,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
         }
         if (!enabled) clearAccountingInputs();
       } else if (ctx.hasUI) {
-        ctx.ui.notify("Usage: /context-bar [on|off|status|refresh]", "warning");
+        ctx.ui.notify(COMMAND_USAGE, "warning");
       }
     },
   });

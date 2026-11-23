@@ -36,7 +36,7 @@
     "summary": "Show context-window composition above the editor and ChatGPT Codex usage in the footer.",
     "minimumPi": ">=1.0.0",
     "commands": [
-      { "name": "context-bar", "usage": "/context-bar [on|off|status|refresh|--help]", "summary": "Toggle or inspect context composition and Codex subscription usage." }
+      { "name": "context-bar", "usage": "/context-bar [on|off|status|refresh|codex-on|codex-off|--help]", "summary": "Toggle or inspect context composition and Codex subscription usage." }
     ],
     "tools": [],
     "prompts": [],

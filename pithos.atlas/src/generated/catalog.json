@@ -175,7 +175,7 @@
           {
             "name": "context-bar",
             "summary": "Toggle or inspect context composition and Codex subscription usage.",
-            "usage": "/context-bar [on|off|status|refresh|--help]"
+            "usage": "/context-bar [on|off|status|refresh|codex-on|codex-off|--help]"
           }
         ],
         "tools": [],

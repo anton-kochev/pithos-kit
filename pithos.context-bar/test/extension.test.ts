@@ -14,7 +14,7 @@ type Handler = (event: any, context: any) => unknown;
 type HarnessOptions = {
   model?: any;
   providerAuth?: any;
-  getProviderAuth?: () => Promise<any>;
+  getProviderAuth?: (provider: string) => Promise<any>;
   isUsingOAuth?: () => boolean;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
@@ -34,8 +34,8 @@ function codexUsageResponse(primary = 68, secondary = 74): Response {
   return new Response(JSON.stringify({
     plan_type: "plus",
     rate_limit: {
-      primary_window: { used_percent: primary, reset_at: 2_000_000_000 },
-      secondary_window: { used_percent: secondary, reset_at: 2_000_100_000 },
+      primary_window: { used_percent: primary },
+      secondary_window: { used_percent: secondary },
     },
   }), { status: 200 });
 }
@@ -187,6 +187,113 @@ describe("context-bar extension", () => {
       type: "context-bar-enabled",
       data: { enabled: true },
     });
+  });
+
+  it("opts an OpenAI subscription into the separate Codex account meter without changing models", async () => {
+    const providers: string[] = [];
+    const requests: string[] = [];
+    const harness = createHarness([], {
+      model: { provider: "openai", id: "gpt-test", contextWindow: 100 },
+      isUsingOAuth: () => true,
+      getProviderAuth: async provider => {
+        providers.push(provider);
+        return { source: "OAuth", auth: { apiKey: codexToken() } };
+      },
+      fetch: async url => { requests.push(String(url)); return codexUsageResponse(12, 34); },
+    });
+    const run = (arg: string) => harness.commands.get("context-bar")!.handler(arg, harness.context);
+    await emit(harness, "session_start");
+    await run("refresh");
+    assert.deepEqual(providers, []);
+    await run("codex-on");
+    assert.deepEqual(harness.entries.at(-1), { type: "context-bar-openai-codex-meter", data: { enabled: true } });
+    assert.equal(harness.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%");
+    assert.deepEqual([...new Set(providers)], ["openai-codex"]);
+    assert.deepEqual(requests, ["https://chatgpt.com/backend-api/wham/usage"]);
+    assert.equal(harness.runtime.model.provider, "openai");
+    await run("refresh");
+    assert.equal(requests.length, 2);
+    await run("status");
+    assert.match(harness.notifications.at(-1)?.message ?? "", /week: 34% used/);
+    await run("codex-off");
+    assert.equal(harness.statuses.at(-1)?.text, undefined);
+    await emit(harness, "agent_settled");
+    assert.equal(requests.length, 2);
+    await emit(harness, "session_shutdown");
+  });
+
+  it("updates the weekly countdown across the one-day boundary without refetching", async () => {
+    let now = 1_900_000_000_000;
+    let requests = 0;
+    const harness = createHarness([], {
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      now: () => now,
+      fetch: async () => {
+        requests++;
+        return Response.json({ rate_limit: { secondary_window: { used_percent: 6, reset_after_seconds: 86_400 } } });
+      },
+    });
+    await harness.commands.get("context-bar")!.handler("codex-on", harness.context);
+    assert.equal(harness.statuses.at(-1)?.text, "Codex · week 6% (resets in 1d)");
+    now += 15_000;
+    await emit(harness, "agent_settled");
+    await flushBackground();
+    assert.equal(harness.statuses.at(-1)?.text, "Codex · week 6% (resets in 23h)");
+    assert.equal(requests, 1);
+  });
+
+  it("restores the Codex meter opt-in on resume and cancels it when navigating to a branch without it", async () => {
+    const branch = [{ type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled: true } }];
+    let finish!: (response: Response) => void;
+    const pending = new Promise<Response>(resolve => { finish = resolve; });
+    let requestSignal: AbortSignal | null | undefined;
+    const harness = createHarness(branch, {
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      fetch: async (_url, init) => { requestSignal = init?.signal; return pending; },
+    });
+    await emit(harness, "session_start", { reason: "resume" });
+    await flushBackground();
+    assert.equal(requestSignal?.aborted, false);
+    branch.pop();
+    await emit(harness, "session_tree");
+    assert.equal(requestSignal?.aborted, true);
+    finish(codexUsageResponse());
+    await flushBackground();
+    assert.equal(harness.statuses.at(-1)?.text, undefined);
+    await emit(harness, "session_shutdown");
+  });
+
+  it("does not resolve credentials for API-key OpenAI or unrelated providers even with the meter enabled", async () => {
+    for (const [provider, oauth] of [["openai", false], ["anthropic", true]] as const) {
+      let authReads = 0;
+      const harness = createHarness([], {
+        model: { provider, id: "test", contextWindow: 100 }, isUsingOAuth: () => oauth,
+        getProviderAuth: async () => { authReads++; },
+      });
+      const command = harness.commands.get("context-bar")!;
+      await command.handler("codex-on", harness.context);
+      await command.handler("refresh", harness.context);
+      assert.equal(authReads, 0);
+      assert.equal(harness.statuses.at(-1)?.text, undefined);
+    }
+  });
+
+  it("asks for the separate Codex login if it is missing and never falls back to the OpenAI token", async () => {
+    const providers: string[] = [];
+    let fetches = 0;
+    const harness = createHarness([], {
+      isUsingOAuth: () => true,
+      getProviderAuth: async provider => {
+        providers.push(provider);
+        return provider === "openai" ? { source: "OAuth", auth: { apiKey: "openai-token" } } : undefined;
+      },
+      fetch: async () => { fetches++; return codexUsageResponse(); },
+    });
+    await harness.commands.get("context-bar")!.handler("codex-on", harness.context);
+    assert.deepEqual(providers, ["openai-codex"]);
+    assert.equal(fetches, 0);
+    assert.equal(harness.statuses.at(-1)?.text, undefined);
+    assert.match(harness.notifications.at(-1)?.message ?? "", /sign in to openai-codex/i);
   });
 
   it("starts Codex usage refresh when explicitly enabled", async () => {
@@ -727,6 +834,7 @@ describe("context-bar extension", () => {
     const status = harness.notifications.at(-1)?.message ?? "";
     assert.match(status, /Approximate composition:/);
     assert.match(status, /Codex usage · Pro plan/);
+    assert.equal(harness.statuses.at(-1)?.text, "Codex · 5h 12% (resets in 1h) · week 34% (resets in 2d)");
     assert.match(status, /5h: 12% used · resets in 1h/);
     assert.match(status, /week: 34% used · resets in 2d/);
     assert.match(status, /Updated 0m ago/);
@@ -983,7 +1091,7 @@ describe("context-bar extension", () => {
     );
 
     assert.deepEqual(suggestions?.items.map(({ value }: { value: string }) => value), [
-      "on", "off", "status", "refresh", "--help",
+      "on", "off", "status", "refresh", "codex-on", "codex-off", "--help",
     ]);
     assert.equal(suggestions?.prefix, "");
     assert.equal(delegated, 0);
@@ -1034,7 +1142,7 @@ describe("context-bar extension", () => {
     );
 
     assert.deepEqual(suggestions?.items.map(({ value }: { value: string }) => value), [
-      "on", "off", "status", "refresh", "--help",
+      "on", "off", "status", "refresh", "codex-on", "codex-off", "--help",
     ]);
 
     let delegated = 0;
@@ -1057,7 +1165,7 @@ describe("context-bar extension", () => {
     const command = createHarness().commands.get("context-bar")!;
     const completions = command.getArgumentCompletions!;
 
-    assert.deepEqual(completions("")?.map(({ value }) => value), ["on", "off", "status", "refresh", "--help"]);
+    assert.deepEqual(completions("")?.map(({ value }) => value), ["on", "off", "status", "refresh", "codex-on", "codex-off", "--help"]);
     assert.ok(completions("")?.every(({ description }) => typeof description === "string" && description.length > 0));
     assert.deepEqual(completions("o")?.map(({ value }) => value), ["on", "off"]);
     assert.deepEqual(completions("re")?.map(({ value }) => value), ["refresh"]);
@@ -1074,7 +1182,7 @@ describe("context-bar extension", () => {
 
       assert.equal(harness.notifications.length, 1);
       assert.equal(harness.notifications[0]?.type, "info");
-      assert.match(harness.notifications[0]?.message ?? "", /Usage: \/context-bar \[on\|off\|status\|refresh\]/);
+      assert.match(harness.notifications[0]?.message ?? "", /Usage: \/context-bar \[on\|off\|status\|refresh\|codex-on\|codex-off\]/);
       assert.match(harness.notifications[0]?.message ?? "", /--help, -h/);
       assert.equal(harness.entries.length, 0);
       assert.equal(harness.widgets.length, 0);

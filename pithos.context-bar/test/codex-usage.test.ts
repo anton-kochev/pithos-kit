@@ -9,6 +9,7 @@ import {
 } from "../src/codex-usage.ts";
 
 const NOW = Date.UTC(2026, 7, 19, 20, 0, 0);
+const HOUR_MS = 3_600_000;
 
 function usagePayload(primary = 68, secondary = 74) {
   return {
@@ -47,8 +48,42 @@ describe("Codex usage parsing and formatting", () => {
       primary: { usedPercent: 68, resetAt: NOW + 3_600_000 },
       secondary: { usedPercent: 74, resetAt: NOW + 172_800_000 },
     });
-    assert.equal(formatCodexUsageFooter(usage), "Codex · 5h 68% · week 74%");
-    assert.equal(formatCodexUsageFooter(usage, true), "Codex · 5h 68% · week 74% · stale");
+  });
+
+  it("formats each footer countdown in whole days or hours at render time", () => {
+    const usage = {
+      fetchedAt: NOW,
+      primary: { usedPercent: 20, resetAt: NOW + 3 * HOUR_MS },
+      secondary: { usedPercent: 6, resetAt: NOW + 6 * 24 * HOUR_MS },
+    };
+
+    assert.equal(
+      formatCodexUsageFooter(usage, true, NOW + 1),
+      "Codex · 5h 20% (resets in 2h) · week 6% (resets in 5d) · stale",
+    );
+  });
+
+  it("switches footer countdown units at whole-day and whole-hour boundaries", () => {
+    for (const [milliseconds, expected] of [
+      [24 * HOUR_MS, "1d"],
+      [24 * HOUR_MS - 1, "23h"],
+      [HOUR_MS, "1h"],
+      [HOUR_MS - 1, "<1h"],
+      [1, "<1h"],
+    ] as const) {
+      const usage = { fetchedAt: NOW, primary: {}, secondary: { usedPercent: 6, resetAt: NOW + milliseconds } };
+      assert.equal(formatCodexUsageFooter(usage, false, NOW), `Codex · week 6% (resets in ${expected})`);
+    }
+  });
+
+  it("keeps the last observed percentages when footer resets are due", () => {
+    const usage = {
+      fetchedAt: NOW,
+      primary: { usedPercent: 20, resetAt: NOW + 1 },
+      secondary: { usedPercent: 6, resetAt: NOW + 2 },
+    };
+
+    assert.equal(formatCodexUsageFooter(usage, false, NOW + 2), "Codex · 5h 20% (reset due) · week 6% (reset due)");
   });
 
   it("uses a complete additional rate limit when the default limit has no windows", () => {
@@ -89,7 +124,7 @@ describe("Codex usage parsing and formatting", () => {
         primary_window: {
           used_percent: 42,
           limit_window_seconds: 604_800,
-          reset_at: 2_000_100_000,
+          reset_at: NOW / 1000 + 86_400,
         },
         secondary_window: null,
       },
@@ -115,7 +150,7 @@ describe("Codex usage parsing and formatting", () => {
 
     assert.equal(usage.primary.usedPercent, undefined);
     assert.equal(usage.secondary.usedPercent, 42);
-    assert.equal(formatCodexUsageFooter(usage), "Codex · week 42%");
+    assert.equal(formatCodexUsageFooter(usage, false, NOW), "Codex · week 42% (resets in 1d)");
     assert.doesNotMatch(formatCodexUsageDetails(usage, NOW), /^5h:/m);
   });
 
@@ -150,7 +185,10 @@ describe("Codex usage parsing and formatting", () => {
   });
 
   it("rounds finite percentages and rejects malformed or oversized responses", () => {
-    assert.equal(formatCodexUsageFooter(parseCodexUsage(usagePayload(67.6, 73.5), NOW)), "Codex · 5h 68% · week 74%");
+    assert.equal(
+      formatCodexUsageFooter(parseCodexUsage(usagePayload(67.6, 73.5), NOW), false, NOW),
+      "Codex · 5h 68% (resets in 1h) · week 74% (resets in 2d)",
+    );
     assert.throws(() => parseCodexUsage({ rate_limit: {} }, NOW), /usage windows/i);
     assert.throws(() => parseCodexUsage(usagePayload(Number.NaN, 74), NOW), /used percentage/i);
     assert.throws(() => parseCodexUsage("x".repeat(65_537), NOW), /too large/i);
@@ -166,6 +204,7 @@ describe("Codex usage parsing and formatting", () => {
 
     assert.equal(usage.primary.resetAt, undefined);
     assert.equal(usage.secondary.resetAt, undefined);
+    assert.equal(formatCodexUsageFooter(usage, false, NOW), "Codex · 5h 10% · week 20%");
     assert.doesNotMatch(formatCodexUsageDetails(usage, NOW), /Infinity/);
   });
 

@@ -22,7 +22,8 @@
 
 ## Codex usage
 - [x] Parse defensively bounded ChatGPT usage responses into five-hour and weekly used percentages and reset metadata, including weekly-only defaults and model-specific additional limits.
-- [x] Format complete limits as `Codex · 5h 68% · week 74%`, omit windows the plan does not expose, and add a stale suffix only after a failed refresh with retained data.
+- [x] Show used percentages and available reset countdowns per window, omit windows the plan does not expose, and add a stale suffix only after a failed refresh with retained data.
+- [x] Allow OpenAI subscription sessions to opt in to the separate Codex account meter without changing the active model or using its credential.
 - [x] Resolve only `openai-codex` OAuth auth, extract the account id from its JWT, and query the fixed HTTPS usage endpoint without redirects, secret logging, or live-network tests.
 - [x] Deduplicate and throttle automatic refreshes for one minute while allowing an explicit forced refresh.
 - [x] Bound OAuth resolution and requests with cancellation, scope cached values to the authenticated account, poll for otherwise-unobservable logout/login changes, and discard obsolete results after account changes.
