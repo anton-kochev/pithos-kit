@@ -37,7 +37,7 @@ The supported Pithos launcher can select the stock runtime instead when `~/.pi/a
 Install the current release:
 
 ```bash
-pi install npm:@pithos-kit/guild@0.14.0
+pi install npm:@pithos-kit/guild@0.14.1
 ```
 
 For local development from this repository:
@@ -58,7 +58,7 @@ pi -e ./pithos.guild
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/guild": "npm:0.14.0"
+    "@pithos-kit/guild": "npm:0.14.1"
 ```
 
 ## Roles and profiles

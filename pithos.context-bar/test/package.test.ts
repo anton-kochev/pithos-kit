@@ -19,7 +19,7 @@ describe("context-bar package metadata", () => {
     assert.deepEqual(packageJson.pi.extensions, ["./extensions"]);
     assert.equal(packageJson.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.0.0");
     assert.equal(packageJson.pithosKit.minimumPi, ">=1.0.0");
-    assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "^0.84.1");
+    assert.equal(packageJson.devDependencies["@earendil-works/pi-tui"], "1.6.0");
     assert.equal(packageJson.scripts.audit, "npm audit --audit-level=moderate");
     assert.ok(packageJson.files.includes("src"));
     assert.ok(packageJson.files.includes("extensions"));

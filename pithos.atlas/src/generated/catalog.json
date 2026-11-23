@@ -160,7 +160,7 @@
     },
     {
       "name": "@pithos-kit/context-bar",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "description": "A context-window composition bar with ChatGPT Codex subscription usage for Pi.",
       "pi": {
         "extensions": [
@@ -232,7 +232,7 @@
     },
     {
       "name": "@pithos-kit/guild",
-      "version": "0.14.0",
+      "version": "0.14.1",
       "description": "Bounded software-development and writing Guild roles with technical discovery, delivery planning, content craft, architecture, review, comments, Conventional Commit, and TDD guidance.",
       "pi": {
         "extensions": [

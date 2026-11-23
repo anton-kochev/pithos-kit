@@ -1,6 +1,6 @@
 {
   "name": "@pithos-kit/context-bar",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "A context-window composition bar with ChatGPT Codex subscription usage for Pi.",
   "keywords": [
     "pi-package",
@@ -23,7 +23,7 @@
     "access": "public"
   },
   "devDependencies": {
-    "@earendil-works/pi-tui": "^0.84.1",
+    "@earendil-works/pi-tui": "1.6.0",
     "@types/node": "^24.0.0",
     "tsx": "^4.20.4",
     "typescript": "^5.9.0"
