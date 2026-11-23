@@ -33,6 +33,9 @@
 - [x] Toggle with `/context-bar`, and support `on`, `off`, `status`, and `refresh`.
 - [x] Suggest every canonical `/context-bar` argument with descriptions and prefix filtering.
 - [x] Persist and restore enabled state from the active session branch.
+- [x] Save explicit Codex meter choices across fresh extension instances and sessions, including repeated commands.
+- [x] Prefer the saved Codex meter choice over old branch entries on resume, reload, fork, and tree navigation; retain legacy behavior until a global choice is saved.
+- [x] Handle missing, malformed, and unreadable preferences safely and report save failures without claiming success.
 - [x] Refresh context and Codex usage at their relevant session/model/settled lifecycle boundaries and clean up both on disable, provider switch, offline mode, and shutdown.
 
 ## Package

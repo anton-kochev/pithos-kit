@@ -29,6 +29,7 @@ import {
   type CodexUsage,
 } from "./codex-usage.ts";
 import { createPithosLogger, errorMetadata } from "./logging.ts";
+import { ContextBarPreferences } from "./preferences.ts";
 
 type EditorFactory = NonNullable<ReturnType<ExtensionContext["ui"]["getEditorComponent"]>>;
 
@@ -36,12 +37,13 @@ const CONTEXT_BAR_PACKAGE_ROOT = dirname(dirname(fileURLToPath(import.meta.url))
 const WIDGET_KEY = "context-bar";
 const CODEX_USAGE_STATUS_KEY = "context-bar-codex-usage";
 const STATE_ENTRY_TYPE = "context-bar-enabled";
-const OPENAI_CODEX_METER_ENTRY = "context-bar-openai-codex-meter";
+const LEGACY_CODEX_METER_ENTRY = "context-bar-openai-codex-meter";
 const CODEX_USAGE_REFRESH_INTERVAL_MS = 60_000;
 const CODEX_USAGE_TIMEOUT_MS = 5_000;
 const CODEX_USAGE_AUTH_POLL_MS = 15_000;
 
 export interface ContextBarDependencies {
+  agentDir?: string;
   fetch?: typeof globalThis.fetch;
   now?: () => number;
   isOffline?: () => boolean;
@@ -58,8 +60,8 @@ Options:
   off          Disable Context Bar
   status       Show context and Codex usage details
   refresh      Refresh Codex usage immediately
-  codex-on     Show the separately signed-in Codex account's quota on OpenAI subscription models
-  codex-off    Stop showing the Codex meter on OpenAI subscription models
+  codex-on     Show the separate Codex meter on OpenAI subscription models and remember the choice
+  codex-off    Hide that meter on OpenAI subscription models and remember the choice
   --help, -h   Show this help`;
 
 const CONTEXT_BAR_ARGUMENTS = [
@@ -141,6 +143,7 @@ function restoreToggle(ctx: ExtensionContext, entryType: string, fallback: boole
 }
 
 export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDependencies = {}): void {
+  const preferences = new ContextBarPreferences(dependencies.agentDir);
   const now = dependencies.now ?? Date.now;
   const isOffline = dependencies.isOffline ?? (() => ["1", "true", "yes"].includes(process.env.PI_OFFLINE?.toLowerCase() ?? ""));
   const codexUsageTimeoutMs = dependencies.codexUsageTimeoutMs ?? CODEX_USAGE_TIMEOUT_MS;
@@ -170,6 +173,17 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   let codexUsageAuthPoll: ReturnType<typeof setInterval> | undefined;
   let argumentAutocompleteInstalled = false;
   let lastCodexUsageAttemptAt = Number.NEGATIVE_INFINITY;
+
+  function restoreCodexMeter(ctx: ExtensionContext): boolean {
+    try {
+      return preferences.loadCodexMeter() ?? restoreToggle(ctx, LEGACY_CODEX_METER_ENTRY, false);
+    } catch {
+      const message = "Could not read Context Bar preferences. Codex meter for OpenAI subscription models is off; run /context-bar codex-on to save it again.";
+      if (ctx.hasUI) ctx.ui.notify(message, "warning");
+      else console.error(message);
+      return false;
+    }
+  }
 
   function safeCodexUsageError(error: unknown): string {
     return error instanceof CodexUsageError ? error.message : "Codex usage refresh failed";
@@ -529,7 +543,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   pi.on("session_start", (event, ctx) => {
     log.info("session.start", { reason: event.reason, sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.() });
     enabled = restoreToggle(ctx, STATE_ENTRY_TYPE, true);
-    openAICodexMeter = restoreToggle(ctx, OPENAI_CODEX_METER_ENTRY, false);
+    openAICodexMeter = restoreCodexMeter(ctx);
     providerRequestFingerprint = undefined;
     if (enabled) {
       systemPrompt = ctx.getSystemPrompt();
@@ -592,7 +606,7 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
   });
 
   pi.on("session_tree", (_event, ctx) => {
-    const nextMeter = restoreToggle(ctx, OPENAI_CODEX_METER_ENTRY, false);
+    const nextMeter = restoreCodexMeter(ctx);
     if (openAICodexMeter !== nextMeter) {
       openAICodexMeter = nextMeter;
       if (ctx.model?.provider === "openai") void refreshCodexUsage(ctx);
@@ -675,13 +689,20 @@ export default function contextBar(pi: ExtensionAPI, dependencies: ContextBarDep
       } else if (action === "off") setEnabled(false, ctx);
       else if (action === "codex-on" || action === "codex-off") {
         const next = action === "codex-on";
+        try {
+          preferences.saveCodexMeter(next);
+        } catch {
+          const message = "Could not save Context Bar preferences. Codex meter is unchanged; check access to the Pi agent directory and try again.";
+          if (ctx.hasUI) ctx.ui.notify(message, "error");
+          else console.error(message);
+          return;
+        }
         if (openAICodexMeter !== next) {
-          pi.appendEntry(OPENAI_CODEX_METER_ENTRY, { enabled: next });
           openAICodexMeter = next;
           if (ctx.model?.provider === "openai") await refreshCodexUsage(ctx);
         }
         if (ctx.hasUI) {
-          const state = `Codex account meter for OpenAI subscription models: ${next ? "on" : "off"}.`;
+          const state = `Codex account meter for OpenAI subscription models: ${next ? "on" : "off"}. Saved for future sessions.`;
           const error = next && ctx.model?.provider === "openai" ? codexUsageError : undefined;
           ctx.ui.notify(error ? `${state} ${error}` : state, error ? "warning" : "info");
         }

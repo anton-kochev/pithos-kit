@@ -1,6 +1,8 @@
 import assert from "node:assert/strict";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { resolve } from "node:path";
-import { describe, it } from "node:test";
+import { after, describe, it } from "node:test";
 import { fileURLToPath } from "node:url";
 import contextBar from "../src/context-bar.ts";
 
@@ -11,7 +13,19 @@ const CONTEXT_BAR_EXTENSION_PATH = resolve(
 
 type Handler = (event: any, context: any) => unknown;
 
+const temporaryDirs: string[] = [];
+after(() => {
+  for (const path of temporaryDirs) rmSync(path, { recursive: true, force: true });
+});
+
+function temporaryAgentDir(): string {
+  const path = mkdtempSync(resolve(tmpdir(), "context-bar-test-"));
+  temporaryDirs.push(path);
+  return path;
+}
+
 type HarnessOptions = {
+  agentDir?: string;
   model?: any;
   providerAuth?: any;
   getProviderAuth?: (provider: string) => Promise<any>;
@@ -90,6 +104,7 @@ function createHarness(branch: any[] = [], options: HarnessOptions = {}) {
     ],
   };
   contextBar(pi as never, {
+    agentDir: options.agentDir ?? temporaryAgentDir(),
     fetch: options.fetch,
     now: options.now,
     isOffline: () => options.offline ?? false,
@@ -206,7 +221,7 @@ describe("context-bar extension", () => {
     await run("refresh");
     assert.deepEqual(providers, []);
     await run("codex-on");
-    assert.deepEqual(harness.entries.at(-1), { type: "context-bar-openai-codex-meter", data: { enabled: true } });
+    assert.deepEqual(harness.entries, []);
     assert.equal(harness.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%");
     assert.deepEqual([...new Set(providers)], ["openai-codex"]);
     assert.deepEqual(requests, ["https://chatgpt.com/backend-api/wham/usage"]);
@@ -220,6 +235,148 @@ describe("context-bar extension", () => {
     await emit(harness, "agent_settled");
     assert.equal(requests.length, 2);
     await emit(harness, "session_shutdown");
+  });
+
+  it("keeps codex-on enabled in a new session with a fresh extension instance", async () => {
+    const options = {
+      agentDir: temporaryAgentDir(),
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      fetch: async () => codexUsageResponse(12, 34),
+    };
+    const first = createHarness([], options);
+    await emit(first, "session_start");
+    await first.commands.get("context-bar")!.handler("codex-on", first.context);
+    await emit(first, "session_shutdown");
+
+    const next = createHarness([], options);
+    await emit(next, "session_start", { reason: "new" });
+    await flushBackground();
+    assert.equal(next.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%");
+    await emit(next, "session_shutdown");
+  });
+
+  it("keeps the saved Codex choice across resume, reload, fork, and tree navigation", async () => {
+    const agentDir = temporaryAgentDir();
+    const options = {
+      agentDir,
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      fetch: async () => codexUsageResponse(12, 34),
+    };
+    const first = createHarness([], options);
+    await first.commands.get("context-bar")!.handler("codex-on", first.context);
+    await emit(first, "session_shutdown");
+
+    for (const reason of ["resume", "reload", "fork"]) {
+      const branch = [{ type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled: false } }];
+      const next = createHarness(branch, options);
+      await emit(next, "session_start", { reason });
+      await flushBackground();
+      assert.equal(next.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%", reason);
+      await emit(next, "session_tree");
+      await flushBackground();
+      assert.equal(next.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%", `${reason}: tree`);
+      branch.pop();
+      await emit(next, "session_tree");
+      assert.equal(next.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%", `${reason}: empty branch`);
+      await emit(next, "session_shutdown");
+    }
+  });
+
+  it("disables the opt-in and warns without breaking startup when preferences are invalid or unreadable", async () => {
+    for (const contents of ["{broken", "null", "[]", "{}", '{"openAICodexMeter":"true"}', "directory"]) {
+      const agentDir = temporaryAgentDir();
+      const path = resolve(agentDir, "context-bar.json");
+      if (contents === "directory") mkdirSync(path);
+      else writeFileSync(path, contents);
+      let authReads = 0;
+      const harness = createHarness([
+        { type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled: true } },
+      ], {
+        agentDir,
+        isUsingOAuth: () => true,
+        getProviderAuth: async () => { authReads++; return undefined; },
+      });
+      await emit(harness, "session_start");
+      await flushBackground();
+      assert.equal(typeof harness.widgets.at(-1)?.content, "function", contents);
+      assert.equal(authReads, 0, contents);
+      assert.match(harness.notifications.at(-1)?.message ?? "", /could not read.*Codex meter.*off/i);
+      assert.equal(harness.notifications.at(-1)?.type, "warning");
+      await emit(harness, "session_shutdown");
+    }
+  });
+
+  it("reports a failed save without changing the meter or claiming success, then allows retry", async () => {
+    const agentDir = temporaryAgentDir();
+    const path = resolve(agentDir, "context-bar.json");
+    mkdirSync(path);
+    const harness = createHarness([], {
+      agentDir,
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      fetch: async () => codexUsageResponse(12, 34),
+    });
+    await emit(harness, "session_start");
+    await harness.commands.get("context-bar")!.handler("codex-on", harness.context);
+    assert.equal(harness.notifications.at(-1)?.type, "error");
+    assert.match(harness.notifications.at(-1)?.message ?? "", /could not save.*unchanged/i);
+    assert.equal(harness.statuses.at(-1)?.text, undefined);
+    assert.deepEqual(harness.entries, []);
+    assert.deepEqual(readdirSync(agentDir), ["context-bar.json"]);
+
+    rmSync(path, { recursive: true });
+    await harness.commands.get("context-bar")!.handler("codex-on", harness.context);
+    assert.equal(harness.statuses.at(-1)?.text, "Codex · 5h 12% · week 34%");
+    assert.deepEqual(JSON.parse(readFileSync(path, "utf8")), { openAICodexMeter: true });
+    await emit(harness, "session_shutdown");
+  });
+
+  it("persists codex-off over an earlier codex-on and ignores old enabled branch entries", async () => {
+    let fetches = 0;
+    const options = {
+      agentDir: temporaryAgentDir(),
+      providerAuth: { source: "OAuth", auth: { apiKey: codexToken() } },
+      fetch: async () => { fetches++; return codexUsageResponse(); },
+    };
+    const first = createHarness([], options);
+    await emit(first, "session_start");
+    assert.deepEqual(readdirSync(options.agentDir), []);
+    const command = first.commands.get("context-bar")!;
+    await command.handler("codex-on", first.context);
+    await command.handler("codex-off", first.context);
+    assert.equal(first.statuses.at(-1)?.text, undefined);
+    await emit(first, "session_shutdown");
+    assert.deepEqual(JSON.parse(readFileSync(resolve(options.agentDir, "context-bar.json"), "utf8")), {
+      openAICodexMeter: false,
+    });
+
+    for (const branch of [[], [{ type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled: true } }]]) {
+      const next = createHarness(branch, options);
+      await emit(next, "session_start");
+      await emit(next, "session_tree");
+      await flushBackground();
+      assert.equal(next.statuses.at(-1)?.text, undefined);
+      assert.equal(fetches, 1);
+      await emit(next, "session_shutdown");
+    }
+  });
+
+  it("saves explicit Codex commands even when the current state already matches", async () => {
+    for (const enabled of [true, false]) {
+      const agentDir = temporaryAgentDir();
+      const harness = createHarness([
+        { type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled } },
+      ], { agentDir });
+      await emit(harness, "session_start");
+      assert.deepEqual(readdirSync(agentDir), []);
+      const command = harness.commands.get("context-bar")!;
+      await command.handler(enabled ? "codex-on" : "codex-off", harness.context);
+      assert.deepEqual(JSON.parse(readFileSync(resolve(agentDir, "context-bar.json"), "utf8")), {
+        openAICodexMeter: enabled,
+      });
+      assert.deepEqual(harness.entries, []);
+      assert.match(harness.notifications.at(-1)?.message ?? "", /saved for future sessions/i);
+      await emit(harness, "session_shutdown");
+    }
   });
 
   it("updates the weekly countdown across the one-day boundary without refetching", async () => {
@@ -242,7 +399,7 @@ describe("context-bar extension", () => {
     assert.equal(requests, 1);
   });
 
-  it("restores the Codex meter opt-in on resume and cancels it when navigating to a branch without it", async () => {
+  it("uses the legacy branch opt-in until a preference is saved and cancels requests when leaving that branch", async () => {
     const branch = [{ type: "custom", customType: "context-bar-openai-codex-meter", data: { enabled: true } }];
     let finish!: (response: Response) => void;
     const pending = new Promise<Response>(resolve => { finish = resolve; });

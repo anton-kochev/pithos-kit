@@ -39,13 +39,13 @@ pi:
 | `/context-bar off` | Disable it |
 | `/context-bar status` | Show the legend, estimated counts, model/window, estimation basis, and latest Codex usage details |
 | `/context-bar refresh` | Bypass the one-minute cache and refresh Codex usage immediately |
-| `/context-bar codex-on` | Opt in to the separate Codex account meter while using an `openai` subscription model |
-| `/context-bar codex-off` | Turn off that opt-in without changing the meter on `openai-codex` models |
+| `/context-bar codex-on` | Enable the separate Codex account meter on `openai` subscription models and save the choice |
+| `/context-bar codex-off` | Save the opt-out without changing the meter on `openai-codex` models |
 | `/context-bar --help` | Show command usage without changing state |
 
 `-h` is also accepted. Typing `/context-bar ` shows the canonical arguments with descriptions; suggestions filter as you continue typing.
 
-New sessions start enabled. Explicit changes are stored as non-context entries on the active session branch, so they survive reload, resume, and fork without creating project or global configuration.
+The bar itself starts enabled in new sessions. Turning the bar on or off still stores that choice on the active session branch, so it survives reload, resume, and fork.
 
 ## Codex usage
 
@@ -55,7 +55,9 @@ When the active model uses the OAuth-authenticated `openai-codex` provider, Cont
 Codex · 5h 68% (resets in 2h) · week 74% (resets in 3d)
 ```
 
-If you use **Sign in with ChatGPT** on `openai`, keep that model selected. Sign in to `openai-codex` with the same account and workspace, then run `/context-bar codex-on`. Only the Codex credential is used for the usage request; the extension never sends your `openai` credential to the Codex endpoint. The meter shows the **signed-in Codex account's allowance**, not Pi's separate per-app cap. The extension cannot verify that the two logins belong to the same account. The opt-in is off on new sessions and follows the current branch on resume, fork, reload, and tree navigation.
+If you use **Sign in with ChatGPT** on `openai`, keep that model selected. Sign in to `openai-codex` with the same account and workspace, then run `/context-bar codex-on`. Only the Codex credential is used for the usage request; the extension never sends your `openai` credential to the Codex endpoint. The meter shows the **signed-in Codex account's allowance**, not Pi's separate per-app cap. The extension cannot verify that the two logins belong to the same account.
+
+The opt-in defaults to off. `codex-on` and `codex-off` save your choice in `context-bar.json` in Pi's agent directory (`~/.pi/agent` by default, or `PI_CODING_AGENT_DIR` if set). That choice applies across sessions and projects using the same agent directory. If you enabled the meter with an older version, run `codex-on` once more to save it across sessions. Until you save a choice, existing sessions can still use their old branch setting.
 
 When a window has a reset time, the footer shows whole days, or whole hours if less than a day remains (`<1h` in the final hour). A past timestamp is shown as `reset due`; it does not mean the allowance has been replenished. If no reset time is reported, only the percentage is shown.
 
