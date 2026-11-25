@@ -54,10 +54,10 @@ pi:
     "@pithos-kit/plan": "npm:0.6.1"
     "@pithos-kit/squiggle": "npm:0.7.0"
     "@pithos-kit/translate": "npm:3.0.0"
-    "@pithos-kit/web": "npm:0.3.0"
+    "@pithos-kit/web": "npm:0.4.0"
 ```
 
-The published Web `0.3.0` pin does not support host-backed search. See the [Web setup guide](./pithos.web/README.md#pithos-host-owned-search) for using a broker-aware build.
+Host-backed search needs Web `0.4.0` or later and a Pithos launcher with host-search support. See the [Web setup guide](./pithos.web/README.md#pithos-host-owned-search).
 
 Atlas can validate and interactively manage toolchain versions, `pi.version`, and `@pithos-kit/*` entries while preserving third-party configuration. Its changes describe a future rebuilt Pithos environment; they do not replace the active Pi process. Run `/pithos help` after installing it.
 

@@ -637,7 +637,7 @@
     },
     {
       "name": "@pithos-kit/web",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "description": "Trusted public-web search and static page fetching tools for Pi.",
       "pi": {
         "extensions": [

@@ -12,7 +12,7 @@ Requires Pi **1.0.0 or later**.
 pi install npm:@pithos-kit/web
 ```
 
-Host-backed search needs both a launcher and a Web build with host-search support. Published Web `0.3.0` does not support the host broker. If `.pithos` still has the legacy pin `"@pithos-kit/web": "npm:0.3.0"`, replace it with a broker-aware build. Don't export a provider key into Pi to work around a version mismatch.
+Host-backed search requires Web `0.4.0` or later and a Pithos launcher with host-search support. Web `0.3.0` does not support the host broker. If `.pithos` still pins `0.3.0`, update it as shown below. Don't export a provider key into Pi to work around a version mismatch.
 
 To try an unreleased build, use a test project that contains the matching `pithos.web` source directory. From the project root:
 
@@ -25,7 +25,15 @@ In Pithos, remove the published Web pin from `pi.extensions` first, then install
 
 ## Pithos: host-owned search
 
-1. Install a broker-aware Web build. For a published build, add `"@pithos-kit/web": "npm:<exact-version>"` under `pi.extensions` in `.pithos`, using a version that supports the broker. Use one Web installation; you don't need a separate Pi extension for Keenable.
+1. Pin the broker-aware Web release under `pi.extensions` in `.pithos`:
+
+   ```yaml
+   pi:
+     extensions:
+       "@pithos-kit/web": "npm:0.4.0"
+   ```
+
+   Use one Web installation; you don't need a separate Pi extension for Keenable.
 2. On the **host**, create `$HOME/.config/pithos/web/` (mode `0700`) and its `.env` file (mode `0600`). Keep both outside every Pithos bind mount. Follow [Pithos host setup](https://github.com/anton-kochev/pithos#private-web-search) for the commands. Open the file in a host editor, not inside Pi.
 3. Set `PITHOS_WEB_SEARCH_PROVIDER` to `brave` or `keenable` and set the matching key on a separate line. For example:
 

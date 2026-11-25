@@ -10,7 +10,7 @@ describe("Web package", () => {
 		const extension = await import("../extensions/index.ts");
 
 		assert.equal(manifest.name, "@pithos-kit/web");
-		assert.equal(manifest.version, "0.3.0");
+		assert.equal(manifest.version, "0.4.0");
 		assert.equal(manifest.engines.node, ">=22.19.0");
 		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.0.0");
 		assert.equal(manifest.pithosKit.minimumPi, ">=1.0.0");
@@ -67,7 +67,7 @@ describe("Web package", () => {
 		assert.match(readme, /Plan mode/i);
 		assert.match(readme, /JavaScript-rendered/i);
 		assert.match(readme, /50KB.*2000 lines/is);
-		assert.match(readme, /"@pithos-kit\/web": "npm:<exact-version>"/);
+		assert.match(readme, /"@pithos-kit\/web": "npm:0\.4\.0"/);
 		assert.match(readme, /0\.3\.0.*does not support the host broker/i);
 		assert.match(readme, /\$HOME\/\.config\/pithos\/web\/.*\.env/);
 		assert.match(readme, /Add a search provider[\s\S]*src\/web_search\/provider\.rs/);
