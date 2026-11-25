@@ -6,12 +6,20 @@
 - [x] Pin a validated DNS result into each connection and revalidate every redirect.
 - [x] Combine caller cancellation with a request deadline, limit redirects, and stop consuming oversized responses.
 
-## Brave search
+## Standalone Brave search
 - [x] Require `BRAVE_SEARCH_API_KEY`, call only Brave's fixed web-search endpoint, encode the query, and clamp result counts to ten.
 - [x] Explain missing-key setup with `/web-setup`, official Brave registration/key links, restart guidance, continued `web_fetch` availability, and a warning never to paste the key into chat or tool arguments.
 - [x] Map Brave HTTP 401/403 to rejected-credential or inactive-Search-plan guidance and HTTP 429 to quota/rate-limit guidance.
 - [x] Validate and bound Brave response data without leaking credentials or upstream bodies in errors.
 - [x] Return useful title, URL, and description entries with explicit untrusted-content framing.
+
+## Pithos host search
+- [x] Use only the host broker when `PITHOS_WEB_SEARCH_STATUS` is present. Never read a provider key or fall back, even for a malformed marker or unreachable broker.
+- [x] Require a valid session bearer and exactly one endpoint. Send one v1 JSON line over the supplied Unix socket or TCP port at `host.docker.internal`.
+- [x] Use one provider-neutral tool for Brave and authenticated Keenable. Default to five results and accept explicit counts from one to ten.
+- [x] Check readiness with a status operation only when asked. Don't send a startup request or let setup re-enable an inactive tool.
+- [x] Bound the reply by time and bytes. Require a complete UTF-8 frame, normalize usable results, map safe error codes, and cancel without leaving a socket or exposing internal diagnostics.
+- [x] Leave `web_fetch` credential-free and independent of search availability. Disable both tools and skip readiness checks when offline.
 
 ## Page fetching and extraction
 - [x] Fetch public HTML and textual resources without cookies, authentication, scripts, or non-GET requests.
@@ -21,7 +29,7 @@
 
 ## Pi tools and onboarding
 - [x] Register strict `web_search` and `web_fetch` schemas without startup network access; keep `web_fetch` usable without a Brave key.
-- [x] Register `/web-setup` to report configured versus missing from local environment presence only, without network validation or key disclosure.
+- [x] Register `/web-setup` to check host broker readiness in Pithos or local Brave key presence in standalone Pi, without validating provider credentials or quota.
 - [x] Provide secure Bash, zsh, fish, and PowerShell 7 credential input/restart instructions and official Brave links from `/web-setup`.
 - [x] Emit `/web-setup` guidance through notifications in TUI/RPC, terminal stderr in print mode, and a protocol-safe message in JSON mode.
 - [x] Describe and guide `web_search` as unavailable and non-retriable when the key is missing while preserving normal configured guidance.

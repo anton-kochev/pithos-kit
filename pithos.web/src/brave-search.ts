@@ -1,29 +1,21 @@
-import { convert } from "html-to-text";
-import { hasUnicodeFormattingControls, revealUnicodeFormattingControls } from "./sanitize.ts";
+import {
+	DEFAULT_SEARCH_COUNT,
+	MAX_SEARCH_COUNT,
+	normalizeSearchQuery,
+	sanitizeSearchResult,
+	type SearchOptions,
+	type SearchResult,
+} from "./search.ts";
 
 const BRAVE_SEARCH_ENDPOINT = "https://api.search.brave.com/res/v1/web/search";
 export const BRAVE_SEARCH_REGISTER_URL = "https://api-dashboard.search.brave.com/register";
 export const BRAVE_SEARCH_PLANS_URL = "https://api-dashboard.search.brave.com/app/plans";
 export const BRAVE_SEARCH_KEYS_URL = "https://api-dashboard.search.brave.com/app/keys";
-const DEFAULT_COUNT = 5;
-const MAX_COUNT = 10;
 const DEFAULT_TIMEOUT_MS = 10_000;
 const DEFAULT_MAX_RESPONSE_BYTES = 1024 * 1024;
 
-export type BraveSearchResult = {
-	title: string;
-	url: string;
-	description: string;
-};
-
-export type BraveSearchOptions = {
-	apiKey?: string;
-	count?: number;
-	fetch?: typeof globalThis.fetch;
-	signal?: AbortSignal;
-	timeoutMs?: number;
-	maxResponseBytes?: number;
-};
+export type BraveSearchResult = SearchResult;
+export type BraveSearchOptions = SearchOptions;
 
 export class BraveSearchError extends Error {
 	constructor(message: string, options?: ErrorOptions) {
@@ -37,13 +29,7 @@ export function hasBraveSearchApiKey(value: string | undefined): boolean {
 }
 
 export function normalizeBraveSearchQuery(query: string): string {
-	const normalizedQuery = query.trim();
-	if (!normalizedQuery) throw new BraveSearchError("web_search requires a non-empty query");
-	if (normalizedQuery.length > 500) throw new BraveSearchError("web_search query must not exceed 500 characters");
-	if (/[\u0000-\u001f\u007f-\u009f]/u.test(normalizedQuery) || hasUnicodeFormattingControls(normalizedQuery)) {
-		throw new BraveSearchError("web_search query must not contain control characters");
-	}
-	return normalizedQuery;
+	return normalizeSearchQuery(query, BraveSearchError);
 }
 
 export function missingBraveSearchApiKeyMessage(): string {
@@ -129,34 +115,6 @@ async function readBoundedJson(response: Response, maxBytes: number, signal: Abo
 	}
 }
 
-function clipUtf8(value: string, maxBytes: number): string {
-	if (Buffer.byteLength(value, "utf8") <= maxBytes) return value;
-	let output = "";
-	let bytes = 0;
-	for (const character of value) {
-		const size = Buffer.byteLength(character, "utf8");
-		if (bytes + size > maxBytes) break;
-		output += character;
-		bytes += size;
-	}
-	return output;
-}
-
-function cleanText(value: string, maxBytes: number): string {
-	const converted = revealUnicodeFormattingControls(convert(value.slice(0, maxBytes * 4), {
-		wordwrap: false,
-		limits: { maxInputLength: maxBytes * 4, maxDepth: 8, maxChildNodes: 100 },
-		selectors: [
-			{ selector: "a", options: { ignoreHref: true } },
-			{ selector: "img", format: "skip" },
-		],
-	}))
-		.replace(/[\u0000-\u001f\u007f-\u009f]/gu, " ")
-		.replace(/\s+/gu, " ")
-		.trim();
-	return clipUtf8(converted, maxBytes);
-}
-
 function parseResults(raw: unknown, count: number): BraveSearchResult[] {
 	if (!raw || typeof raw !== "object") throw new BraveSearchError("Brave Search returned invalid result data");
 	const web = (raw as { web?: unknown }).web;
@@ -170,21 +128,9 @@ function parseResults(raw: unknown, count: number): BraveSearchResult[] {
 		if (!entry || typeof entry !== "object") continue;
 		const { title, url, description } = entry as Record<string, unknown>;
 		if (typeof title !== "string" || typeof url !== "string") continue;
-		let parsedUrl: URL;
-		try {
-			parsedUrl = new URL(url);
-		} catch {
-			continue;
-		}
-		if ((parsedUrl.protocol !== "http:" && parsedUrl.protocol !== "https:") || parsedUrl.username || parsedUrl.password) continue;
-		if (Buffer.byteLength(parsedUrl.href, "utf8") > 2_048) continue;
-		const cleanTitle = cleanText(title, 512);
-		if (!cleanTitle) continue;
-		results.push({
-			title: cleanTitle,
-			url: parsedUrl.href,
-			description: typeof description === "string" ? cleanText(description, 1_024) : "",
-		});
+		const result = sanitizeSearchResult(title, url, typeof description === "string" ? description : "");
+		if (!result) continue;
+		results.push(result);
 		if (results.length >= count) break;
 	}
 	return results;
@@ -194,7 +140,7 @@ export async function searchBrave(query: string, options: BraveSearchOptions = {
 	const normalizedQuery = normalizeBraveSearchQuery(query);
 	const apiKey = options.apiKey?.trim();
 	if (!apiKey) throw new BraveSearchError(missingBraveSearchApiKeyMessage());
-	const count = Math.min(MAX_COUNT, Math.max(1, Math.floor(options.count ?? DEFAULT_COUNT)));
+	const count = Math.min(MAX_SEARCH_COUNT, Math.max(1, Math.floor(options.count ?? DEFAULT_SEARCH_COUNT)));
 	const timeoutSignal = AbortSignal.timeout(options.timeoutMs ?? DEFAULT_TIMEOUT_MS);
 	const signal = options.signal ? AbortSignal.any([options.signal, timeoutSignal]) : timeoutSignal;
 	const url = new URL(BRAVE_SEARCH_ENDPOINT);

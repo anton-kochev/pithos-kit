@@ -15,7 +15,7 @@ A monorepo of independently published Pi extensions, skills, prompts, themes, an
 - [`pithos.plan/`](./pithos.plan) — session-owned read-only planning with durable checkpoints, explicit lifecycle commands, and conflict-safe publication. [![npm version](https://img.shields.io/npm/v/@pithos-kit/plan.svg)](https://www.npmjs.com/package/@pithos-kit/plan)
 - [`pithos.themes/`](./pithos.themes) — accessible Auric light and dark themes with automatic appearance switching. [![npm version](https://img.shields.io/npm/v/@pithos-kit/themes.svg)](https://www.npmjs.com/package/@pithos-kit/themes)
 - [`pithos.translate/`](./pithos.translate) — translate ordinary interactive prompts into English and assistant prose manually or display-only. [![npm version](https://img.shields.io/npm/v/@pithos-kit/translate.svg)](https://www.npmjs.com/package/@pithos-kit/translate)
-- [`pithos.web/`](./pithos.web) — Brave-backed public-web search and bounded static HTML/text fetching, including trusted Plan-mode research. [![npm version](https://img.shields.io/npm/v/@pithos-kit/web.svg)](https://www.npmjs.com/package/@pithos-kit/web)
+- [`pithos.web/`](./pithos.web) — host-backed public-web search (Brave or Keenable), direct Brave in standalone Pi, and bounded static HTML/text fetching, including trusted Plan-mode research. [![npm version](https://img.shields.io/npm/v/@pithos-kit/web.svg)](https://www.npmjs.com/package/@pithos-kit/web)
 - [`pithos.atlas/`](./pithos.atlas) — name sessions, diagnose and configure Pithos, and manage guarded Pi runtime patches. [![npm version](https://img.shields.io/npm/v/@pithos-kit/atlas.svg)](https://www.npmjs.com/package/@pithos-kit/atlas)
 
 ## Install
@@ -56,6 +56,8 @@ pi:
     "@pithos-kit/translate": "npm:3.0.0"
     "@pithos-kit/web": "npm:0.3.0"
 ```
+
+The published Web `0.3.0` pin does not support host-backed search. See the [Web setup guide](./pithos.web/README.md#pithos-host-owned-search) for using a broker-aware build.
 
 Atlas can validate and interactively manage toolchain versions, `pi.version`, and `@pithos-kit/*` entries while preserving third-party configuration. Its changes describe a future rebuilt Pithos environment; they do not replace the active Pi process. Run `/pithos help` after installing it.
 

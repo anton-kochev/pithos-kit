@@ -646,19 +646,19 @@
       },
       "pithosKit": {
         "displayName": "Web",
-        "summary": "Search the public web with Brave and fetch bounded static HTML or text pages.",
+        "summary": "Search the public web through the Pithos host or Brave in standalone Pi, and fetch bounded static HTML or text pages.",
         "minimumPi": ">=1.0.0",
         "commands": [
           {
             "name": "web-setup",
-            "summary": "Check local Brave Search credential status and show secure setup guidance.",
+            "summary": "Check search readiness and show host or standalone setup guidance.",
             "usage": "/web-setup [--help]"
           }
         ],
         "tools": [
           {
             "name": "web_search",
-            "summary": "Search the public web through the Brave Search API."
+            "summary": "Search the public web through the Pithos host, or directly through Brave in standalone Pi."
           },
           {
             "name": "web_fetch",
@@ -671,9 +671,14 @@
         "agents": [],
         "configuration": [
           {
+            "kind": "file",
+            "key": "$HOME/.config/pithos/web/.env",
+            "summary": "On the Pithos host, select one provider with PITHOS_WEB_SEARCH_PROVIDER and store its API key here. Restart Pithos after changes."
+          },
+          {
             "kind": "environment",
             "key": "BRAVE_SEARCH_API_KEY",
-            "summary": "Authenticate web_search requests to the Brave Search API."
+            "summary": "Standalone Pi only: authenticate direct Brave requests. Do not export provider keys to Pi under Pithos."
           },
           {
             "kind": "environment",

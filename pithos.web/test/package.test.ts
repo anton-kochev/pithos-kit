@@ -15,25 +15,35 @@ describe("Web package", () => {
 		assert.equal(manifest.peerDependencies["@earendil-works/pi-coding-agent"], ">=1.0.0");
 		assert.equal(manifest.pithosKit.minimumPi, ">=1.0.0");
 		assert.deepEqual(manifest.pi.extensions, ["./extensions"]);
-		assert.deepEqual(manifest.pithosKit.commands, [{
-			name: "web-setup",
-			usage: "/web-setup [--help]",
-			summary: "Check local Brave Search credential status and show secure setup guidance.",
-		}]);
-		assert.deepEqual(manifest.pithosKit.tools.map(({ name }: { name: string }) => name), ["web_search", "web_fetch"]);
-		assert.deepEqual(manifest.pithosKit.configuration.map(({ key }: { key: string }) => key), [
-			"BRAVE_SEARCH_API_KEY",
-			"PI_OFFLINE",
+		assert.deepEqual(manifest.pithosKit.commands.map(({ name, usage }: { name: string; usage: string }) => [name, usage]), [
+			["web-setup", "/web-setup [--help]"],
 		]);
+		assert.deepEqual(manifest.pithosKit.tools.map(({ name }: { name: string }) => name), ["web_search", "web_fetch"]);
 		assert.ok(manifest.files.includes("src"));
 		assert.ok(manifest.files.includes("extensions"));
 		assert.ok(manifest.files.includes("LICENSE"));
 		assert.equal(typeof extension.default, "function");
 	});
 
+	it("advertises host-owned setup and standalone-only Brave credentials", () => {
+		const { pithosKit } = JSON.parse(readFileSync(resolve(import.meta.dirname, "../package.json"), "utf8"));
+		const config = new Map<string, { kind: string; summary: string }>(pithosKit.configuration.map(
+			(entry: { key: string }) => [entry.key, entry],
+		));
+		assert.deepEqual([...config.keys()].sort(), ["$HOME/.config/pithos/web/.env", "BRAVE_SEARCH_API_KEY", "PI_OFFLINE"]);
+		assert.match(pithosKit.tools[0].summary, /Pithos host.*standalone Pi/i);
+		assert.match(pithosKit.commands[0].summary, /search readiness/i);
+		assert.equal(config.get("$HOME/.config/pithos/web/.env")?.kind, "file");
+		assert.match(config.get("$HOME/.config/pithos/web/.env")!.summary, /PITHOS_WEB_SEARCH_PROVIDER/);
+		assert.match(config.get("BRAVE_SEARCH_API_KEY")!.summary, /standalone Pi only/i);
+		assert.equal(config.get("PI_OFFLINE")?.kind, "environment");
+	});
+
 	it("documents credentials, limits, safety, Plan use, and unsupported page classes", () => {
 		const readme = readFileSync(resolve(import.meta.dirname, "../README.md"), "utf8");
 		assert.match(readme, /BRAVE_SEARCH_API_KEY/);
+		assert.match(readme, /KEENABLE_API_KEY/);
+		assert.match(readme, /PITHOS_WEB_SEARCH_PROVIDER/);
 		assert.match(readme, /\/web-setup/);
 		assert.match(readme, /--help/);
 		assert.match(readme, /https:\/\/api-dashboard\.search\.brave\.com\/register/);
@@ -57,7 +67,12 @@ describe("Web package", () => {
 		assert.match(readme, /Plan mode/i);
 		assert.match(readme, /JavaScript-rendered/i);
 		assert.match(readme, /50KB.*2000 lines/is);
-		assert.match(readme, /"@pithos-kit\/web": "npm:0\.3\.0"/);
+		assert.match(readme, /"@pithos-kit\/web": "npm:<exact-version>"/);
+		assert.match(readme, /0\.3\.0.*does not support the host broker/i);
+		assert.match(readme, /\$HOME\/\.config\/pithos\/web\/.*\.env/);
+		assert.match(readme, /Add a search provider[\s\S]*src\/web_search\/provider\.rs/);
+		assert.match(readme, /src\/web_search\/provider\/tests\.rs/);
+		assert.match(readme, /cargo test --locked --lib web_search::provider::tests/);
 	});
 
 	it("is wired into repository documentation and trusted publishing", () => {
