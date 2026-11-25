@@ -472,8 +472,8 @@ export function registerTranslate(pi: ExtensionAPI, dependencies: TranslateDepen
           model: activeConfig.englishCheck.model,
           sourceChars: prepared.source.length,
           durationMs: Date.now() - started,
-          outcome: check.outcome,
-          classifierUsage: check.classifierUsage,
+          threshold: activeConfig.englishCheck.threshold ?? DEFAULT_ENGLISH_CHECK_THRESHOLD,
+          ...check,
         });
         if (check.outcome === "cancelled" || signal.aborted) {
           restoreInputDraft(event.text, event.source, ctx);

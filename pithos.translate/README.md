@@ -75,7 +75,7 @@ Either `input` or `output` may be absent until configured; absence means off and
 
 A model is one exact `provider/model-id`; model IDs may contain additional slashes, such as `openrouter/anthropic/claude-sonnet-4`. `timeoutMs` is an integer from `1000` through `300000`. Its default is `60000` (60 seconds) when omitted. Unknown fields, incomplete sections, and the earlier flat configuration shape are invalid; there is no migration layer.
 
-There is **no fallback model**. Each request uses only that direction's configured and authenticated model, never the active coding model. Provider names are literal authentication boundaries: `openai/...` requires OpenAI API-key authentication (for example `OPENAI_API_KEY` or `/login openai`), while `openai-codex/...` uses ChatGPT/Codex subscription authentication. Working `openai-codex` credentials do not authenticate `openai` requests.
+There is **no fallback model**. Each request uses only that direction's configured and authenticated model, never the active coding model. Provider credentials are separate. For `openai/...`, chat can work with a ChatGPT login, but the Decisions classifier requires API-key authentication. You can keep `openai-codex/...` on subscription authentication and use a Platform API key for `openai/...`.
 
 ## Input translation
 
@@ -86,13 +86,13 @@ Input translation is opt-in and off by default. When enabled, Translate supports
 3. Translate protects byte-sensitive Markdown regions, optionally checks whether the input already needs no English translation, and otherwise asks the configured exact translator for a faithful English translation.
 4. On success it returns Pi's `transform` result. Pi expands any preserved directive and delivers the translated text using the original submission’s native steering or follow-up behavior (or starts a normal turn when appropriate). Translate does not resubmit the message or wait for the main agent to become idle. Translation adds preprocessing latency before Pi can queue the message.
 
-When translation is performed, the original source is not persisted and does not enter the main model context. When the optional English check approves, the original prompt continues unchanged into the normal main-model flow. It necessarily exists transiently in the local Pi runtime and is sent to the configured translation provider because that provider must read it to translate it. Diagnostics record only source-free operational metadata such as character count, selected model, duration, outcome, and usage; they never record raw inbound text or provider error text.
+When translation is performed, the original source is not persisted and does not enter the main model context. Translate handles the original text transiently in Pi. Without an English check, it sends eligible text directly to the translation provider after Markdown protection. With the check enabled, the classifier receives the protected text first. If it approves, the original prompt continues unchanged to the main model without a translator call. On fallback, the translator also receives the protected text. Diagnostics record only source-free operational metadata such as character count, selected model, duration, outcome, and usage; they never record raw inbound text or provider error text.
 
 Image attachments are preserved on the transformed prompt. Without an English check, English or language-neutral text still passes through the same guarded translator boundary and may return unchanged.
 
 ### Optional file-only English check
 
-To avoid a translation request for already-English or language-neutral input, add `englishCheck` inside the existing `input` section of the active user or project `translate.json` file:
+The decision model does not translate. It answers one question: can this prompt go to the main agent unchanged? For OpenAI, [set up the classifier credential](#openai-decisions-setup) even if chat translation already works. Then add `englishCheck` inside the existing `input` section of the active user or project `translate.json` file:
 
 ```json
 {
@@ -116,7 +116,18 @@ Keep any existing `output` section. Use `~/.pi/agent/translate.json` (or the con
 - `timeoutMs` defaults to `10000`; it must be an integer from `1000` through `300000`. This budget is separate from the translator's timeout, so a fallback can take the sum of both budgets.
 - The setting is input-only; `output.englishCheck` and unknown nested fields are rejected.
 
-OpenAI's Decisions API requires OpenAI **API-key authentication**, for example `OPENAI_API_KEY` or `/login openai`. ChatGPT/Codex subscription authentication is not sufficient. Credentials remain in Pi's authentication setup, never in `translate.json`. The classifier must be available in the installed Pi registry; older Pi versions without classifier APIs safely use the translator instead, without requiring a package compatibility bump.
+#### OpenAI Decisions setup
+
+**Use a Platform API key, not a ChatGPT login.** `/login openai` can save a subscription token rather than a key. A `stored` indicator or working translation proves neither that Pi selected a Platform key nor that `/v1/decisions` accepts it.
+
+1. On the [OpenAI API keys page](https://platform.openai.com/api-keys), choose your project and key. Under **Restricted → Model capabilities**, allow **Decisions → Write**. If the same key also runs your translator or chat model on `/v1/responses`, allow **Responses → Write** too. Keep other permissions your apps need; **All** is not required.
+2. From the **host terminal** in your project directory, run `pithos run -- pi auth login openai --api-key`. For standalone Pi, run `pi auth login openai --api-key` instead. Enter the key at the secure prompt, never in chat, a command argument, or `translate.json`. Look for **Saved API key for OpenAI**, not **Logged in to OpenAI**. This replaces Pi's stored `openai` credential; requests using that key use API billing. It does not replace your `openai-codex` subscription credential.
+3. Restart your usual session. For an end-to-end check with logs, start it with `pithos run -- env PITHOS_LOG_LEVEL=info PITHOS_LOG_DIR=.pi/logs pi`. Run `/translate input-status` to confirm the configuration, then send a normal English prompt. The status command itself does not call the classifier.
+4. Check the latest `translation.input.english-check` event in `.pi/logs/pithos-translate.jsonl`. A fresh `skip` with `threshold-met` confirms the classifier answered and translation was skipped. A `below-threshold` fallback also confirms a valid answer; a `provider-error` does not. If a probe reports `401 no_matching_rule`, verify **which credential Pi is using** before changing key permissions. Editing a Platform key does nothing to a session using OAuth.
+
+#### What the check sends and when it falls back
+
+The classifier must be available in the installed Pi registry; older Pi versions without classifier APIs safely use the translator instead.
 
 The check receives the **complete protected argument text**, without silent truncation. Code and URLs use the same Markdown placeholders as translation. For recognized directives only the argument suffix is classified; attachments are not sent to the classifier. Enabling the check sends this protected prose to the classifier provider even if no translation is ultimately needed; its privacy, pricing, and limits apply.
 
@@ -187,11 +198,11 @@ Translate should precede other display-transforming extensions in Pi's extension
 
 ## Diagnostics
 
-With Pithos Kit's opt-in JSONL diagnostics enabled, Translate records source-free lifecycle and translation events. English-check events record model, source character count, duration, skip/fallback/cancelled outcome, and available `classifierUsage` (input/output/total tokens and cost), separately from chat translation usage; they contain neither source text nor raw provider errors. It also records each completed main assistant-model response's provider, model, API, stop reason, and available token/spend usage so translation overhead can be distinguished from the coding turn. It never records assistant response text. Inbound completion, failure, exception, and unsupported-path records contain only operational dimensions; raw inbound text and inbound provider error text are excluded.
+With Pithos Kit's opt-in JSONL diagnostics enabled, Translate records source-free lifecycle and translation events. Each `translation.input.english-check` event records the model, source character count, duration, outcome, effective `threshold`, and a `reason`. `classifierCalled` tells you whether Translate invoked Pi's classification API, not whether a network request reached the provider. A valid boolean response includes its numeric `probability`: `threshold-met` skips translation; `below-threshold` falls back. Other reasons distinguish setup failures, exceptions, provider errors or aborts, invalid responses, timeouts, and cancellation without exposing raw errors. Events record available `classifierUsage` (input/output/total tokens and cost), separately from chat translation usage; they contain neither source text nor raw provider errors. It also records each completed main assistant-model response's provider, model, API, stop reason, and available token/spend usage so translation overhead can be distinguished from the coding turn. It never records assistant response text. Inbound completion, failure, exception, and unsupported-path records contain only operational dimensions; raw inbound text and inbound provider error text are excluded.
 
 ## Troubleshooting
 
-Use `/translate input-status` or `/translate output-status` to verify the active scope, exact model, mode, and effective timeout. Reconfigure with the matching `input-config` or `output-config` argument. If authentication is missing, run `/login <provider>`. Input failures restore the draft; output failures retain the original assistant prose. Translate never silently switches to the active coding model.
+Use `/translate input-status` or `/translate output-status` to verify the active scope, exact model, mode, and effective timeout. Reconfigure with the matching `input-config` or `output-config` argument. For OpenAI classifier authentication, follow [OpenAI Decisions setup](#openai-decisions-setup); for ordinary chat translation, use your provider’s normal login. Input failures restore the draft; output failures retain the original assistant prose. Translate never silently switches to the active coding model.
 
 ## Limitations
 

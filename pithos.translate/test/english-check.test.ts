@@ -42,15 +42,18 @@ it("skips only a valid strong bool positive from the exact classifier using full
 });
 
 it("falls back safely for unavailable APIs, models, auth and exceptions without exposing errors", async () => {
-  for (const registry of [
+  const reasons = ["classifier-api-unavailable", "model-unavailable", "setup-error", "classify-error", "provider-error"];
+  for (const [index, registry] of [
     {},
     { findOfType: () => undefined, classify: () => { throw Error("must not call"); } },
     { findOfType: () => { throw Error("PRIVATE"); }, classify: async () => response() },
     { findOfType: () => ({}), classify: async () => { throw Error("PRIVATE"); } },
     { findOfType: () => ({}), classify: async () => ({ stopReason: "error", errorMessage: "PRIVATE auth" }) },
-  ]) {
+  ].entries()) {
     const result = await checkEnglish("PRIVATE source", config, registry as never);
     assert.equal(result.outcome, "fallback");
+    assert.equal(result.reason, reasons[index]);
+    assert.equal(result.classifierCalled, index >= 3);
     assert.doesNotMatch(JSON.stringify(result), /PRIVATE/);
   }
 });
@@ -72,11 +75,11 @@ it("bounds ignored-signal requests and prioritizes caller cancellation", async (
   assert.equal(requestSignal?.aborted, false);
   t.mock.timers.tick(1);
   assert.equal(requestSignal?.aborted, true);
-  assert.equal((await pending).outcome, "fallback");
+  assert.deepEqual(await pending, { outcome: "fallback", classifierCalled: true, reason: "timeout" });
   const controller = new AbortController();
   const cancelled = checkEnglish("Hello", config, registry as never, controller.signal);
   controller.abort();
-  assert.equal((await cancelled).outcome, "cancelled");
+  assert.deepEqual(await cancelled, { outcome: "cancelled", classifierCalled: true, reason: "cancelled" });
   assert.equal(requestSignal?.aborted, true);
   const before = calls;
   assert.equal((await checkEnglish("Hello", config, registry as never, controller.signal)).outcome, "cancelled");
@@ -92,7 +95,7 @@ it("returns only finite source-free classifier usage dimensions", async () => {
     classify: async () => ({ ...response(), usage: { input: 12, output: 2, totalTokens: 14, cost: { total: 0.01, secret: "PRIVATE" }, secret: "PRIVATE" } }),
   };
   assert.deepEqual(await checkEnglish("PRIVATE", config, registry as never), {
-    outcome: "skip", classifierUsage: { inputTokens: 12, outputTokens: 2, totalTokens: 14, costUsd: 0.01 },
+    outcome: "skip", classifierCalled: true, reason: "threshold-met", probability: 0.98, classifierUsage: { inputTokens: 12, outputTokens: 2, totalTokens: 14, costUsd: 0.01 },
   });
 });
 

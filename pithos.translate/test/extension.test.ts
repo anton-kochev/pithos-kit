@@ -1325,6 +1325,14 @@ it("falls back conservatively through the helper and logs classifier usage separ
   }
   harness.context.modelRegistry = {};
   assert.deepEqual(await emit(harness, "input", event), [{ action: "handled" }]);
+  const checks = logs.filter(entry => entry.event === "translation.input.english-check");
+  assert.deepEqual(checks.map(({ metadata }) => [metadata?.classifierCalled, metadata?.reason, metadata?.probability, metadata?.threshold]), [
+    [true, "below-threshold", 0.1, 0.98],
+    [true, "invalid-response", undefined, 0.98],
+    [true, "provider-aborted", undefined, 0.98],
+    [true, "provider-error", undefined, 0.98],
+    [false, "classifier-api-unavailable", undefined, 0.98],
+  ]);
   assert.equal(translations, 5);
   assert.deepEqual(harness.editorTexts, Array(5).fill(event.text));
   assert.equal(harness.statuses.at(-1)?.text, undefined);
