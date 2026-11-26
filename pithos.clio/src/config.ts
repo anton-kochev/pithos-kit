@@ -25,6 +25,8 @@ export interface Config {
   maxContextTokens?: number;
   maxEdits: number;
   maxCommits: number;
+  /** Worker spend per run, in USD. At this amount the worker must answer; at 1.5× it is stopped. */
+  maxCostUsd: number;
   classifier?: ClassifierConfig;
 }
 
@@ -36,6 +38,7 @@ const LIMITS: Record<'timeoutMs' | 'maxTurns' | 'maxContextTokens' | 'maxEdits' 
   maxEdits: [6, 1, 20],
   maxCommits: [20, 1, 200],
 };
+const MAX_COST_USD: Range = [0.5, 0.01, 50];
 const CLASSIFIER_LIMITS: Record<'collectThreshold' | 'gateThreshold' | 'maxWindows' | 'timeoutMs', Range> = {
   collectThreshold: [1.0, 0, 3],
   gateThreshold: [1.0, 0, 3],
@@ -83,7 +86,7 @@ function parseClassifier(value: unknown): ClassifierConfig {
 
 export function parseConfig(value: unknown): Config {
   const data = object(value, 'configuration');
-  only(data, ['model', 'thinking', 'docsDirs', 'autoCommit', 'classifier', ...Object.keys(LIMITS)], '');
+  only(data, ['model', 'thinking', 'docsDirs', 'autoCommit', 'classifier', 'maxCostUsd', ...Object.keys(LIMITS)], '');
   if (data.model !== undefined && (typeof data.model !== 'string' || !MODEL_SPEC.test(data.model))) fail('model must be provider/model-id');
   if (data.thinking !== undefined && !THINKING.includes(String(data.thinking))) fail(`thinking must be one of ${THINKING.join(', ')}`);
   const docsDirs = data.docsDirs ?? [];
@@ -101,6 +104,7 @@ export function parseConfig(value: unknown): Config {
     maxContextTokens: data.maxContextTokens === undefined ? undefined : number(data, 'maxContextTokens', LIMITS.maxContextTokens, true),
     maxEdits: number(data, 'maxEdits', LIMITS.maxEdits, true),
     maxCommits: number(data, 'maxCommits', LIMITS.maxCommits, true),
+    maxCostUsd: number(data, 'maxCostUsd', MAX_COST_USD, false),
     classifier: data.classifier === undefined ? undefined : parseClassifier(data.classifier),
   };
 }

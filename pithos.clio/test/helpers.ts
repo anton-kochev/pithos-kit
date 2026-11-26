@@ -2,7 +2,7 @@ import { execFile } from 'node:child_process';
 import { mkdtemp, mkdir, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
-import { createFauxCore, type AssistantMessage } from '@earendil-works/pi-ai';
+import { createAssistantMessageEventStream, createFauxCore, type AssistantMessage } from '@earendil-works/pi-ai';
 import { Git, type Exec } from '../src/git.ts';
 import type { Classifier, Judgement } from '../src/classify.ts';
 import type { WorkerContext } from '../src/worker.ts';
@@ -54,7 +54,7 @@ export function stubClassifier(answer: (state: Record<string, unknown>) => Judge
 export const judgement = (kind: string, score: number): Judgement => ({ kind, kindConfidence: 0.6, score, scoreConfidence: 0.6 });
 
 /** A worker context backed by Pi's faux provider; responses are scripted per test. */
-export function fauxWorker(responses: (AssistantMessage | ((context: unknown) => AssistantMessage))[], options: { reasoning?: boolean } = {}) {
+export function fauxWorker(responses: (AssistantMessage | ((context: unknown) => AssistantMessage))[], options: { reasoning?: boolean; costPerRequest?: number } = {}) {
   const core = createFauxCore({ provider: 'clio-test', models: [{ id: 'worker', reasoning: options.reasoning ?? false, contextWindow: 128_000, cost: { input: 1, output: 2, cacheRead: 0, cacheWrite: 0 } }], tokensPerSecond: Infinity });
   core.setResponses(responses as never);
   const model = core.getModel();
@@ -64,7 +64,19 @@ export function fauxWorker(responses: (AssistantMessage | ((context: unknown) =>
     modelRegistry: {
       find: () => model,
       getAvailable: () => [model],
-      streamSimple: core.streamSimple as never,
+      // The faux provider always reports zero cost; optionally stamp a fixed cost on each answer.
+      streamSimple: (options.costPerRequest === undefined ? core.streamSimple : (m: never, c: never, o: never) => {
+        const inner = core.streamSimple(m, c, o);
+        const outer = createAssistantMessageEventStream();
+        void (async () => {
+          for await (const event of inner) {
+            if (event.type === 'done') event.message.usage = { ...event.message.usage, cost: { ...event.message.usage.cost, total: options.costPerRequest! } };
+            outer.push(event);
+          }
+          outer.end();
+        })();
+        return outer;
+      }) as never,
     } as never,
   };
   return { ctx, core };

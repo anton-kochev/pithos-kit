@@ -21,6 +21,17 @@ ones as their own "docs(clio):" commit. Changes it is unsure about wait in the i
   /clio status --probe  also make one tiny classifier call to test the model and its credentials`;
 
 const IDLE_POLL_MS = 1_000;
+
+/** "41s", "1m 10s". */
+export function formatElapsed(ms: number): string {
+  const seconds = Math.max(0, Math.floor(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+export interface Progress { range: string; step: string; startedAt: number }
+export function progressLine(progress: Progress, now: number): string {
+  return `Clio · ${progress.range} · ${progress.step} · ${formatElapsed(now - progress.startedAt)}`;
+}
 const IDLE_LIMIT_MS = 15 * 60_000;
 
 /** Plan's persisted state: an active (or malformed) Plan blocks automatic runs. */
@@ -52,6 +63,7 @@ export default function clio(pi: ExtensionAPI) {
   let controller: AbortController | undefined;
   let again = false;
   let lastReport: RunReport | undefined;
+  let progress: Progress | undefined;
 
   const git = (ctx: ExtensionContext) => new Git((command, args, options) => pi.exec(command, args, options), ctx.cwd);
 
@@ -77,15 +89,28 @@ export default function clio(pi: ExtensionAPI) {
     }
   };
 
+  /** Footer status while a capture is working; cleared when it ends. TUI and RPC only. */
+  const showProgress = (ctx: ExtensionContext) => {
+    if (!ctx.hasUI) return;
+    try { ctx.ui.setStatus('clio', progress?.range ? progressLine(progress, Date.now()) : undefined); } catch { /* display only */ }
+  };
+
   const capture = async (ctx: ExtensionContext, since?: string): Promise<RunReport> => {
     controller = new AbortController();
     const signal = controller.signal;
+    progress = { range: '', step: 'starting', startedAt: Date.now() };
+    const ticker = setInterval(() => showProgress(ctx), 1_000);
+    ticker.unref?.();
     try {
       const repo = git(ctx);
       if (!(await repo.isRepository())) return { status: 'none', text: 'Clio · not a git repository', inboxed: 0 };
       const config = await loadConfig(ctx.cwd);
       const report = await runCapture({
         git: repo, root: ctx.cwd, ctx, entries: ctx.sessionManager.getBranch(), config, signal, waitIdle: waitIdle(ctx, signal), since,
+        onProgress: (step, range) => {
+          if (progress) { progress.step = step; progress.range = range; }
+          showProgress(ctx);
+        },
       });
       lastReport = report;
       return report;
@@ -94,7 +119,10 @@ export default function clio(pi: ExtensionAPI) {
       lastReport = report;
       return report;
     } finally {
+      clearInterval(ticker);
       controller = undefined;
+      progress = undefined;
+      showProgress(ctx);
     }
   };
 
@@ -159,11 +187,17 @@ export default function clio(pi: ExtensionAPI) {
         const resolution = config instanceof Error ? undefined : resolveClassifier(ctx.modelRegistry, config.classifier);
         return say([
           `Clio status · branch ${branch ?? '(detached)'} · HEAD ${head?.slice(0, 7) ?? '-'} · cursor ${cursor?.slice(0, 7) ?? '(none yet)'}`,
-          config instanceof Error ? `Config: ${config.message}` : `Config: autoCommit ${config.autoCommit ? 'on' : 'off'} · worker ${config.model ?? 'session model'}`,
+          config instanceof Error ? `Config: ${config.message}` : [
+            `Config: autoCommit ${config.autoCommit ? 'on' : 'off'} · limits ${formatElapsed(config.timeoutMs)} and $${config.maxCostUsd} per run`,
+            config.model
+              ? `Worker: ${config.model}${config.thinking ? `, thinking ${config.thinking}` : ''}`
+              : `Worker: this session's model (${ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : 'none selected'}, thinking ${config.thinking ?? ctx.thinkingLevel ?? 'off'}). Set "model" and "thinking": "low" in .pi/clio.json for a cheaper, faster worker`,
+          ].join('\n'),
           await classifierStatus(resolution, words.includes('--probe')),
           `Inbox: ${inbox.length} waiting${inbox.length ? ' (/clio review)' : ''}`,
-          `Automatic runs: ${eligible(ctx) ? `off here (${eligible(ctx)})` : 'on'}${running ? ' · a run is in progress' : ''}`,
+          `Automatic runs: ${eligible(ctx) ? `off here (${eligible(ctx)})` : 'on'}${running ? ` · running now: ${progress?.range ? `${progress.range} · ${progress.step}` : 'checking for new commits'} · ${formatElapsed(Date.now() - (progress?.startedAt ?? Date.now()))}` : ''}`,
           `Last run: ${lastReport ? lastReport.text.split('\n')[0] : 'none in this session'}`,
+          ...(lastReport?.record ? [`Last run record: ${lastReport.record}`] : []),
         ].join('\n'));
       }
 

@@ -104,9 +104,18 @@ test('/clio --help and /clio status answer without calling a model', async () =>
     assert.match(text, /status --probe/);
     assert.match(text, /Clio status · branch main/);
     assert.match(text, /Classifier: unavailable \(no classifier configured\); nothing is auto-committed, every change goes to the inbox/);
+    assert.match(text, /Config: autoCommit on · limits 5m 0s and \$0\.5 per run/);
+    assert.match(text, /Worker: this session's model \(clio-test\/test, thinking off\)\. Set "model" and "thinking": "low"/);
     assert.equal(t.faux.state.callCount, 0);
   } finally {
     t.session.dispose();
     await rm(t.root, { recursive: true, force: true });
   }
+});
+
+test('progress line and elapsed time format', async () => {
+  const { formatElapsed, progressLine } = await import('../extensions/index.ts');
+  assert.equal(formatElapsed(41_900), '41s');
+  assert.equal(formatElapsed(70_000), '1m 10s');
+  assert.equal(progressLine({ range: 'a90c9cb..bdaca7a', step: 'drafting, request 3 of 16', startedAt: 0 }, 41_000), 'Clio · a90c9cb..bdaca7a · drafting, request 3 of 16 · 41s');
 });

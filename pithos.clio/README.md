@@ -47,6 +47,22 @@ Run `/clio --help` for the same list.
 - **Session scope.** Only the current session's branch is read, from the time of the cursor commit. Commits made in other sessions are documented from the diff alone.
 - **Inbox.** Changes waiting for review live in `.git/clio/inbox/`. They wait there when no classifier is configured, when the classifier is unsure, when the file has uncommitted changes, or when the branch moved under Clio.
 - **No automatic runs** in untrusted projects, child sessions, or while Plan is active. `/clio` works there when you run it yourself.
+- **Run records.** Every capture writes `.git/clio/runs/<time>-<range>.json`, and the newest 50 are kept. Each record holds:
+  - how the run ended;
+  - each worker request's duration, tokens, cost and tool calls;
+  - every file the worker read or was refused;
+  - each change's verdict and reason;
+  - the classifier's call and failure counts.
+
+  It holds no file contents, session text or model output. A failed run's report points at its record.
+
+## While it runs
+
+- **Footer status.** In the TUI, the footer shows what Clio is doing and for how long, for example `Clio · a90c9cb..bdaca7a · drafting, request 3 of 16 · 41s` or `Clio · … · waiting for the agent to go idle to commit · 1m 10s`. It clears when the run ends.
+- **`/clio status`** shows the same step and elapsed time.
+- **Deadline nudge.** At 70% of `timeoutMs` the worker is told to stop reading and answer with what it has. The hard stop comes at 100%.
+- **Cost nudge.** At `maxCostUsd` the worker gets the same nudge, and at 1.5× that amount it is stopped. A final answer that crosses the line is still used.
+  - This only works where the provider reports cost. A report marked "partial" means some requests had no cost data.
 
 ## Configuration
 
@@ -54,8 +70,8 @@ Optional project-local `.pi/clio.json`. Every field is optional; unknown or malf
 
 ```json
 {
-  "model": "anthropic/claude-sonnet-4-6",
-  "thinking": "medium",
+  "model": "openai/gpt-6-luna",
+  "thinking": "low",
   "docsDirs": ["handbook"],
   "autoCommit": true,
   "classifier": {
@@ -69,11 +85,16 @@ Optional project-local `.pi/clio.json`. Every field is optional; unknown or malf
   "maxTurns": 16,
   "maxContextTokens": 64000,
   "maxEdits": 6,
-  "maxCommits": 20
+  "maxCommits": 20,
+  "maxCostUsd": 0.5
 }
 ```
 
-- `model` / `thinking`: the worker. They default to the session's model and thinking level.
+- `model` / `thinking`: the worker.
+  - They default to the session's model and thinking level.
+  - Set them: a frontier session model with medium thinking can take 40 seconds and about $0.20 per request, and one run makes several requests.
+  - A fast, cheaper model with `"thinking": "low"` is enough for small doc edits.
+  - `/clio status` warns when the worker falls back to the session model.
 - `docsDirs`: extra directories, besides any `docs/`, where Markdown counts as docs.
 - `autoCommit`: set to `false` to send every change to the inbox.
 - `classifier`: a registered classifier model, used through Pi's classification API.
@@ -84,6 +105,7 @@ Optional project-local `.pi/clio.json`. Every field is optional; unknown or malf
   - For `openai/...` classifiers, Pi needs API-key authentication, not a ChatGPT login. See Translate's README, section "OpenAI Decisions setup".
 - `maxContextTokens`: the worker's context budget. It defaults to the smaller of 64k and half the model's context window. Reasoning is not counted.
 - `maxCommits`: the most commits one run covers; larger ranges keep the newest.
+- `timeoutMs` / `maxCostUsd`: per-run worker limits, by default 5 minutes and $0.50. Both nudge the worker to answer before the hard stop; see "While it runs".
 
 ## When the classifier is not working
 

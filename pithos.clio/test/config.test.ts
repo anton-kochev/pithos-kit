@@ -22,3 +22,9 @@ test('unknown and malformed fields fail closed with a readable reason', () => {
   assert.throws(() => parseConfig({ autoCommit: 'yes' }), /autoCommit/);
   assert.throws(() => parseConfig({ docsDirs: ['../escape'] }), /docsDirs/);
 });
+
+test('maxCostUsd defaults to $0.50 and accepts fractions', () => {
+  assert.equal(parseConfig({}).maxCostUsd, 0.5);
+  assert.equal(parseConfig({ maxCostUsd: 0.25 }).maxCostUsd, 0.25);
+  assert.throws(() => parseConfig({ maxCostUsd: 0 }), /maxCostUsd/);
+});

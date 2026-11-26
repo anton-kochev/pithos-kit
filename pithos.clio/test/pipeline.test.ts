@@ -163,3 +163,31 @@ test('even a few failed classifier calls turn a quiet "nothing" into a visible r
   assert.match(report.text, /1 of 2 classifier calls failed \(last: error: 429 rate limited\)/);
   assert.equal(faux.core.state.callCount, 0);
 });
+
+test('progress steps are reported in order, and every capture leaves a run record without contents', async () => {
+  const { root, git, session } = await repoWithNewCommit();
+  const steps: string[] = [];
+  const { ctx } = withClassifier(fauxWorker(readThenPropose).ctx, { window: s => s.user === 'Yes, do it.' ? ['decision', 1.9] : ['chatter', 0.1], edit: () => ['decision', 1.8] });
+  const report = await runCapture({ git, root, ctx, entries: session, config: parseConfig(classifierConfig), waitIdle: async () => {}, onProgress: step => steps.push(step) });
+  assert.deepEqual(steps, ['sorting 2 session excerpts', 'drafting', 'drafting, request 1 of 16', 'drafting, request 2 of 16', 'grading 1 change', 'waiting for the agent to go idle to commit', 'committing']);
+  assert.ok(report.record?.startsWith('.git/clio/runs/'), report.record);
+  const record = JSON.parse(await readFile(join(root, report.record!), 'utf8'));
+  assert.equal(record.status, 'done');
+  assert.equal(record.committed, report.committed);
+  assert.deepEqual(record.session, { considered: 2, kept: 1, classified: true });
+  assert.deepEqual(record.changes, [{ path: 'README.md', type: 'edit', verdict: 'commit', reason: 'decision, score 1.80' }]);
+  assert.equal(record.worker.requests.length, 2);
+  const raw = JSON.stringify(record);
+  assert.ok(!raw.includes('Yes, do it.') && !raw.includes('versioned JSON document'), 'no session text or doc content in the record');
+});
+
+test('a worker stopped by its cost limit points at the record and at a cheaper worker model', async () => {
+  const { root, git, session } = await repoWithNewCommit();
+  const list = () => fauxAssistantMessage([fauxToolCall('clio_read', { action: 'list', path: '.' })], { stopReason: 'toolUse' });
+  const { ctx } = withClassifier(fauxWorker([list(), list()], { costPerRequest: 1 }).ctx, { window: () => ['decision', 2], edit: () => ['decision', 2] });
+  const report = await runCapture({ git, root, ctx, entries: session, config: parseConfig({ ...classifierConfig, maxCostUsd: 0.5 }), waitIdle: async () => {} });
+  assert.equal(report.status, 'failed');
+  assert.match(report.text, /worker stopped \(cost-limit at \$0\.75\)/);
+  assert.match(report.text, /Tip: the worker uses this session's model \(clio-test\/worker, thinking off\)/);
+  assert.match(report.text, /Details: \.git\/clio\/runs\//);
+});
