@@ -1,4 +1,4 @@
-# Test plan (0.1.0)
+# Test plan (0.9.0)
 
 Behaviors and where they are covered. Run with `npm test`. On a host without the container's `node_modules` you can also use `node --experimental-strip-types --test test/*.test.ts`.
 

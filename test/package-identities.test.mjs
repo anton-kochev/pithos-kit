@@ -19,7 +19,7 @@ const packages = [
   { directory: "pithos.translate", shortName: "translate", version: "3.1.1" },
   { directory: "pithos.web", shortName: "web", version: "0.4.0" },
   // Clio needs 1.0.3 for agent_settled background runs and the classification API.
-  { directory: "pithos.clio", shortName: "clio", version: "0.0.6", minimumPi: ">=1.0.3" },
+  { directory: "pithos.clio", shortName: "clio", version: "0.9.0", minimumPi: ">=1.0.3" },
   { directory: "pithos.atlas", shortName: "atlas", version: "0.10.0" },
 ];
 
