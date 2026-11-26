@@ -118,7 +118,7 @@
     },
     {
       "name": "@pithos-kit/clio",
-      "version": "0.9.0",
+      "version": "0.9.1",
       "description": "Clio: documents committed work in the background and commits the good doc changes as their own docs(clio) commits.",
       "pi": {
         "extensions": [
