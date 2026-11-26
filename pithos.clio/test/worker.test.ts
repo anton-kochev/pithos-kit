@@ -1,57 +1,93 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { createAssistantMessageEventStream, type Model, type AssistantMessage, type Usage } from '@earendil-works/pi-ai';
+import { fauxAssistantMessage, fauxText, fauxThinking, fauxToolCall } from '@earendil-works/pi-ai';
 import { parseConfig } from '../src/config.ts';
-import { runWorker } from '../src/worker.ts';
-export const model: Model<any> = {id: 'fixture', name: 'Fixture', provider: 'fixture', api: 'openai-completions', baseUrl: 'http://invalid.local', reasoning: false, input: ['text'], cost: {input: 1, output: 1, cacheRead: 0, cacheWrite: 0}, contextWindow: 200000, maxTokens: 8000};
-export const usage: Usage = {input: 10, output: 20, cacheRead: 0, cacheWrite: 0, totalTokens: 30, cost: {input: 0.01, output: 0.02, cacheRead: 0, cacheWrite: 0, total: 0.03}};
-export function answer(content: AssistantMessage['content'], stopReason: AssistantMessage['stopReason'] = 'stop'): AssistantMessage {return {role: 'assistant', content, api: model.api, provider: model.provider, model: model.id, usage, stopReason, timestamp: Date.now()};}
-export function stream(message: AssistantMessage) { const s = createAssistantMessageEventStream(); queueMicrotask(() => {s.push({type: 'done', reason: 'stop', message}); s.end(message);}); return s; }
+import type { Evidence } from '../src/proposal.ts';
+import { addUsage, runWorker } from '../src/worker.ts';
+import { fauxWorker, makeRepo } from './helpers.ts';
 
-test('plain Agent worker inherits registry auth boundary, exposes no mutations, accounts usage and awaits cancellation', async () => {
-  let calls = 0;
-  const registry = {find: () => model, getAvailable: () => [model], streamSimple: (_m: any, context: any, options: any) => {
-    calls++;
-    assert.equal(options.reasoning, undefined);
-    assert.ok(!JSON.stringify(context).includes('RAW_SECRET_TRANSCRIPT'));
-    const system = context.messages.filter((m: any) => m.role === 'system');
-    assert.ok(system.every((m: any) => !m.tools?.length));
-    return stream(answer([{type: 'text', text: '{"findings":[],"edits":[],"unresolved":[]}'}]));
-  }};
-  const ctx = {model, thinkingLevel: 'off' as const, modelRegistry: registry};
-  const result = await runWorker(ctx, [], parseConfig({}), undefined);
-  assert.equal(calls, 1);
-  assert.deepEqual(result.proposal?.edits, []);
-  assert.equal(result.usage?.totalTokens, 30);
-  assert.equal(result.model, 'fixture/fixture');
-  await assert.rejects(runWorker({...ctx, modelRegistry: {...registry, find: () => undefined}}, [], parseConfig({model: 'missing/model'}), undefined), /unavailable/);
-  await assert.rejects(runWorker(ctx, [], parseConfig({thinking: 'high'}), undefined), /thinking/);
-  let cleaned = false;
-  let started!: () => void;
-  const ready = new Promise<void>(resolve => {started = resolve;});
-  const controller = new AbortController();
-  const pending = runWorker({...ctx, modelRegistry: {...registry, streamSimple: (_m: any, _c: any, options: any) => {
-    const s = createAssistantMessageEventStream();
-    options.signal.addEventListener('abort', () => {setTimeout(() => {
-      cleaned = true;
-      const message = answer([], 'aborted');
-      s.push({type: 'error', reason: 'aborted', error: message}); s.end(message);
-    }, 10);}, {once: true});
-    started(); return s;
-  }}}, [], parseConfig({}), controller.signal);
-  await ready; controller.abort();
-  const cancelled = await pending;
-  assert.equal(cleaned, true);
-  assert.match(cancelled.problem!, /cancel/i);
+const evidence = (): Evidence => ({ readDocs: new Map(), readFiles: new Set(), changedPaths: new Set(['src/a.ts']), entryIds: new Set(['u3']), commits: ['a90c9cb1234567890'] });
+const proposal = (path = 'README.md') => JSON.stringify({
+  edits: [{ path, oldText: 'Intro.', newText: 'Intro. Walkthroughs are versioned JSON documents.', kind: 'decision', value: 'Where walkthrough data lives.', sources: ['entry:u3', 'commit:a90c9cb'] }],
+  unresolved: [],
+});
+const readReadme = fauxAssistantMessage([fauxToolCall('clio_read', { action: 'read', path: 'README.md' })], { stopReason: 'toolUse' });
+
+test('reads the doc, then returns a grounded proposal', async () => {
+  const { root } = await makeRepo();
+  const { ctx } = fauxWorker([readReadme, fauxAssistantMessage(proposal())]);
+  const ev = evidence();
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: ev });
+  assert.equal(result.problem, undefined);
+  assert.equal(result.proposal?.edits[0].path, 'README.md');
+  assert.equal(ev.readDocs.get('README.md'), '# Demo\n\nIntro.\n');
+  assert.equal(result.usage.turns, 2);
 });
 
-test('unsupported worker tool attempts stop after one response without losing usage', async () => {
-  let calls = 0;
-  const result = await runWorker({model, thinkingLevel: 'off', modelRegistry: {
-    find: () => model, getAvailable: () => [model],
-    streamSimple: () => {calls++; return stream(answer([{type: 'toolCall', id: 'bad', name: 'write', arguments: {path: 'README.md', content: 'bad'}}], 'toolUse'));},
-  }}, [], parseConfig({}), undefined);
-  assert.equal(calls, 1);
-  assert.match(result.problem!, /incomplete/);
-  assert.equal(result.usage?.totalTokens, 30);
+test('regression: a huge reasoning block does not abort the worker (old maxResultBytes bug)', async () => {
+  const { root } = await makeRepo();
+  const thinking = 'x'.repeat(300_000);
+  const { ctx } = fauxWorker([readReadme, fauxAssistantMessage([fauxThinking(thinking), fauxText(proposal())])], { reasoning: true });
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
+  assert.equal(result.problem, undefined);
+  assert.ok(result.proposal);
+});
+
+test('regression: cost is measured even when usage.cost carries extra keys', () => {
+  const total = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 2, measuredTurns: 0 };
+  addUsage(total, { input: 1000, output: 200, cacheRead: 0, cacheWrite: 0, totalTokens: 1200, cost: { input: 0.01, output: 0.004, cacheRead: 0, cacheWrite: 0, total: 0.014, totalFromProvider: false } as never });
+  addUsage(total, { input: 10, output: 1, cacheRead: 0, cacheWrite: 0, totalTokens: 11, cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 } });
+  assert.equal(total.cost, 0.014);
+  assert.equal(total.measuredTurns, 1, 'a zero-cost response is unmeasured, not free');
+  assert.equal(total.input, 1010);
+});
+
+test('one repair turn fixes a rejected proposal', async () => {
+  const { root } = await makeRepo({ 'README.md': '# Demo\n\nIntro.\n', 'docs/guide.md': '# Guide\n' });
+  const { ctx } = fauxWorker([readReadme, fauxAssistantMessage(proposal('docs/guide.md')), fauxAssistantMessage(proposal('README.md'))]);
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
+  assert.equal(result.repaired, true);
+  assert.equal(result.proposal?.edits[0].path, 'README.md');
+});
+
+test('a proposal that stays invalid after the repair turn is reported, not applied', async () => {
+  const { root } = await makeRepo();
+  const { ctx } = fauxWorker([fauxAssistantMessage('not json'), fauxAssistantMessage('still not json')]);
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
+  assert.equal(result.stop, 'invalid-proposal');
+  assert.match(result.problem!, /invalid-proposal/);
+});
+
+test('the read tool refuses work near the turn limit, so the worker answers instead of looping', async () => {
+  const { root } = await makeRepo();
+  const looping = Array.from({ length: 3 }, () => fauxAssistantMessage([fauxToolCall('clio_read', { action: 'list', path: '.' })], { stopReason: 'toolUse' }));
+  let lastToolText = '';
+  const { ctx } = fauxWorker([...looping, (context: any) => {
+    const results = context.messages.filter((m: any) => m.role === 'toolResult');
+    lastToolText = results.at(-1)?.content?.[0]?.text ?? '';
+    return fauxAssistantMessage('{"edits":[],"unresolved":[]}');
+  }]);
+  const result = await runWorker(ctx, parseConfig({ maxTurns: 4 }), { root, task: 'task', evidence: evidence() });
+  assert.match(lastToolText, /Turn limit reached/);
+  assert.deepEqual(result.proposal?.edits, []);
+});
+
+test('reads outside the project or into hidden paths are refused with a reason, not a crash', async () => {
+  const { root } = await makeRepo();
+  let toolText = '';
+  const { ctx } = fauxWorker([
+    fauxAssistantMessage([fauxToolCall('clio_read', { action: 'read', path: '../etc/passwd' })], { stopReason: 'toolUse' }),
+    (context: any) => { toolText = context.messages.filter((m: any) => m.role === 'toolResult').at(-1).content[0].text; return fauxAssistantMessage('{"edits":[],"unresolved":[]}'); },
+  ]);
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
+  assert.match(toolText, /Could not read \.\.\/etc\/passwd/);
+  assert.ok(result.proposal);
+});
+
+test('cancellation stops the worker and says so', async () => {
+  const { root } = await makeRepo();
+  const controller = new AbortController();
+  const { ctx } = fauxWorker([() => { controller.abort(); return fauxAssistantMessage('{"edits":[],"unresolved":[]}'); }]);
+  const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() }, controller.signal);
+  assert.equal(result.stop, 'cancelled');
 });

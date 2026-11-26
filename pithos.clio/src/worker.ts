@@ -1,217 +1,206 @@
-import { isAbsolute, relative } from 'node:path';
-import { Agent, type AgentContext, type AgentToolCall } from '@earendil-works/pi-agent-core';
-import { getSupportedThinkingLevels, type Usage } from '@earendil-works/pi-ai';
+import { Agent, type AgentEvent, type AgentTool } from '@earendil-works/pi-agent-core';
+import { getSupportedThinkingLevels, type AssistantMessage, type Model, type Usage } from '@earendil-works/pi-ai';
 import type { ExtensionContext } from '@earendil-works/pi-coding-agent';
+import { Type } from 'typebox';
 import type { Config } from './config.ts';
-import { ProposalSchema, validateProposal, snapshotPool, candidatePriority, type Proposal, type Snapshot } from './evidence.ts';
+import { isDoc, listProjectDir, readProjectFile } from './paths.ts';
 import { POLICY } from './policy.ts';
-import { evidenceTool } from './exploration.ts';
-import { Value } from 'typebox/value';
-import { taskContext, type SessionObservation } from './context.ts';
-import type { Destination } from './destinations.ts';
-import { evidenceFailureReason, workerDiagnostic } from './diagnostics.ts';
-import { BudgetError, evidenceBudget, requestBytes, assertRequestBudget, continuationHeadroom, reservedFeedback, toolResultEnvelope, type Limit } from './budget.ts';
+import { extractJson, ProposalError, validateProposal, type Evidence, type Proposal } from './proposal.ts';
 
-type WorkerContext = Pick<ExtensionContext, 'model' | 'thinkingLevel'> & {
+export type WorkerContext = Pick<ExtensionContext, 'model' | 'thinkingLevel'> & {
   modelRegistry: Pick<ExtensionContext['modelRegistry'], 'find' | 'getAvailable' | 'streamSimple'>;
 };
-export interface WorkerBudget {
-  // Actual context handed to streamSimple; not provider-specific HTTP encoding.
-  initialRequestBytes?: number;
-  // Hard guard also includes Agent execution-tool metadata. Present on refusal.
-  initialGuardedRequestBytes?: number;
-  candidateFiles: number;
-  admittedFiles: number;
-  omittedFiles: number;
-  poolOmittedFiles: number;
-  discoveredDirectories: number;
-  missingDestinationDirectories: number;
-  providerRequests: number;
-  capacityRefusals: Partial<Record<Limit, number>>;
+
+export type StopReason = 'cancelled' | 'timeout' | 'turn-limit' | 'context-limit' | 'result-size' | 'provider-error' | 'invalid-proposal';
+
+export interface WorkerUsage { input: number; output: number; cacheRead: number; cacheWrite: number; cost: number; turns: number; measuredTurns: number }
+
+export interface WorkerResult {
+  model: string;
+  proposal?: Proposal;
+  /** Why the worker stopped without a usable proposal. */
+  stop?: StopReason;
+  problem?: string;
+  usage: WorkerUsage;
+  repaired: boolean;
 }
-export interface WorkerResult { budget?: WorkerBudget; sessionEvidence?: SessionObservation[]; proposal?: Proposal; usage?: Usage; usageStatus?: 'complete' | 'partial' | 'unknown'; problem?: string; model: string; thinking: string }
-const finite = (value: unknown): value is number => typeof value === 'number' && Number.isFinite(value) && value >= 0;
-function measured(usage: Usage | undefined): usage is Usage {
-  return !!usage && ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'].every(k => finite(usage[k as keyof Usage])) && !!usage.cost && Object.values(usage.cost).length === 5 && ['input', 'output', 'cacheRead', 'cacheWrite', 'total'].every(k => finite(usage.cost[k as keyof Usage['cost']]));
+
+/** Rough tokens for text the model sees. Thinking signatures are opaque and never counted. */
+export const estimateTokens = (chars: number) => Math.ceil(chars / 3.5);
+const MAX_ANSWER_CHARS = 200_000;
+const ReadParameters = Type.Object({ action: Type.Union([Type.Literal('list'), Type.Literal('read')]), path: Type.String({ minLength: 1, maxLength: 300 }) }, { additionalProperties: false });
+
+/** Worker context budget in tokens: configured, or the smaller of 64k and half the model's window. */
+export function contextBudget(model: Pick<Model<any>, 'contextWindow'>, config: Pick<Config, 'maxContextTokens'>): number {
+  return config.maxContextTokens ?? Math.min(64_000, Math.floor((model.contextWindow || 128_000) / 2));
 }
-export function selectWorker(ctx: WorkerContext, config: Config) {
-  const slash = config.model?.indexOf('/') ?? -1;
-  const model = config.model ? ctx.modelRegistry.find(config.model.slice(0, slash), config.model.slice(slash + 1)) : ctx.model;
-  if (!model || !ctx.modelRegistry.getAvailable().some(m => m.id === model.id && m.provider === model.provider)) throw new Error('Clio: worker model unavailable; no fallback');
-  const thinking = config.thinking ?? ctx.thinkingLevel ?? 'off';
-  if (!getSupportedThinkingLevels(model).includes(thinking)) throw new Error('Clio: unsupported worker thinking level; no fallback');
-  return {model, thinking};
-}
-export async function runWorker(ctx: WorkerContext, files: Snapshot[], config: Config, signal: AbortSignal | undefined, evidence?: {root?: string; entries?: readonly unknown[]; destinations?: Destination[]; observedPaths?: readonly string[]}): Promise<WorkerResult> {
-  const {model, thinking} = selectWorker(ctx, config);
-  const result: WorkerResult = {model: `${model.provider}/${model.id}`, thinking};
-  let turns = 0;
-  let measuredTurns = 0;
-  let timedOut = false;
-  let toolProblem: string | undefined;
-  let evidenceFailure: string | undefined;
-  let budgetProblem: string | undefined;
-  const guard = (context: unknown) => {
-    try { assertRequestBudget(context, config); }
-    catch (error) {
-      if (error instanceof BudgetError) budgetProblem = error.message.replace('Clio: ', `Clio: ${turns === 0 ? 'initial' : 'continuation'} request: `);
-      throw error;
-    }
-  };
-  let batchContext: AgentContext | undefined;
-  let batchCalls: AgentToolCall[] = [];
-  const batchResults = new Map<string, ReturnType<typeof toolResultEnvelope>>();
-  const admitResult = (id: string, text: string) => {
-    if (!batchContext) throw new Error('Clio: missing exploration request context');
-    const projected = batchCalls.map(call => batchResults.get(call.id) ??
-      toolResultEnvelope(call.id, call.id === id ? text : reservedFeedback(config), call.name));
-    const bytes = requestBytes({...batchContext, messages: [...batchContext.messages, ...projected]}) + continuationHeadroom;
-    if (bytes > config.maxContextBytes) throw new BudgetError('request-context-bytes', 0, bytes, config.maxContextBytes);
-    batchResults.set(id, toolResultEnvelope(id, text));
-  };
-  const pool = snapshotPool(files);
-  const candidates = [...files];
-  const candidateCount = candidates.length;
-  const budget: WorkerBudget = result.budget = {
-    candidateFiles: candidateCount + (pool?.omitted ?? 0), admittedFiles: 0,
-    omittedFiles: candidateCount + (pool?.omitted ?? 0), poolOmittedFiles: pool?.omitted ?? 0,
-    discoveredDirectories: evidence?.destinations?.filter(d => !d.missing).length ?? 0,
-    missingDestinationDirectories: evidence?.destinations?.filter(d => d.missing).length ?? 0,
-    providerRequests: 0, capacityRefusals: {},
-  };
-  const observed = new Set((evidence?.observedPaths ?? (pool?.provenance ?? candidates).map(f => f.path))
-    .map(path => evidence?.root && isAbsolute(path) ? relative(evidence.root, path) : path));
-  // Only original eligible observations grant directory scopes. Discovered
-  // candidates never become authorization provenance merely by being found.
-  const provenance = (pool?.provenance ?? candidates).filter(f => observed.has(f.path)).map(({path, doc}) => ({path, doc}));
-  const tools = evidence?.root ? [evidenceTool(evidence.root, files, config, provenance, admitResult, error => {
-    budget.capacityRefusals[error.limit] = (budget.capacityRefusals[error.limit] ?? 0) + 1;
-  })] : [];
-  for (const tool of tools) {
-    const execute = tool.execute;
-    tool.execute = async (id, args, signal, onUpdate) => {
-      try { return await execute(id, args, signal, onUpdate); }
-      catch (error) {
-        if (error instanceof BudgetError && error.limit === 'request-context-bytes') budgetProblem ??= error.message.replace('Clio: ', 'Clio: continuation request: ');
-        evidenceFailure ??= workerDiagnostic('Clio: worker incomplete (evidence tool refused or failed)', result.model, turns, evidenceFailureReason(error), args);
-        throw error;
-      }
-    };
+
+export function selectWorker(ctx: WorkerContext, config: Config): { model: Model<any>; thinking: string } {
+  let model = ctx.model;
+  if (config.model) {
+    const slash = config.model.indexOf('/');
+    model = ctx.modelRegistry.find(config.model.slice(0, slash), config.model.slice(slash + 1));
   }
-  const task = taskContext(evidence?.entries ?? [], config);
-  const priority = candidatePriority(observed, config);
-  candidates.sort((a, b) => priority(a.path) - priority(b.path));
-  const reserveBytes = tools.length ? continuationHeadroom + requestBytes(Array.from({length: 8}, (_, i) => toolResultEnvelope(`reserved-${i}`, reservedFeedback(config)))) : 0;
-  const initialPrompt = (admitted: Snapshot[]) => JSON.stringify({schema: ProposalSchema, task,
-    budget: evidenceBudget(admitted, config), omissions: {files: candidateCount + (pool?.omitted ?? 0) - admitted.length, poolFiles: pool?.omitted ?? 0}, continuationReserveBytes: reserveBytes,
-    destinations: evidence?.destinations?.map(({path, missing}) => ({path, missing})),
-    files: admitted.map(({path, text, doc}) => ({path, text, doc}))});
-  const agent = new Agent({
-    initialState: {model, thinkingLevel: thinking, tools, systemPrompt: POLICY},
-    toolExecution: 'sequential',
-    beforeToolCall: async ({context, assistantMessage}) => {
-      batchContext = context;
-      batchCalls = assistantMessage.content.filter((c): c is AgentToolCall => c.type === 'toolCall');
-      return undefined;
-    },
-    finishTurn: ({message, toolResults}) => {
-      if (toolResults.some(r => r.isError)) toolProblem ??= evidenceFailure ?? workerDiagnostic('Clio: worker incomplete (evidence tool refused or failed)', result.model, turns);
-      if (turns >= config.maxTurns && message.stopReason === 'toolUse') toolProblem ??= new BudgetError('request-turns', turns, 1, config.maxTurns).message;
-      if (toolProblem || message.stopReason !== 'toolUse') return {action: 'end'};
-    },
-    streamFn: (m, context, options) => {
-      if (turns === 0) budget.initialRequestBytes = requestBytes(context);
-      turns++;
-      budget.providerRequests = turns;
-      return ctx.modelRegistry.streamSimple(m, context, {...options, maxTokens: Math.min(model.maxTokens, Math.ceil(config.maxResultBytes / 3))});
-    },
-    prepareRequest: ({context}) => {
-      if (turns >= config.maxTurns) throw new BudgetError('request-turns', turns, 1, config.maxTurns);
-      if (turns === 0) {
-        const user = context.messages.find(m => m.role === 'user');
-        if (!user || user.role !== 'user') throw new Error('Clio: missing initial request');
-        const admitted: Snapshot[] = [];
-        const setPrompt = () => { user.content = [{type: 'text', text: initialPrompt(admitted)}]; };
-        files.splice(0, files.length);
-        setPrompt();
-        budget.initialGuardedRequestBytes = requestBytes(context);
-        guard(context);
-        const admissionMax = Math.max(requestBytes(context), config.maxContextBytes - reserveBytes);
-        for (const candidate of candidates) {
-          if (admitted.length >= config.maxFiles) continue;
-          admitted.push(candidate); setPrompt();
-          if (evidenceBudget(admitted, config).evidenceBytes > config.maxContextBytes || requestBytes(context) > admissionMax) {
-            admitted.pop(); setPrompt();
+  if (!model || !ctx.modelRegistry.getAvailable().some(m => m.id === model!.id && m.provider === model!.provider)) {
+    throw new Error(`worker model ${config.model ?? 'of this session'} is unavailable`);
+  }
+  const thinking = config.thinking ?? ctx.thinkingLevel ?? 'off';
+  const supported = getSupportedThinkingLevels(model) as string[];
+  return { model, thinking: supported.includes(thinking) ? thinking : supported.includes('off') ? 'off' : supported[0] };
+}
+
+/** Text and tool-call arguments of an assistant message; thinking is left out on purpose. */
+function visibleChars(message: AssistantMessage): number {
+  let chars = 0;
+  for (const part of message.content) {
+    if (part.type === 'text') chars += part.text.length;
+    else if (part.type === 'toolCall') chars += JSON.stringify(part.arguments ?? {}).length + part.name.length;
+  }
+  return chars;
+}
+
+/**
+ * Adds one response's usage. Only a finite cost total counts as measured; extra keys such as
+ * Pi's `totalFromProvider` are fine (the old check demanded exactly five and never measured).
+ */
+export function addUsage(total: WorkerUsage, usage: Usage | undefined): void {
+  if (!usage) return;
+  total.input += usage.input ?? 0;
+  total.output += usage.output ?? 0;
+  total.cacheRead += usage.cacheRead ?? 0;
+  total.cacheWrite += usage.cacheWrite ?? 0;
+  const cost = usage.cost?.total;
+  if (typeof cost === 'number' && Number.isFinite(cost) && cost > 0) {
+    total.cost += cost;
+    total.measuredTurns++;
+  }
+}
+
+function finalText(message: AssistantMessage | undefined): string {
+  return message?.content.filter(p => p.type === 'text').map(p => (p as { text: string }).text).join('') ?? '';
+}
+
+export interface WorkerInput {
+  root: string;
+  task: string;
+  /** Shared with the caller; the worker adds every file it reads. */
+  evidence: Evidence;
+}
+
+export async function runWorker(ctx: WorkerContext, config: Config, input: WorkerInput, signal?: AbortSignal): Promise<WorkerResult> {
+  const { model, thinking } = selectWorker(ctx, config);
+  const budgetTokens = contextBudget(model, config);
+  const usage: WorkerUsage = { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, cost: 0, turns: 0, measuredTurns: 0 };
+  const result: WorkerResult = { model: `${model.provider}/${model.id}`, usage, repaired: false };
+  let usedChars = POLICY.length + input.task.length;
+  let stop: StopReason | undefined;
+  let detail: string | undefined;
+
+  const remaining = () => budgetTokens - estimateTokens(usedChars);
+  const refuse = (text: string) => ({ content: [{ type: 'text' as const, text }], details: undefined });
+  const tool: AgentTool<typeof ReadParameters> = {
+    name: 'clio_read',
+    label: 'Clio read',
+    description: 'Read-only. action "list" shows the immediate entries of a project directory ("." for the root). action "read" returns a whole UTF-8 text file. Paths are relative to the project root. Hidden paths, dependencies and build output are not available.',
+    parameters: ReadParameters,
+    async execute(_id, { action, path }) {
+      if (usage.turns >= config.maxTurns - 1) return refuse('Turn limit reached. Answer now with the JSON proposal, using what you have already read.');
+      let text: string;
+      try {
+        if (action === 'list') {
+          const listing = await listProjectDir(input.root, path);
+          text = [`${listing.path}/`, ...listing.entries, ...(listing.truncated ? ['[more entries not shown]'] : [])].join('\n');
+        } else {
+          const file = await readProjectFile(input.root, path);
+          text = file.redacted ? `${file.text}\n[some lines were redacted because they looked like credentials]` : file.text;
+          // Reserve a fifth of the budget for the final answer.
+          if (estimateTokens(text.length) > remaining() - budgetTokens / 5) {
+            return refuse(`Not read: ${path} is about ${estimateTokens(text.length)} tokens and only about ${Math.max(0, remaining() - Math.floor(budgetTokens / 5))} are left before the answer reserve. Answer with what you have, or read smaller files.`);
           }
+          input.evidence.readFiles.add(path);
+          if (isDoc(path, config) && !file.redacted) input.evidence.readDocs.set(path, file.text);
         }
-        files.splice(0, files.length, ...admitted);
-        budget.initialGuardedRequestBytes = requestBytes(context);
-        budget.admittedFiles = admitted.length;
-        budget.omittedFiles = budget.candidateFiles - admitted.length;
-        candidates.length = 0; // Drop rejected pool bodies before provider execution.
+      } catch (error) {
+        return refuse(`Could not ${action} ${path}: ${error instanceof Error ? error.message : 'failed'}`);
       }
-      guard(context);
+      usedChars += text.length;
+      return { content: [{ type: 'text' as const, text }], details: undefined };
+    },
+  };
+
+  const agent = new Agent({
+    initialState: { model, thinkingLevel: thinking as never, tools: [tool], systemPrompt: POLICY },
+    toolExecution: 'sequential',
+    streamFn: (m, context, options) => {
+      usage.turns++;
+      return ctx.modelRegistry.streamSimple(m, context, options);
+    },
+    prepareRequest: () => {
+      if (usage.turns >= config.maxTurns) { stop = 'turn-limit'; throw new Error('turn limit'); }
+      if (remaining() < 0) { stop = 'context-limit'; throw new Error('context limit'); }
     },
   });
-  const abort = () => agent.abort();
-  signal?.addEventListener('abort', abort, {once: true});
-  const timer = setTimeout(() => { timedOut = true; agent.abort(); }, config.timeoutMs);
-  let finalText = '';
-  let stop = '';
-  let failureReason: string | undefined;
-  const unsubscribe = agent.subscribe(event => {
-    if (event.type === 'message_update' && Buffer.byteLength(JSON.stringify(event.message)) > config.maxResultBytes) agent.abort();
+
+  const onAbort = () => { stop ??= 'cancelled'; agent.abort(); };
+  signal?.addEventListener('abort', onAbort, { once: true });
+  const timer = setTimeout(() => { stop ??= 'timeout'; agent.abort(); }, config.timeoutMs);
+  let last: AssistantMessage | undefined;
+  const unsubscribe = agent.subscribe((event: AgentEvent) => {
+    if (event.type === 'message_update' && event.message.role === 'assistant' && visibleChars(event.message as AssistantMessage) > MAX_ANSWER_CHARS) {
+      stop ??= 'result-size';
+      agent.abort();
+    }
     if (event.type === 'message_end' && event.message.role === 'assistant') {
-      const m = event.message;
-      if (measured(m.usage)) {
-        measuredTurns++;
-        if (!result.usage) result.usage = structuredClone(m.usage);
-        else {
-          for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'totalTokens'] as const) result.usage[key] += m.usage[key];
-          for (const key of ['input', 'output', 'cacheRead', 'cacheWrite', 'total'] as const) result.usage.cost[key] += m.usage.cost[key];
-          for (const key of ['reasoning', 'cacheWrite1h'] as const) {
-            if (finite(result.usage[key]) && finite(m.usage[key])) result.usage[key]! += m.usage[key]!;
-            else delete result.usage[key];
-          }
-        }
-      }
-      batchResults.clear();
-      const calls = m.content.filter(c => c.type === 'toolCall');
-      if (calls.length > 8 || new Set(calls.map(c => c.id)).size !== calls.length || calls.some(c => {
-        const tool = tools.find(t => t.name === c.name);
-        return !tool || !Value.Check(tool.parameters, c.arguments);
-      })) {
-        toolProblem = 'Clio: worker incomplete (invalid or unavailable tool batch)';
-        agent.abort();
-      }
-      stop = m.stopReason;
-      failureReason = m.errorMessage;
-      finalText = m.content.filter(c => c.type === 'text').map(c => c.text).join('');
+      last = event.message as AssistantMessage;
+      usedChars += visibleChars(last);
+      addUsage(usage, last.usage);
     }
   });
+
+  const finish = (): boolean => {
+    if (stop) return false;
+    if (!last || last.stopReason !== 'stop') {
+      stop = last?.stopReason === 'aborted' ? 'cancelled' : 'provider-error';
+      detail = last?.errorMessage;
+      return false;
+    }
+    return true;
+  };
+
   try {
-    if (signal?.aborted) throw new Error('Clio: cancelled');
-    await agent.prompt(initialPrompt([]));
-    if (signal?.aborted || timedOut) throw new Error(timedOut ? 'Clio: worker timeout' : 'Clio: cancelled');
-    if (budgetProblem) throw new Error(budgetProblem);
-    if (toolProblem) throw new Error(toolProblem);
-    if (stop !== 'stop') throw new Error(workerDiagnostic(`Clio: worker incomplete (${stop || 'unknown'})`, result.model, turns, failureReason));
-    result.proposal = validateProposal(finalText, files, config, task.entries, evidence?.destinations);
-    const cited = new Set(result.proposal.findings.flatMap(f => f.sources.flatMap(s => 'entryId' in s ? [s.entryId] : [])));
-    result.sessionEvidence = task.entries.filter(e => cited.has(e.entryId));
+    if (signal?.aborted) throw new Error('cancelled');
+    await agent.prompt(input.task);
+    if (finish()) {
+      try {
+        result.proposal = validateProposal(extractJson(finalText(last)), input.evidence, config);
+      } catch (error) {
+        if (!(error instanceof ProposalError)) throw error;
+        // One repair turn: show the worker exactly what the host rejected.
+        result.repaired = true;
+        await agent.prompt(`The host rejected your proposal:\n${error.problems.map(p => `- ${p}`).join('\n')}\nReturn the corrected JSON object only. Drop any change you cannot fix.`);
+        if (finish()) {
+          try { result.proposal = validateProposal(extractJson(finalText(last)), input.evidence, config); }
+          catch (retry) {
+            if (!(retry instanceof ProposalError)) throw retry;
+            stop = 'invalid-proposal';
+            detail = retry.problems.slice(0, 3).join('; ');
+          }
+        }
+      }
+    }
   } catch (error) {
-    result.problem = budgetProblem ?? (error instanceof Error ? error.message : 'Clio: worker failed');
+    stop ??= 'provider-error';
+    detail ??= error instanceof Error ? error.message : String(error);
   } finally {
     clearTimeout(timer);
-    signal?.removeEventListener('abort', abort);
+    signal?.removeEventListener('abort', onAbort);
+    unsubscribe();
     agent.abort();
     await agent.waitForIdle();
-    unsubscribe();
   }
-  result.usageStatus = !result.usage ? 'unknown' : measuredTurns === turns ? 'complete' : 'partial';
-  if (result.usage && result.usageStatus !== 'complete') {
-    delete result.usage.reasoning;
-    delete result.usage.cacheWrite1h;
+  if (!result.proposal) {
+    result.stop = stop ?? 'provider-error';
+    result.problem = `worker stopped (${result.stop}) on ${result.model} after ${usage.turns} requests${detail ? `: ${detail.slice(0, 300)}` : ''}`;
   }
   return result;
 }

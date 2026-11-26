@@ -18,7 +18,7 @@ const packages = [
   { directory: "pithos.themes", shortName: "themes", version: "0.2.0" },
   { directory: "pithos.translate", shortName: "translate", version: "3.1.1" },
   { directory: "pithos.web", shortName: "web", version: "0.4.0" },
-  // Clio relies on the guarded nested-tool and settlement contracts verified on 1.0.3.
+  // Clio needs 1.0.3 for agent_settled background runs and the classification API.
   { directory: "pithos.clio", shortName: "clio", version: "0.0.6", minimumPi: ">=1.0.3" },
   { directory: "pithos.atlas", shortName: "atlas", version: "0.10.0" },
 ];

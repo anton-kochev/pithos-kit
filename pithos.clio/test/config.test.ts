@@ -2,14 +2,23 @@ import assert from 'node:assert/strict';
 import { test } from 'node:test';
 import { parseConfig } from '../src/config.ts';
 
-test('strict config defaults to inheritance and finite capture budgets', () => {
+test('defaults: auto-commit on, no classifier, budget left to the model size', () => {
   const config = parseConfig({});
-  assert.equal(config.model, undefined);
-  assert.equal(config.thinking, undefined);
-  assert.equal(config.timeoutMs, 180_000);
-  assert.equal(config.maxTurns, 20);
-  assert.deepEqual(parseConfig({model: 'provider/model/variant', thinking: 'high', docsDirs: ['handbook']}).docsDirs, ['handbook']);
-  for (const invalid of [null, [], {enabled: true}, {model: 'bad'}, {thinking: 'auto'}, {maxTurns: 0}, {timeoutMs: Infinity}, {maxContextBytes: 1e9}, {docsDirs: ['../secrets']}, {docsDirs: ['.pi']}, {maxEdits: 1.5}, {timeoutMs: null}, {docsDirs: null}]) {
-    assert.throws(() => parseConfig(invalid), /Clio config/);
-  }
+  assert.equal(config.autoCommit, true);
+  assert.equal(config.classifier, undefined);
+  assert.equal(config.maxContextTokens, undefined);
+  assert.equal(config.maxCommits, 20);
+});
+
+test('classifier block fills its own defaults', () => {
+  const config = parseConfig({ classifier: { model: 'openai/gpt-6-luna' } });
+  assert.deepEqual(config.classifier, { model: 'openai/gpt-6-luna', collectThreshold: 1, gateThreshold: 1, maxWindows: 8, timeoutMs: 30_000 });
+});
+
+test('unknown and malformed fields fail closed with a readable reason', () => {
+  assert.throws(() => parseConfig({ maxContextBytes: 120_000 }), /unknown field maxContextBytes/);
+  assert.throws(() => parseConfig({ classifier: { model: 'luna' } }), /classifier.model must be provider\/model-id/);
+  assert.throws(() => parseConfig({ classifier: { model: 'a/b', collectThreshold: 4 } }), /collectThreshold/);
+  assert.throws(() => parseConfig({ autoCommit: 'yes' }), /autoCommit/);
+  assert.throws(() => parseConfig({ docsDirs: ['../escape'] }), /docsDirs/);
 });

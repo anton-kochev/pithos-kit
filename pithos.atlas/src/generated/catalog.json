@@ -119,7 +119,7 @@
     {
       "name": "@pithos-kit/clio",
       "version": "0.0.6",
-      "description": "Clio: automatic evidence-backed documentation capture for Pi.",
+      "description": "Clio: documents committed work in the background and commits the good doc changes as their own docs(clio) commits.",
       "pi": {
         "extensions": [
           "./extensions/index.ts"
@@ -130,21 +130,16 @@
       },
       "pithosKit": {
         "displayName": "Clio",
-        "summary": "Automatically capture evidence-backed documentation through guarded parent tools.",
+        "summary": "After new commits, drafts doc updates from the diff and the session, grades them with a classifier, and commits the good ones separately.",
         "minimumPi": ">=1.0.3",
-        "commands": [],
-        "tools": [
+        "commands": [
           {
-            "name": "clio_capture",
-            "summary": "Host-scheduled documentation capture.",
-            "internal": true
-          },
-          {
-            "name": "clio_create_document",
-            "summary": "Host-authorized exclusive new-page publication; deferred internal mutation tool.",
-            "internal": true
+            "name": "clio",
+            "summary": "Capture new commits now, review the inbox, undo the last Clio commit, or show status.",
+            "usage": "/clio [--since <rev>] | review | undo [--yes] | status [--probe] | --help"
           }
         ],
+        "tools": [],
         "prompts": [],
         "skills": [],
         "themes": [],
@@ -153,7 +148,7 @@
           {
             "kind": "file",
             "key": ".pi/clio.json",
-            "summary": "Project-local worker model, thinking, documentation directories and finite limits."
+            "summary": "Project-local worker model, classifier, docs directories, autoCommit and limits."
           }
         ]
       }
