@@ -131,7 +131,7 @@ scripts/pi-patches/suppress-prompt-template-display.mjs
 
 ## Release
 
-When bumping a package version, also update its pinned version in `test/package-identities.test.mjs` and its package README's `.pithos` version example, and regenerate the Atlas catalog with `npm run catalog:generate` from the repository root. The root package-identity test asserts that these match the package manifests; include that test in release validation, not just the package-local suite.
+When bumping a package version, also update its pinned version in `test/package-identities.test.mjs` and its package README's `.pithos` version example, and regenerate the Atlas catalog with `npm run catalog:generate` from the repository root. The root package-identity test asserts that these match the package manifests; include that test in release validation, not just the package-local suite. Translate also asserts its exact manifest version in `pithos.translate/test/package.test.ts`; update that expectation when bumping Translate.
 
 Packages release independently using the `pithos-kit.<name>-v` tag namespace:
 
