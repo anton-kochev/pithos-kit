@@ -1,6 +1,6 @@
 # Clio
 
-Clio keeps your docs in step with your commits. Requires **Pi 1.0.3 or later** and Node.js **22.19.0 or later**. Package version: **0.9.1**.
+Clio keeps your docs in step with your commits. Requires **Pi 1.0.3 or later** and Node.js **22.19.0 or later**. Package version: **0.9.2**.
 
 After the agent finishes a run and the branch has new commits, Clio works in the background:
 
@@ -22,7 +22,7 @@ From a checkout: `pi install -l ./pithos.clio`, or `pi -e ./pithos.clio` for one
 ```yaml
 pi:
   extensions:
-    "@pithos-kit/clio": "npm:0.9.1"
+    "@pithos-kit/clio": "npm:0.9.2"
 ```
 
 ## Commands
