@@ -1,13 +1,5 @@
 # Phase 2 conformance
 
-## Selective commit checkpoint
-
-This foundation/protocol checkpoint excludes the pending CQRS skill, evaluator infrastructure and runner instrumentation, and optional logging changes. The historical verification records below refer to the larger mixed working tree, not this selective snapshot. References to excluded evaluator work do not claim it is included in this commit.
-
-The isolated selective snapshot passes **160 Guild tests (16 suites)**, Guild typecheck, package dry-run (**35 files**), and **2 root tests** using the existing installed dependencies. Compared with the mixed-tree 169 tests/42 files, this excludes six CQRS tests, three runner-observation tests, six CQRS skill resources and the optional logging module. The package still includes the child protocol, schemas and result collector. No live Pi/provider execution was performed.
-
-The snapshot includes the existing Plan README correction pointing retired TDD users to Guild. Omitting it exposed a failing Guild migration assertion; including that documentation-only correction made the selective snapshot pass. No runtime Plan behavior is changed.
-
 ## Scope and frozen contract
 
 Reduced Phase 2 only. E1 remains stopped. No evaluator/native-gate edits, Pi/SDK sessions, provider calls, Docker, spending, global runtime changes, staging, commits, version bumps or releases. Existing mixed work was retained. Independent review approved this bounded cooperative protocol with no findings.
