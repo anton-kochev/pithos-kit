@@ -18,6 +18,8 @@ export interface Config {
   model?: string;
   thinking?: ThinkingLevel;
   docsDirs: string[];
+  /** Doc paths (globs) Clio may read but never edit or add pages to. Defaults to ADRs. */
+  readOnlyDocs: string[];
   autoCommit: boolean;
   timeoutMs: number;
   maxTurns: number;
@@ -48,6 +50,9 @@ const CLASSIFIER_LIMITS: Record<'collectThreshold' | 'gateThreshold' | 'maxWindo
 const THINKING = ['off', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max'];
 const MODEL_SPEC = /^[^\s/]+\/\S+$/;
 const DOCS_DIR = /^[a-zA-Z0-9_-]+(?:\/[a-zA-Z0-9_-]+)*$/;
+/** Relative glob: letters, digits, _ - . / * ?, no "..", no leading slash. */
+const DOC_GLOB = /^(?!\/)(?!.*(?:^|\/)\.\.(?:\/|$))[a-zA-Z0-9_*?.\/-]{1,200}$/;
+export const DEFAULT_READ_ONLY_DOCS = ['**/adr/**'];
 
 function fail(detail: string): never {
   throw new Error(`Clio config: ${detail}`);
@@ -86,18 +91,23 @@ function parseClassifier(value: unknown): ClassifierConfig {
 
 export function parseConfig(value: unknown): Config {
   const data = object(value, 'configuration');
-  only(data, ['model', 'thinking', 'docsDirs', 'autoCommit', 'classifier', 'maxCostUsd', ...Object.keys(LIMITS)], '');
+  only(data, ['model', 'thinking', 'docsDirs', 'readOnlyDocs', 'autoCommit', 'classifier', 'maxCostUsd', ...Object.keys(LIMITS)], '');
   if (data.model !== undefined && (typeof data.model !== 'string' || !MODEL_SPEC.test(data.model))) fail('model must be provider/model-id');
   if (data.thinking !== undefined && !THINKING.includes(String(data.thinking))) fail(`thinking must be one of ${THINKING.join(', ')}`);
   const docsDirs = data.docsDirs ?? [];
   if (!Array.isArray(docsDirs) || docsDirs.length > 16 || docsDirs.some(d => typeof d !== 'string' || !DOCS_DIR.test(d))) {
     fail('docsDirs must be at most 16 relative directory names');
   }
+  const readOnlyDocs = data.readOnlyDocs ?? DEFAULT_READ_ONLY_DOCS;
+  if (!Array.isArray(readOnlyDocs) || readOnlyDocs.length > 32 || readOnlyDocs.some(g => typeof g !== 'string' || !DOC_GLOB.test(g))) {
+    fail('readOnlyDocs must be at most 32 relative glob patterns, such as "**/adr/**"');
+  }
   if (data.autoCommit !== undefined && typeof data.autoCommit !== 'boolean') fail('autoCommit must be true or false');
   return {
     model: data.model as string | undefined,
     thinking: data.thinking as ThinkingLevel | undefined,
     docsDirs: docsDirs as string[],
+    readOnlyDocs: [...readOnlyDocs as string[]],
     autoCommit: data.autoCommit !== false,
     timeoutMs: number(data, 'timeoutMs', LIMITS.timeoutMs, true),
     maxTurns: number(data, 'maxTurns', LIMITS.maxTurns, true),

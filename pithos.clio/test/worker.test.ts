@@ -48,6 +48,9 @@ test('one repair turn fixes a rejected proposal', async () => {
   const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
   assert.equal(result.repaired, true);
   assert.equal(result.proposal?.edits[0].path, 'README.md');
+  assert.equal(result.repairReasons?.length, 1);
+  assert.match(result.repairReasons![0], /docs\/guide\.md: read the whole file with clio_read before editing it/);
+  assert.equal(result.finalRejection, undefined);
 });
 
 test('a proposal that stays invalid after the repair turn is reported, not applied', async () => {
@@ -56,6 +59,8 @@ test('a proposal that stays invalid after the repair turn is reported, not appli
   const result = await runWorker(ctx, parseConfig({}), { root, task: 'task', evidence: evidence() });
   assert.equal(result.stop, 'invalid-proposal');
   assert.match(result.problem!, /invalid-proposal/);
+  assert.deepEqual(result.repairReasons, ['the answer contains no JSON object']);
+  assert.deepEqual(result.finalRejection, ['the answer contains no JSON object']);
 });
 
 test('the read tool refuses work near the turn limit, so the worker answers instead of looping', async () => {

@@ -99,7 +99,7 @@ export async function runCapture(input: RunInput): Promise<RunReport> {
         branch: plan.branch, range, status: result.status, summary: result.text.split('\n')[0],
         session: trace.collection && { considered: trace.collection.considered, kept: trace.collection.windows.length, classified: trace.collection.classified, classifierFailure: trace.collection.classifierFailure },
         classifier: classifier && { model: classifier.model, ...classifier.usage },
-        worker: worker && { model: worker.model, thinking: worker.thinking, stop: worker.stop, problem: worker.problem, repaired: worker.repaired, nudges: worker.nudges, usage: worker.usage, requests: worker.requests, tools: worker.tools },
+        worker: worker && { model: worker.model, thinking: worker.thinking, stop: worker.stop, problem: worker.problem, repaired: worker.repaired, repairReasons: worker.repairReasons, finalRejection: worker.finalRejection, nudges: worker.nudges, usage: worker.usage, requests: worker.requests, tools: worker.tools },
         changes: trace.gated.map(g => ({ path: changePath(g.change), type: g.change.type, verdict: g.verdict, reason: g.reason })),
         committed: result.committed, inboxed: result.inboxed,
       };

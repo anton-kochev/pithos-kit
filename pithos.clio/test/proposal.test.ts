@@ -3,7 +3,7 @@ import { test } from 'node:test';
 import { USEFUL_EDIT_KINDS } from '../src/classify.ts';
 import { extractJson, ProposalSchema, ProposalError, validateProposal, type Evidence } from '../src/proposal.ts';
 
-const config = { docsDirs: [], maxEdits: 6 };
+const config = { docsDirs: [], readOnlyDocs: ['**/adr/**'], maxEdits: 6 };
 const evidence = (): Evidence => ({
   readDocs: new Map([['README.md', '# Demo\n\nIntro.\n'], ['docs/guide.md', '# Guide\n\nStep one.\n']]),
   readFiles: new Set(['README.md', 'docs/guide.md', 'src/a.ts']),
@@ -61,4 +61,14 @@ test('credentials never make it into docs', () => {
 test('the proposal schema accepts exactly the kinds the gate treats as useful', () => {
   const schemaKinds = (ProposalSchema.properties.edits.items.properties.kind.anyOf as { const: string }[]).map(k => k.const).sort();
   assert.deepEqual(schemaKinds, [...USEFUL_EDIT_KINDS].sort());
+});
+
+test('read-only records such as ADRs are never edited or added to, unless readOnlyDocs is emptied', () => {
+  const ev = evidence();
+  ev.readDocs.set('docs/adr/0046-list-pagination.md', '# ADR 46\n\nStatus: accepted.\n');
+  const adrEdit = { edits: [edit({ path: 'docs/adr/0046-list-pagination.md', oldText: 'Status: accepted.', newText: 'Status: superseded.' })], unresolved: [] };
+  assert.throws(() => validateProposal(adrEdit, ev, config), (error: ProposalError) => /read-only \(a record such as an ADR\)/.test(error.problems[0]));
+  const adrCreate = { edits: [], creates: [{ path: 'docs/adr/0074-new.md', content: '# ADR 74\n', kind: 'decision', value: 'Records the choice.', sources: ['entry:u3'] }], unresolved: [] };
+  assert.throws(() => validateProposal(adrCreate, ev, config), (error: ProposalError) => /read-only directory such as ADRs/.test(error.problems[0]));
+  assert.equal(validateProposal(adrEdit, ev, { ...config, readOnlyDocs: [] }).edits.length, 1);
 });

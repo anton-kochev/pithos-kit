@@ -3,7 +3,7 @@ import { dirname, join } from 'node:path';
 import type { Collection, SessionWindow } from './collect.ts';
 import type { Config } from './config.ts';
 import type { CommitInfo } from './git.ts';
-import { isDoc, isExcluded } from './paths.ts';
+import { isDoc, isExcluded, isReadOnlyDoc } from './paths.ts';
 import { ProposalSchema } from './proposal.ts';
 
 export interface DigestInput {
@@ -20,9 +20,11 @@ export interface DigestInput {
 export interface DocMap {
   /** Existing README.md files nearest to the changed paths, root first. */
   nearby: string[];
-  /** Markdown pages found under docs directories (and configured docsDirs). */
+  /** Editable Markdown pages under docs directories (and configured docsDirs). */
   pages: string[];
-  /** Existing docs directories a new page may go into. */
+  /** Pages matching readOnlyDocs, such as ADRs: context only, never edited. */
+  readOnly: string[];
+  /** Existing docs directories a new page may go into (read-only ones left out). */
   directories: string[];
 }
 
@@ -33,13 +35,16 @@ async function exists(root: string, path: string, kind: 'file' | 'dir'): Promise
   } catch { return false; }
 }
 
-async function walkDocs(root: string, dir: string, depth: number, pages: string[], directories: string[], config: Config): Promise<void> {
-  if (depth > 3 || pages.length >= 200 || isExcluded(dir) || !(await exists(root, dir, 'dir'))) return;
-  directories.push(dir);
+async function walkDocs(root: string, dir: string, depth: number, map: Omit<DocMap, 'nearby'>, config: Config): Promise<void> {
+  if (depth > 3 || map.pages.length + map.readOnly.length >= 300 || isExcluded(dir) || !(await exists(root, dir, 'dir'))) return;
+  if (!isReadOnlyDoc(`${dir}/new-page.md`, config)) map.directories.push(dir);
   for await (const entry of await opendir(join(root, dir))) {
     const child = `${dir}/${entry.name}`;
-    if (entry.isDirectory()) await walkDocs(root, child, depth + 1, pages, directories, config);
-    else if (entry.isFile() && isDoc(child, config) && pages.length < 200) pages.push(child);
+    if (entry.isDirectory()) await walkDocs(root, child, depth + 1, map, config);
+    else if (entry.isFile() && isDoc(child, config)) {
+      if (isReadOnlyDoc(child, config)) { if (map.readOnly.length < 100) map.readOnly.push(child); }
+      else if (map.pages.length < 200) map.pages.push(child);
+    }
   }
 }
 
@@ -56,10 +61,12 @@ export async function mapDocs(root: string, changedPaths: string[], config: Conf
       if (dir === '.' || dir === '/') break;
     }
   }
-  const pages: string[] = [];
-  const directories: string[] = [];
-  for (const dir of [...docDirs].sort()) await walkDocs(root, dir, 0, pages, directories, config);
-  return { nearby: [...nearby].sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b)), pages: pages.sort(), directories };
+  const map: Omit<DocMap, 'nearby'> = { pages: [], readOnly: [], directories: [] };
+  for (const dir of [...docDirs].sort()) await walkDocs(root, dir, 0, map, config);
+  return {
+    nearby: [...nearby].filter(path => !isReadOnlyDoc(path, config)).sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b)),
+    pages: map.pages.sort(), readOnly: map.readOnly.sort(), directories: map.directories,
+  };
 }
 
 function windowText(window: SessionWindow, label: string): string {
@@ -96,6 +103,7 @@ export function buildTask(input: DigestInput, maxDiffChars: number): string {
     '# Documentation',
     `READMEs near the changed files: ${input.docs.nearby.join(', ') || '(none)'}`,
     `Pages under docs directories: ${input.docs.pages.join(', ') || '(none)'}`,
+    ...(input.docs.readOnly.length ? [`Read-only records, for context only (never edit them or add pages next to them): ${input.docs.readOnly.join(', ')}`] : []),
     `Directories a new page may go into: ${input.docs.directories.join(', ') || '(none; edit an existing README instead)'}`,
     '',
     '# Answer schema',

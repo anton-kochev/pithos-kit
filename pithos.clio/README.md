@@ -5,7 +5,7 @@ Clio keeps your docs in step with your commits. Requires **Pi 1.0.3 or later** a
 After the agent finishes a run and the branch has new commits, Clio works in the background:
 
 1. **Collects** what was learned. A classifier reads the session turn by turn and keeps only decisions, reasons, gotchas, constraints and dead ends. Progress reports and chatter are skipped. If nothing qualifies, Clio stops here.
-2. **Drafts** doc updates. A worker model reads the commits, the diff, the kept session excerpts and the nearby docs, and proposes small edits to `README.md` files or Markdown under `docs/`.
+2. **Drafts** doc updates. A worker model reads the commits, the diff, the kept session excerpts and the nearby docs, and proposes small edits to `README.md` files or Markdown under `docs/`, or a new page in an existing docs directory. Read-only records such as ADRs are context only, never edited.
 3. **Grades** each proposed change with the classifier. Useful, durable changes are committed. Weak ones go to the inbox. Test narration, code restatement, status reports, bug reports and speculation are dropped.
 4. **Commits** the good changes as their own `docs(clio): …` commit, once the agent is idle. That commit holds only Clio's files, carries a `Clio-Capture:` trailer, and is easy to read in `git log` and to revert.
 
@@ -73,6 +73,7 @@ Optional project-local `.pi/clio.json`. Every field is optional; unknown or malf
   "model": "openai/gpt-6-luna",
   "thinking": "low",
   "docsDirs": ["handbook"],
+  "readOnlyDocs": ["**/adr/**"],
   "autoCommit": true,
   "classifier": {
     "model": "openai/gpt-6-luna",
@@ -96,6 +97,10 @@ Optional project-local `.pi/clio.json`. Every field is optional; unknown or malf
   - A fast, cheaper model with `"thinking": "low"` is enough for small doc edits.
   - `/clio status` warns when the worker falls back to the session model.
 - `docsDirs`: extra directories, besides any `docs/`, where Markdown counts as docs.
+- `readOnlyDocs`: glob patterns for docs Clio may read but never edit or add pages to.
+  - The default `["**/adr/**"]` keeps ADRs as history: Clio reads them for context, and when a decision has no record it says so under "Unresolved" instead of writing one.
+  - `**` spans directories; `*` and `?` stay within one.
+  - Set `[]` to allow edits everywhere.
 - `autoCommit`: set to `false` to send every change to the inbox.
 - `classifier`: a registered classifier model, used through Pi's classification API.
   - Without one, nothing is committed automatically: every change goes to the inbox.

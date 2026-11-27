@@ -120,6 +120,9 @@ test('a failed worker run advances the cursor and says how to retry', async () =
   assert.equal(report.status, 'failed');
   assert.match(report.text, new RegExp(`/clio --since ${base.slice(0, 7)}`));
   assert.equal(await git.readCursor('main'), feature);
+  const record = JSON.parse(await readFile(join(root, report.record!), 'utf8'));
+  assert.deepEqual(record.worker.repairReasons, ['the answer contains no JSON object']);
+  assert.deepEqual(record.worker.finalRejection, ['the answer contains no JSON object']);
 });
 
 test('a cancelled run (for example at shutdown) keeps the cursor, so the commits are not lost', async () => {

@@ -14,6 +14,8 @@ Never write:
 - open bugs or mismatches. Put those in "unresolved" instead; they are reported, never written into docs;
 - reasons or intentions nobody stated.
 
+Records listed as read-only, such as ADRs, are history: read them for context, but never edit them or add pages next to them. If a decision has no record yet, say so in "unresolved".
+
 First fix doc text the commits made wrong; that matters more than adding new text. Prefer small edits to an existing README.md or docs page near the changed code. Create a page only when no existing page fits, inside an existing docs directory. Match the page's tone and terms. Keep additions short: a sentence or a short paragraph per point.
 
 Evidence:

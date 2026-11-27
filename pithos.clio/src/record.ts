@@ -23,6 +23,8 @@ export interface RunRecord {
     stop?: string;
     problem?: string;
     repaired: boolean;
+    repairReasons?: string[];
+    finalRejection?: string[];
     nudges: string[];
     usage: WorkerUsage;
     requests: RequestLog[];

@@ -3,7 +3,7 @@ import { Type, type Static } from 'typebox';
 import { Value } from 'typebox/value';
 import type { Config } from './config.ts';
 import { expectedEdit } from './edit-content.ts';
-import { containsCredential, isDoc } from './paths.ts';
+import { containsCredential, isDoc, isReadOnlyDoc } from './paths.ts';
 
 // Must list the same kinds as USEFUL_EDIT_KINDS (checked by a test); junk kinds are not valid output.
 const Kind = Type.Union([
@@ -78,7 +78,7 @@ function checkSources(sources: string[], evidence: Evidence, where: string, prob
 }
 
 /** Validates shape, targets and citations. Throws ProposalError listing every problem found. */
-export function validateProposal(raw: unknown, evidence: Evidence, config: Pick<Config, 'docsDirs' | 'maxEdits'>): Proposal {
+export function validateProposal(raw: unknown, evidence: Evidence, config: Pick<Config, 'docsDirs' | 'readOnlyDocs' | 'maxEdits'>): Proposal {
   if (!Value.Check(ProposalSchema, raw)) {
     const problems = [...Value.Errors(ProposalSchema, raw)].slice(0, 6).map(e => `${(e as { instancePath?: string }).instancePath || '/'}: ${e.message}`);
     throw new ProposalError(problems.length ? problems : ['the JSON does not match the schema']);
@@ -91,6 +91,7 @@ export function validateProposal(raw: unknown, evidence: Evidence, config: Pick<
   for (const [i, edit] of proposal.edits.entries()) {
     const where = `edits[${i}] ${edit.path}`;
     if (!isDoc(edit.path, config)) problems.push(`${where}: only README.md files and Markdown under docs directories can be edited`);
+    else if (isReadOnlyDoc(edit.path, config)) problems.push(`${where}: this page is read-only (a record such as an ADR); drop the edit and say what is missing in unresolved instead`);
     else if (!evidence.readDocs.has(edit.path)) problems.push(`${where}: read the whole file with clio_read before editing it`);
     else {
       try { expectedEdit(evidence.readDocs.get(edit.path)!, edit.oldText, edit.newText); }
@@ -107,6 +108,8 @@ export function validateProposal(raw: unknown, evidence: Evidence, config: Pick<
     const where = `creates[${i}] ${create.path}`;
     if (!isDoc(create.path, config) || !NEW_PAGE.test(basename(create.path)) || basename(create.path) === 'README.md') {
       problems.push(`${where}: new pages need a name of ASCII letters, digits, - or _ ending in .md, inside an existing docs directory`);
+    } else if (isReadOnlyDoc(create.path, config)) {
+      problems.push(`${where}: pages cannot be added to a read-only directory such as ADRs; say what is missing in unresolved instead`);
     }
     if (targets.has(create.path) || evidence.readDocs.has(create.path) || evidence.readFiles.has(create.path)) problems.push(`${where}: that page already exists; edit it instead`);
     if (containsCredential(create.content)) problems.push(`${where}: content looks like it contains a credential`);

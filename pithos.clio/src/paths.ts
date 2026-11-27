@@ -32,6 +32,30 @@ export function isDoc(path: string, config: Pick<Config, 'docsDirs'>): boolean {
   return dirname(path).split('/').includes('docs') || config.docsDirs.some(dir => path.startsWith(`${dir}/`));
 }
 
+/** Minimal glob: `**` spans directories (including none), `*` and `?` stay within one. */
+export function globToRegExp(glob: string): RegExp {
+  let pattern = '';
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*' && glob[i + 1] === '*') {
+      if (glob[i + 2] === '/') { pattern += '(?:.*/)?'; i += 2; } else { pattern += '.*'; i += 1; }
+    } else if (c === '*') pattern += '[^/]*';
+    else if (c === '?') pattern += '[^/]';
+    else pattern += c.replace(/[.+^${}()|[\]\\]/g, '\\$&');
+  }
+  return new RegExp(`^${pattern}$`);
+}
+
+/** A doc Clio may read for context but never edit, such as an ADR. */
+export function isReadOnlyDoc(path: string, config: Pick<Config, 'readOnlyDocs'>): boolean {
+  return config.readOnlyDocs.some(glob => globToRegExp(glob).test(path));
+}
+
+/** A doc Clio may edit, or a path where it may add a page. */
+export function isEditableDoc(path: string, config: Pick<Config, 'docsDirs' | 'readOnlyDocs'>): boolean {
+  return isDoc(path, config) && !isReadOnlyDoc(path, config);
+}
+
 export function containsCredential(text: string): boolean {
   return CREDENTIAL.test(text);
 }

@@ -28,3 +28,10 @@ test('maxCostUsd defaults to $0.50 and accepts fractions', () => {
   assert.equal(parseConfig({ maxCostUsd: 0.25 }).maxCostUsd, 0.25);
   assert.throws(() => parseConfig({ maxCostUsd: 0 }), /maxCostUsd/);
 });
+
+test('readOnlyDocs protects ADRs by default and takes relative globs only', () => {
+  assert.deepEqual(parseConfig({}).readOnlyDocs, ['**/adr/**']);
+  assert.deepEqual(parseConfig({ readOnlyDocs: [] }).readOnlyDocs, []);
+  assert.deepEqual(parseConfig({ readOnlyDocs: ['docs/decisions/**', '**/CHANGELOG.md'] }).readOnlyDocs, ['docs/decisions/**', '**/CHANGELOG.md']);
+  for (const bad of [['../x/**'], ['/abs/**'], ['a/../b'], 'docs/adr/**']) assert.throws(() => parseConfig({ readOnlyDocs: bad }), /readOnlyDocs/);
+});

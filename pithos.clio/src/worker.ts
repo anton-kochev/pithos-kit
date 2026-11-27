@@ -29,6 +29,10 @@ export interface WorkerResult {
   problem?: string;
   usage: WorkerUsage;
   repaired: boolean;
+  /** Why the host rejected the first proposal (host validation messages, no file contents). */
+  repairReasons?: string[];
+  /** Why the repaired proposal was still rejected, when it was. */
+  finalRejection?: string[];
   /** Nudges sent to make the worker answer early: deadline, cost or turn limit. */
   nudges: string[];
   requests: RequestLog[];
@@ -237,12 +241,14 @@ export async function runWorker(ctx: WorkerContext, config: Config, input: Worke
         if (!(error instanceof ProposalError)) throw error;
         // One repair turn: show the worker exactly what the host rejected.
         result.repaired = true;
+        result.repairReasons = error.problems.slice(0, 10);
         await agent.prompt(`The host rejected your proposal:\n${error.problems.map(p => `- ${p}`).join('\n')}\nReturn the corrected JSON object only. Drop any change you cannot fix.`);
         if (finish()) {
           try { result.proposal = validateProposal(extractJson(finalText(last)), input.evidence, config); }
           catch (retry) {
             if (!(retry instanceof ProposalError)) throw retry;
             stop = 'invalid-proposal';
+            result.finalRejection = retry.problems.slice(0, 10);
             detail = retry.problems.slice(0, 3).join('; ');
           }
         }
