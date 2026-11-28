@@ -523,7 +523,7 @@
     },
     {
       "name": "@pithos-kit/telos",
-      "version": "0.5.0",
+      "version": "0.6.0",
       "description": "Telos: session-scoped task checklists with live progress for Pi.",
       "pi": {
         "extensions": [

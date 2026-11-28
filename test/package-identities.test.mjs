@@ -10,7 +10,7 @@ const packages = [
   { directory: "pithos.squiggle", shortName: "squiggle", version: "0.7.0" },
   { directory: "pithos.echo", shortName: "echo", version: "0.6.0" },
   { directory: "pithos.answer", shortName: "answer", version: "0.4.0" },
-  { directory: "pithos.telos", shortName: "telos", version: "0.5.0" },
+  { directory: "pithos.telos", shortName: "telos", version: "0.6.0" },
   { directory: "pithos.aegis", shortName: "aegis", version: "0.3.0" },
   { directory: "pithos.guild", shortName: "guild", version: "0.14.1" },
   { directory: "pithos.context-bar", shortName: "context-bar", version: "0.4.1" },
