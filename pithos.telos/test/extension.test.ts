@@ -33,7 +33,52 @@ function context(cwd: string, id: string, sessionFile?: string) {
 	};
 }
 
+function withFooter(ctx: ReturnType<typeof context>, fg = (_color: string, text: string) => text) {
+	const statuses = new Map<string, string>();
+	return { ...ctx, hasUI: true, mode: "tui", statuses, ui: {
+		...ctx.ui,
+		theme: { fg },
+		setStatus(key: string, text?: string) {
+			if (text === undefined) statuses.delete(key);
+			else statuses.set(key, text);
+		},
+	} };
+}
+
 describe("Telos command/tool integration", () => {
+	it("restores progress in the footer on resume and clears it on shutdown", async () => {
+		const cwd = await directory();
+		const ctx = withFooter(context(cwd, "saved", join(cwd, "saved.jsonl")), (color, text) => `<${color}>${text}</${color}>`);
+		const session = captureTaskSession(ctx);
+		for (const status of ["blocked", "todo", "in_progress", "done", "done", "archived"] as const) {
+			await runSessionOperation(session, { action: "create", title: status, status });
+		}
+		const { events } = harness();
+		await events.get("session_start")!({ reason: "resume" }, ctx);
+		assert.equal(ctx.statuses.get("telos"), "Tasks · <muted>□ 1</muted> · <accent>▣ 1</accent> · <success>■ 2</success>");
+		await events.get("session_shutdown")!({ reason: "new" }, ctx);
+		assert.equal(ctx.statuses.has("telos"), false);
+	});
+
+	it("updates footer counts after tool and command changes and hides an empty checklist", async () => {
+		const ctx = withFooter(context(await directory(), "memory"));
+		const { command, tool, events } = harness();
+		await events.get("session_start")!({ reason: "startup" }, ctx);
+		assert.equal(ctx.statuses.has("telos"), false);
+
+		const created = await tool.execute("create", { action: "create", title: "Write docs" }, undefined, undefined, ctx);
+		const id = created.details.task.id;
+		assert.equal(ctx.statuses.get("telos"), "Tasks · □ 1 · ▣ 0 · ■ 0");
+		await command.handler(`block ${id}`, ctx);
+		assert.equal(ctx.statuses.get("telos"), "Tasks · □ 0 · ▣ 0 · ■ 0");
+		await command.handler(`status ${id} in_progress`, ctx);
+		assert.equal(ctx.statuses.get("telos"), "Tasks · □ 0 · ▣ 1 · ■ 0");
+		await tool.execute("finish", { action: "complete", id }, undefined, undefined, ctx);
+		assert.equal(ctx.statuses.get("telos"), "Tasks · □ 0 · ▣ 0 · ■ 1");
+		await command.handler(`archive ${id}`, ctx);
+		assert.equal(ctx.statuses.has("telos"), false);
+	});
+
 	it("routes command and tool to the same session and labels memory-only results", async () => {
 		const cwd = await directory();
 		const { command, tool } = harness();
@@ -66,7 +111,8 @@ describe("Telos command/tool integration", () => {
 	it("mounts the session snapshot, refreshes it while open, and closes on runtime shutdown", { timeout: 5000 }, async () => {
 		const cwd = await directory();
 		const { command, events } = harness();
-		const ctx = context(cwd, "live");
+		const ctx = withFooter(context(cwd, "live"));
+		await events.get("session_start")!({ reason: "startup" }, ctx);
 		const owner = captureTaskSession(ctx);
 		const initial = await runSessionOperation(owner, { action: "create", title: "Before mount" });
 		let component: any;
@@ -75,11 +121,13 @@ describe("Telos command/tool integration", () => {
 		let rendered!: () => void;
 		const mounting = new Promise<void>((resolve) => { mounted = resolve; });
 		const rendering = new Promise<void>((resolve) => { rendered = resolve; });
-		const interactive = { ...ctx, hasUI: true, mode: "tui", ui: {
-			notify: () => {},
+		let footerAtMount: string | undefined;
+		const interactive = { ...ctx, ui: {
+			...ctx.ui,
 			custom: async (factory: any) => {
+				footerAtMount = ctx.statuses.get("telos");
 				// A write between initial loading and mounting must be caught immediately.
-				await runSessionOperation(owner, { action: "update", id: initial.task!.id, title: "After mount" });
+				await runSessionOperation(owner, { action: "update", id: initial.task!.id, title: "After mount", status: "in_progress" });
 				return new Promise<void>((done) => {
 					component = factory({ requestRender: () => { renders++; rendered(); } }, { fg: (_: string, text: string) => text }, {}, done);
 					assert.match(component.render(120).join("\n"), /Before mount/);
@@ -92,6 +140,8 @@ describe("Telos command/tool integration", () => {
 		await rendering;
 		assert(component, "custom screen was mounted");
 		assert.match(component.render(120).join("\n"), /After mount/);
+		assert.equal(footerAtMount, "Tasks · □ 1 · ▣ 0 · ■ 0");
+		assert.equal(ctx.statuses.get("telos"), "Tasks · □ 0 · ▣ 1 · ■ 0");
 		assert.match(component.render(120).join("\n"), /Ephemeral session/);
 		assert(events.has("session_shutdown"));
 		await events.get("session_shutdown")!({ type: "session_shutdown", reason: "new" }, interactive);

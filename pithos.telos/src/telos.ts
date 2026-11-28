@@ -3,15 +3,16 @@ import type { ExtensionAPI, ExtensionCommandContext } from "@earendil-works/pi-c
 import { Text } from "@earendil-works/pi-tui";
 import { Type } from "typebox";
 import { formatArtifactList } from "./artifact";
-import { captureTaskSession, runSessionOperation, releaseSessionTasks, EPHEMERAL_NOTICE, type TaskSession } from "./session-store";
+import { captureTaskSession, loadSessionTasks, runSessionOperation, releaseSessionTasks, EPHEMERAL_NOTICE, type TaskSession } from "./session-store";
 import { parseTasksCommand, TASKS_HELP } from "./commands";
 import { discoverCleanupCandidates, deleteCleanupCandidates, discardCleanupCandidates } from "./cleanup";
-import { activeTaskListText, showTaskList } from "./ui";
+import { activeTaskListText, showTaskList, taskFooterText } from "./ui";
 import { createPithosLogger, errorMetadata } from "./logging";
 import {
 	TASK_PRIORITIES,
 	TASK_STATUSES,
 	type ListScope,
+	type Task,
 	type TaskOperation,
 	type TaskOperationResult,
 	type TaskPriority,
@@ -48,7 +49,25 @@ export default function telos(pi: ExtensionAPI) {
 	const log = createPithosLogger();
 	log.info("extension.register");
 	const openViews = new Set<() => void>();
+	let updateFooter: ((tasks: Task[]) => void) | undefined;
+	pi.on("session_start", async (_event, ctx) => {
+		if (ctx.mode !== "tui") return;
+		const publish = (tasks: Task[]) => {
+			if (updateFooter !== publish) return;
+			try { ctx.ui.setStatus("telos", taskFooterText(tasks, ctx.ui.theme)); }
+			catch (error) { log.warn("footer.update.error", { error: errorMetadata(error) }); }
+		};
+		updateFooter = publish;
+		try {
+			const { artifact } = await loadSessionTasks(captureTaskSession(ctx));
+			publish(artifact.tasks);
+		} catch (error) {
+			log.warn("footer.load.error", { error: errorMetadata(error) });
+		}
+	});
 	pi.on("session_shutdown", async (event, ctx) => {
+		updateFooter?.([]);
+		updateFooter = undefined;
 		for (const close of openViews) close();
 		openViews.clear();
 		if (event.reason !== "reload") await releaseSessionTasks(captureTaskSession(ctx));
@@ -70,7 +89,7 @@ export default function telos(pi: ExtensionAPI) {
 			const operation = operationFromToolParams(params as TaskToolParams);
 			log.info("tool.telos_tasks.start", { toolCallId, action: operation.action, id: "id" in operation ? operation.id : undefined });
 			try {
-			const result = await runOperation(captureTaskSession(ctx), operation);
+			const result = await runOperation(captureTaskSession(ctx), operation, updateFooter);
 			log.info("tool.telos_tasks.complete", { toolCallId, durationMs: Date.now() - started, action: operation.action, rejected: result.rejected });
 			return {
 				content: [{ type: "text", text: result.text }],
@@ -109,11 +128,11 @@ export default function telos(pi: ExtensionAPI) {
 				const started = Date.now();
 				if (parsed.type === "interactive") {
 					const session = captureTaskSession(ctx);
-					if (ctx.mode === "tui") return await showTaskList(ctx, session, openViews);
+					if (ctx.mode === "tui") return await showTaskList(ctx, session, openViews, updateFooter);
 					return emitText(ctx, await activeTaskListText(session));
 				}
 				if (parsed.type === "cleanup") return await cleanupTasks(ctx);
-				const result = await runOperation(captureTaskSession(ctx), parsed.operation);
+				const result = await runOperation(captureTaskSession(ctx), parsed.operation, updateFooter);
 				log.info("command.tasks.complete", { sessionId: (ctx.sessionManager as { getSessionId?: () => string } | undefined)?.getSessionId?.(), durationMs: Date.now() - started, action: parsed.operation.action, rejected: result.rejected });
 				return emitText(ctx, result.text, result.rejected ? "warning" : "info");
 			} catch (error) {
@@ -143,8 +162,9 @@ async function cleanupTasks(ctx: ExtensionCommandContext): Promise<string> {
 	}
 }
 
-async function runOperation(session: TaskSession, operation: TaskOperation): Promise<TaskOperationResult> {
+async function runOperation(session: TaskSession, operation: TaskOperation, updateFooter?: (tasks: Task[]) => void): Promise<TaskOperationResult> {
 	const result = await runSessionOperation(session, operation);
+	updateFooter?.(result.artifact.tasks);
 	return session.ephemeral ? { ...result, text: `${result.text}\n\n${EPHEMERAL_NOTICE}` } : result;
 }
 

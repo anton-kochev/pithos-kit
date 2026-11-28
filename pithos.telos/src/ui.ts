@@ -10,6 +10,7 @@ export async function showTaskList(
 	ctx: ExtensionCommandContext,
 	session: TaskSession = captureTaskSession(ctx),
 	openViews?: Set<() => void>,
+	onTasks?: (tasks: Task[]) => void,
 ): Promise<void> {
 	let closed = false;
 	let component: TaskListComponent | undefined;
@@ -26,6 +27,7 @@ export async function showTaskList(
 	try {
 		const loaded = await loadSessionTasks(session);
 		if (closed) return;
+		onTasks?.(loaded.artifact.tasks);
 		await ctx.ui.custom<void>((tui, theme, _kb, done) => {
 			finish = () => done();
 			component = new TaskListComponent(filterTasks(loaded.artifact.tasks, "active"), theme, close,
@@ -39,7 +41,10 @@ export async function showTaskList(
 				initial: loaded,
 				loadTasks: () => loadSessionTasks(session),
 				loadConfig: () => loadTelosConfig(session.cwd),
-				onTasks: (tasks) => component?.updateTasks(tasks),
+				onTasks: (tasks) => {
+					component?.updateTasks(tasks);
+					onTasks?.(tasks);
+				},
 				onWarnings: (warnings) => component?.setWarnings(warnings),
 				onConfig: (config) => component?.setVisibleTaskCount(config.visibleTaskCount),
 			});
@@ -55,6 +60,19 @@ export async function activeTaskListText(session: TaskSession): Promise<string> 
 	const loaded = await loadSessionTasks(session);
 	const text = formatArtifactList(loaded.artifact, "active");
 	return session.ephemeral ? `${text}\n\n${EPHEMERAL_NOTICE}` : text;
+}
+
+export function taskFooterText(tasks: readonly Task[], theme: Pick<Theme, "fg">): string | undefined {
+	const counts = { todo: 0, in_progress: 0, blocked: 0, done: 0, archived: 0 };
+	for (const { status } of tasks) counts[status]++;
+	if (counts.archived === tasks.length) return undefined;
+
+	return [
+		"Tasks",
+		theme.fg("muted", `${statusGlyph("todo")} ${counts.todo}`),
+		theme.fg("accent", `${statusGlyph("in_progress")} ${counts.in_progress}`),
+		theme.fg("success", `${statusGlyph("done")} ${counts.done}`),
+	].join(" · ");
 }
 
 type TaskListMode = "list" | "detail";
